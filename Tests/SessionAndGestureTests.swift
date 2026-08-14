@@ -4,7 +4,8 @@ import XCTest
 final class HeadGestureDetectorTests: XCTestCase {
     private let params = AppParameters.Gesture(
         nodPitchThresholdDeg: 10, shakeYawThresholdDeg: 12,
-        minReversals: 2, windowSec: 1.6, refractorySec: 1.0)
+        minReversals: 2, windowSec: 1.6, refractorySec: 1.0,
+        diagnosticsIntervalSec: 0.5, diagnosticsReportRatio: 0.7)
 
     private func feed(pitches: [Double] = [], yaws: [Double] = [],
                       detector: inout HeadGestureDetector) -> HeadGesture? {
@@ -38,6 +39,24 @@ final class HeadGestureDetectorTests: XCTestCase {
         // 歩行中に体ごと右へ曲がる(yaw が単調変化)場合は首振りと誤検出しない
         var d = HeadGestureDetector(params: params)
         XCTAssertNil(feed(yaws: [0, 20, 40, 60, 80], detector: &d))
+    }
+
+    func testJitterAcrossYawBoundaryIgnored() {
+        // 正面が ±180° 付近にあるとき、実際の動きは ±数度でも生値は 176 → -179 と飛ぶ。
+        // 折り返しを解かないと巨大な偏差として首振りに化ける。
+        var d = HeadGestureDetector(params: params)
+        XCTAssertNil(feed(yaws: [176, -179, 178, -177, 179], detector: &d))
+    }
+
+    func testShakeAcrossYawBoundaryDetected() {
+        // 正面 180° を中心に ±16° 振った(164 ↔ 196)。生値は 164 ↔ -164 に折り返す
+        var d = HeadGestureDetector(params: params)
+        XCTAssertEqual(feed(yaws: [164, -164, 164, -164, 164], detector: &d), .shake)
+    }
+
+    func testUnwrapDegRemovesBoundaryJumps() {
+        let out = HeadGestureDetector.unwrapDeg([176, -179, 178, -177, 179])
+        XCTAssertEqual(out, [176, 181, 178, 183, 179])
     }
 }
 

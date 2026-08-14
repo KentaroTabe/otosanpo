@@ -12,6 +12,21 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
 
     private let manager = CLLocationManager()
 
+    // 進行方向の推定材料(判定は Core の TravelDirection が行う。ここは値の運搬のみ)
+    private var courseDeg: Double?
+    private var courseAccuracyDeg: Double?
+    private var speedMps: Double?
+    private var lastFixDate: Date?
+
+    /// 現時点の推定材料をまとめて返す(経過秒は読み出し時に計算する)
+    func motionFix(now: Date = Date()) -> MotionFix {
+        MotionFix(courseDeg: courseDeg,
+                  courseAccuracyDeg: courseAccuracyDeg,
+                  speedMps: speedMps,
+                  compassHeadingDeg: headingDeg,
+                  ageSec: lastFixDate.map { now.timeIntervalSince($0) })
+    }
+
     override init() {
         super.init()
         manager.delegate = self
@@ -45,6 +60,10 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
 
     func locationManager(_ m: CLLocationManager, didUpdateLocations locs: [CLLocation]) {
         guard let l = locs.last else { return }
+        courseDeg = l.course
+        courseAccuracyDeg = l.courseAccuracy
+        speedMps = l.speed
+        lastFixDate = l.timestamp
         position = GeoPoint(latitude: l.coordinate.latitude, longitude: l.coordinate.longitude)
     }
 

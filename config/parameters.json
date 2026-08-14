@@ -23,12 +23,20 @@
     "suggestion_min_score": 0.15,
     "excluded_familiarity": 8.0
   },
+  "location": {
+    "min_speed_for_course_m_per_s": 0.7,
+    "max_course_accuracy_deg": 45,
+    "max_fix_age_sec": 10,
+    "allow_compass_fallback": true
+  },
   "gesture": {
     "nod_pitch_threshold_deg": 10,
     "shake_yaw_threshold_deg": 12,
     "min_reversals": 2,
     "window_sec": 1.6,
-    "refractory_sec": 1.0
+    "refractory_sec": 1.0,
+    "diagnostics_interval_sec": 0.5,
+    "diagnostics_report_ratio": 0.7
   },
   "audio": {
     "sample_rate": 44100,

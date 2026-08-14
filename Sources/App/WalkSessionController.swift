@@ -12,17 +12,21 @@ final class WalkSessionController: ObservableObject {
     }
     @Published private(set) var home: GeoPoint?
     @Published private(set) var statusLine = "位置情報待ち"
+    /// ヘッドフォンモーションの受信状況。検出できない原因の切り分けに使う
+    @Published private(set) var motionStatusLine = "ヘッドフォンモーション: 未開始"
     @Published private(set) var eventLog: [String] = []
 
     let params: AppParameters
 
     private let location = LocationService()
     private let motion = HeadphoneMotionService()
+    private let fieldLog = FieldLog()
     private var synth: EarconSynth?
     private var grid: VisitGrid
     private var detector: HeadGestureDetector
 
     private var extensionsUsed = 0
+    private var directionUnavailableLogged = false
     private var sessionEnd: Date?
     private var ackEnd: Date?
     private var suggestionTimer: Timer?
@@ -46,6 +50,11 @@ final class WalkSessionController: ObservableObject {
             .store(in: &cancellables)
         motion.onSample = { [weak self] s in
             Task { @MainActor in self?.onHeadSample(s) }
+        }
+        motion.onConnectionChange = { [weak self] connected in
+            Task { @MainActor in
+                self?.log(connected ? "ヘッドフォンを検出しました" : "ヘッドフォンが外れました")
+            }
         }
         location.requestPermission()
     }
@@ -77,11 +86,10 @@ final class WalkSessionController: ObservableObject {
         ackEnd = nil
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
-        if motion.isAvailable {
-            motion.start()
-        } else {
-            log("ヘッドフォンモーション非対応。デバッグボタンで応答を代替できます")
-        }
+        // 未接続でも start する(後から装着された時点で更新が始まる)
+        motion.start()
+        log("ヘッドフォンモーション: 利用可能=\(motion.isAvailable ? "はい" : "いいえ")"
+            + " 許可=\(motion.authorizationLabel) 更新中=\(motion.isActive ? "はい" : "いいえ")")
         apply(.start)
         scheduleTimeUp()
         log("散歩を開始(\(Int(durationMin)) 分)")
@@ -90,6 +98,32 @@ final class WalkSessionController: ObservableObject {
     func stopManually() {
         apply(.stop)
         log("終了しました")
+    }
+
+    /// フィールドログの実体(共有シートで書き出す)。まだ 1 行も書かれていなければ nil
+    var fieldLogURL: URL? {
+        guard let url = FieldLog.fileURL(),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    func clearFieldLog() {
+        fieldLog.clear()
+        log("フィールドログを消去しました")
+    }
+
+    /// earcon の聴き分け確認用。初回の散歩は全方向が未踏で「直進」が最良になり
+    /// 提案音が鳴らないため、音そのものの確認はこの経路で行う。
+    func debugPlay(_ e: Earcon, pan: Float = 0) {
+        if synth == nil {
+            synth = try? EarconSynth(audio: params.audio)
+        }
+        guard let synth else {
+            log("音声エンジンの初期化に失敗しました")
+            return
+        }
+        synth.play(e, pan: pan)
+        log("デバッグ再生: \(e.rawValue) pan=\(String(format: "%.1f", pan))")
     }
 
     // デバッグ用(シミュレータ・モーション非対応時の代替)
@@ -176,18 +210,28 @@ final class WalkSessionController: ObservableObject {
         guard state == .wandering,
               let p = location.position,
               let h = home,
-              let heading = location.headingDeg,
               let end = sessionEnd else { return }
+        guard let travel = TravelDirection.resolve(location.motionFix(), params: params.location) else {
+            noteDirectionUnavailable()
+            return
+        }
+        noteDirectionAvailable()
+        let heading = travel.deg
         let remainingMin = end.timeIntervalSinceNow / 60
         let allowed = ReturnBudget.allowedRadiusM(remainingMin: remainingMin, p: params.budget)
         let bias = ReturnBudget.homewardBias(distanceM: Geo.distanceM(p, h),
                                              allowedRadiusM: allowed,
                                              p: params.budget)
+        let context = String(format: "方向=%@ %.0f° 自宅まで=%.0fm 許容=%.0fm bias=%.2f",
+                             label(for: travel.source), heading, Geo.distanceM(p, h), allowed, bias)
         if let s = BearingSuggester.suggest(position: p, headingDeg: heading, home: h,
                                             grid: grid, homewardBias: bias,
                                             route: params.route, now: Date()) {
             synth?.play(.suggestion, pan: s.pan)
-            log("提案: \(label(for: s.direction))")
+            log("提案: \(label(for: s.direction)) [\(context)]")
+        } else {
+            // 「なぜ鳴らなかったか」を後から追えるようにする(直進が最良 or スコア不足)
+            logToFile("提案なし [\(context)]")
         }
     }
 
@@ -211,11 +255,20 @@ final class WalkSessionController: ObservableObject {
 
     private func playBeacon() {
         guard let p = location.position, let h = home else { return }
-        let heading = location.headingDeg ?? 0
         let bearingHome = Geo.bearingDeg(from: p, to: h)
-        let rel = Geo.angularDiffDeg(bearingHome, heading)
+        guard let travel = TravelDirection.resolve(location.motionFix(), params: params.location) else {
+            // 進行方向が不明なときは左右を付けない(誤った定位を出すより中央で鳴らす)
+            noteDirectionUnavailable()
+            synth?.play(.homeBeacon)
+            return
+        }
+        noteDirectionAvailable()
+        let rel = Geo.angularDiffDeg(bearingHome, travel.deg)
         let pan = Float(sin(rel * .pi / 180))
         synth?.play(.homeBeacon, pan: pan)
+        logToFile(String(format: "ビーコン 距離=%.0fm 自宅方位=%.0f° 進行=%.0f°(%@) pan=%.2f 間隔=%.1fs",
+                         Geo.distanceM(p, h), bearingHome, travel.deg,
+                         label(for: travel.source), pan, beaconInterval()))
     }
 
     private func beaconInterval() -> TimeInterval {
@@ -246,12 +299,81 @@ final class WalkSessionController: ObservableObject {
     }
 
     private func onHeadSample(_ s: HeadSample) {
+        accumulateMotionDiagnostics(s)
         guard state == .promptingReturn else { return }
         switch detector.ingest(s) {
-        case .nod: apply(.nod)
-        case .shake: apply(.shake)
-        case nil: break
+        case .nod:
+            log("うなずきを検出")
+            apply(.nod)
+        case .shake:
+            log("首振りを検出")
+            apply(.shake)
+        case nil:
+            break
         }
+    }
+
+    // MARK: - モーション受信の計測
+
+    private var diagCount = 0
+    private var diagPitchMin = Double.infinity
+    private var diagPitchMax = -Double.infinity
+    private var diagYawMin = Double.infinity
+    private var diagYawMax = -Double.infinity
+    private var diagWindowStart: TimeInterval?
+    private var diagYawPrevRaw: Double?
+    private var diagYawOffset = 0.0
+
+    /// 一定間隔でサンプリング頻度と実測振幅をまとめる。
+    /// 「サンプルが届いていない」のか「振幅が閾値に届いていない」のかを切り分けるための計測。
+    private func accumulateMotionDiagnostics(_ s: HeadSample) {
+        if diagWindowStart == nil { diagWindowStart = s.time }
+        diagCount += 1
+        diagPitchMin = min(diagPitchMin, s.pitchDeg)
+        diagPitchMax = max(diagPitchMax, s.pitchDeg)
+
+        // yaw は ±180° で折り返すため、検出器と同じく連続値に直してから振幅を取る
+        if let prev = diagYawPrevRaw {
+            let d = s.yawDeg - prev
+            if d > 180 {
+                diagYawOffset -= 360
+            } else if d < -180 {
+                diagYawOffset += 360
+            }
+        }
+        diagYawPrevRaw = s.yawDeg
+        let yaw = s.yawDeg + diagYawOffset
+        diagYawMin = min(diagYawMin, yaw)
+        diagYawMax = max(diagYawMax, yaw)
+
+        guard let start = diagWindowStart,
+              s.time - start >= params.gesture.diagnosticsIntervalSec else { return }
+
+        let elapsed = s.time - start
+        let hz = elapsed > 0 ? Double(diagCount) / elapsed : 0
+        let pitchRange = diagPitchMax - diagPitchMin
+        let yawRange = diagYawMax - diagYawMin
+        motionStatusLine = String(format: "モーション %.0f Hz / pitch 振幅 %.1f°(閾値 %.0f) / yaw 振幅 %.1f°(閾値 %.0f)",
+                                  hz, pitchRange, params.gesture.nodPitchThresholdDeg * 2,
+                                  yawRange, params.gesture.shakeYawThresholdDeg * 2)
+        if state == .promptingReturn {
+            logToFile(motionStatusLine)
+        } else if state != .idle {
+            // 応答待ち以外(主に歩行中)は、検出に必要な振幅の一定割合を超えた時だけ残す。
+            // 「あと少しで誤検出だった」動きを集め、閾値を下げられる余地の判断材料にする
+            let ratio = params.gesture.diagnosticsReportRatio
+            if pitchRange >= params.gesture.nodPitchThresholdDeg * 2 * ratio
+                || yawRange >= params.gesture.shakeYawThresholdDeg * 2 * ratio {
+                logToFile("誤検出候補 \(motionStatusLine)")
+            }
+        }
+
+        diagCount = 0
+        diagPitchMin = .infinity
+        diagPitchMax = -.infinity
+        diagYawMin = .infinity
+        diagYawMax = -.infinity
+        diagWindowStart = s.time
     }
 
     // MARK: - 表示・ログ
@@ -279,7 +401,30 @@ final class WalkSessionController: ObservableObject {
         if let end = sessionEnd {
             parts.append("残り \(max(0, Int(end.timeIntervalSinceNow / 60))) 分")
         }
+        // 実機テストで「いま左右の定位が何を基準にしているか」を確認するために表示する
+        let travel = TravelDirection.resolve(location.motionFix(), params: params.location)
+        parts.append("方向: \(travel.map { label(for: $0.source) } ?? "不明")")
         statusLine = parts.joined(separator: " / ")
+    }
+
+    /// 進行方向が取れずに音を控えたことを 1 度だけ記録する(25 秒ごとの連投を避ける)
+    private func noteDirectionUnavailable() {
+        guard !directionUnavailableLogged else { return }
+        directionUnavailableLogged = true
+        log("進行方向が取得できません(歩き出すと再開します)")
+    }
+
+    private func noteDirectionAvailable() {
+        guard directionUnavailableLogged else { return }
+        directionUnavailableLogged = false
+        log("進行方向を取得しました")
+    }
+
+    private func label(for s: DirectionSource) -> String {
+        switch s {
+        case .course: "移動方向"
+        case .compass: "端末コンパス"
+        }
     }
 
     private func label(for d: RelativeDirection) -> String {
@@ -298,6 +443,22 @@ final class WalkSessionController: ObservableObject {
         eventLog.append("\(f.string(from: Date())) \(message)")
         if eventLog.count > 50 {
             eventLog.removeFirst(eventLog.count - 50)
+        }
+        logToFile(message)
+    }
+
+    /// 画面には出さずファイルにだけ残す(頻度が高く、閾値調整に必要な観測値)
+    private func logToFile(_ message: String) {
+        fieldLog.append(state: stateKey, position: location.position, message: message)
+    }
+
+    private var stateKey: String {
+        switch state {
+        case .idle: "idle"
+        case .wandering: "wandering"
+        case .promptingReturn: "promptingReturn"
+        case .returning: "returning"
+        case .arrived: "arrived"
         }
     }
 }

@@ -29,6 +29,9 @@ struct ContentView: View {
                 Section("セッション") {
                     Text(stateLabel).font(.headline)
                     Text(controller.statusLine).font(.caption)
+                    Text(controller.motionStatusLine)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
                     if controller.state == .idle || controller.state == .arrived {
                         Button("散歩を開始") {
                             controller.start()
@@ -44,6 +47,34 @@ struct ContentView: View {
                     Button("時間到来を発火") { controller.debugTimeUp() }
                     Button("うなずきを発火(帰路開始)") { controller.debugNod() }
                     Button("首振りを発火(延長)") { controller.debugShake() }
+                }
+
+                Section("earcon の試聴") {
+                    Button("提案音(左)") { controller.debugPlay(.suggestion, pan: -1) }
+                    Button("提案音(右)") { controller.debugPlay(.suggestion, pan: 1) }
+                    Button("時間到来") { controller.debugPlay(.timeUpPrompt) }
+                    Button("帰路の確認音") { controller.debugPlay(.returnAck) }
+                    Button("帰路ビーコン") { controller.debugPlay(.homeBeacon) }
+                    Button("到着音") { controller.debugPlay(.arrival) }
+                }
+
+                Section("フィールドログ") {
+                    if let url = controller.fieldLogURL {
+                        ShareLink(item: url) {
+                            Label("ログを書き出す", systemImage: "square.and.arrow.up")
+                        }
+                        Button("ログを消去", role: .destructive) {
+                            controller.clearFieldLog()
+                        }
+                    } else {
+                        Text("まだ記録がありません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("提案・ビーコン・ジェスチャ検出を端末内のファイルに追記します(送信しません)。"
+                         + "Finder の「iPhone > ファイル」からも取り出せます")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("イベントログ") {

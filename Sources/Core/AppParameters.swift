@@ -9,6 +9,7 @@ public struct AppParameters: Codable, Equatable {
     public var route: Route
     public var gesture: Gesture
     public var audio: Audio
+    public var location: Location
 
     public struct Session: Codable, Equatable {
         public var defaultDurationMin: Double
@@ -37,12 +38,28 @@ public struct AppParameters: Codable, Equatable {
         public var excludedFamiliarity: Double
     }
 
+    public struct Location: Codable, Equatable {
+        /// この速度未満では CLLocation.course を信用しない [m/s]
+        public var minSpeedForCourseMPerS: Double
+        /// course の許容誤差 [deg]。これを超える精度の値は使わない
+        public var maxCourseAccuracyDeg: Double
+        /// 位置更新からこの秒数を超えた course は使わない [sec]
+        public var maxFixAgeSec: Double
+        /// course が使えないとき端末コンパスへ退避するか
+        public var allowCompassFallback: Bool
+    }
+
     public struct Gesture: Codable, Equatable {
         public var nodPitchThresholdDeg: Double
         public var shakeYawThresholdDeg: Double
         public var minReversals: Int
         public var windowSec: Double
         public var refractorySec: Double
+        /// モーション受信状況(サンプリング頻度・実測振幅)を集計して表示・記録する間隔 [sec]
+        public var diagnosticsIntervalSec: Double
+        /// 応答待ち以外の状態で振幅を記録する下限(検出に必要な振幅に対する比)。
+        /// 歩行中に「あと少しで誤検出」だった動きだけを拾い、ログを埋め尽くさないための係数
+        public var diagnosticsReportRatio: Double
     }
 
     public struct Audio: Codable, Equatable {

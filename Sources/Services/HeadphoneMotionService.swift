@@ -5,18 +5,54 @@ import CoreMotion
 /// AirPods(第3世代 / Pro / Max 等、モーションセンサー搭載モデル)装着時のみ有効。
 /// シミュレータおよび非対応イヤホンでは isAvailable = false になるため、
 /// ContentView のデバッグボタンで nod / shake を代替発火できる。
-final class HeadphoneMotionService {
+///
+/// セッション開始時に未接続でも、後から AirPods を装着した時点で更新を開始する
+/// (デリゲートの接続通知で再試行する)。
+final class HeadphoneMotionService: NSObject, CMHeadphoneMotionManagerDelegate {
     private let manager = CMHeadphoneMotionManager()
+    private var wantsUpdates = false
 
     /// メインスレッドで呼ばれる
     var onSample: ((HeadSample) -> Void)?
+    /// 接続状態が変わったとき(true = 装着・接続)
+    var onConnectionChange: ((Bool) -> Void)?
+
+    override init() {
+        super.init()
+        manager.delegate = self
+    }
 
     var isAvailable: Bool {
         manager.isDeviceMotionAvailable
     }
 
+    var isActive: Bool {
+        manager.isDeviceMotionActive
+    }
+
+    /// モーション利用の許可状態(未許可だと更新が一切届かない)
+    var authorizationLabel: String {
+        switch CMHeadphoneMotionManager.authorizationStatus() {
+        case .authorized: "許可"
+        case .denied: "拒否"
+        case .restricted: "制限"
+        case .notDetermined: "未確認"
+        @unknown default: "不明"
+        }
+    }
+
     func start() {
-        guard manager.isDeviceMotionAvailable, !manager.isDeviceMotionActive else { return }
+        wantsUpdates = true
+        startIfPossible()
+    }
+
+    func stop() {
+        wantsUpdates = false
+        manager.stopDeviceMotionUpdates()
+    }
+
+    private func startIfPossible() {
+        guard wantsUpdates, manager.isDeviceMotionAvailable, !manager.isDeviceMotionActive else { return }
         manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
             guard let m = motion else { return }
             let sample = HeadSample(
@@ -28,7 +64,17 @@ final class HeadphoneMotionService {
         }
     }
 
-    func stop() {
-        manager.stopDeviceMotionUpdates()
+    // MARK: - CMHeadphoneMotionManagerDelegate
+
+    func headphoneMotionManagerDidConnect(_ manager: CMHeadphoneMotionManager) {
+        onConnectionChange?(true)
+        startIfPossible()
+    }
+
+    func headphoneMotionManagerDidDisconnect(_ manager: CMHeadphoneMotionManager) {
+        // こちらから停止した場合も通知が来るため、セッション終了時に
+        // 「ヘッドフォンが外れました」と誤記録しないよう抑制する
+        guard wantsUpdates else { return }
+        onConnectionChange?(false)
     }
 }
