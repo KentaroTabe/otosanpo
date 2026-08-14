@@ -9,5 +9,14 @@ if ! command -v xcodegen > /dev/null 2>&1; then
   exit 1
 fi
 
+if [ ! -f Support/Signing.xcconfig ]; then
+  cp Support/Signing.example.xcconfig Support/Signing.xcconfig
+  echo "Support/Signing.xcconfig を作成しました(Team ID は未設定)。"
+fi
+
 xcodegen generate
-echo "OtoSanpo.xcodeproj を生成しました。Xcode で開いて Signing の Team を設定してください。"
+echo "OtoSanpo.xcodeproj を生成しました。"
+
+if ! grep -qE '^DEVELOPMENT_TEAM[[:space:]]*=[[:space:]]*[A-Z0-9]{10}[[:space:]]*$' Support/Signing.xcconfig; then
+  echo "実機ビルドには Team ID が必要です。'scripts/set_team.sh' を実行してください。"
+fi

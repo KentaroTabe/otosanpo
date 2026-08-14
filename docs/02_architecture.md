@@ -19,12 +19,14 @@ App(SwiftUI・統合)──▶ Services(OSフレームワークのラッパ)─�
 | Core/VisitGrid.swift | 通過履歴グリッド(半減期つきカウンタ・除外フラグ) |
 | Core/ReturnBudget.swift | 帰宅予算モデル(許容半径・帰宅バイアス) |
 | Core/BearingSuggester.swift | 方向提案エンジン |
-| Core/HeadGestureDetector.swift | うなずき / 首振り検出 |
+| Core/HeadGestureDetector.swift | うなずき / 首振り検出(±180° の折り返し解除を含む) |
+| Core/TravelDirection.swift | 進行方向の決定(移動方向 course / 端末コンパスの選択) |
 | Core/WalkMachine.swift | 状態機械(純粋 reducer)と earcon 語彙 |
-| Services/LocationService.swift | CLLocationManager ラッパ |
+| Services/LocationService.swift | CLLocationManager ラッパ(位置・course・speed・コンパス) |
 | Services/HeadphoneMotionService.swift | CMHeadphoneMotionManager ラッパ |
 | Services/EarconSynth.swift | earcon のコード合成・再生 |
 | Services/Persistence.swift | 設定読込・グリッド / 自宅の永続化 |
+| Services/FieldLog.swift | フィールドテスト用の追記ログ(端末内 TSV) |
 | App/WalkSessionController.swift | reducer への入力供給と Effect 実行(タイマー・音・保存) |
 | App/ContentView.swift | セットアップ / デバッグ用 UI |
 
@@ -38,6 +40,8 @@ App(SwiftUI・統合)──▶ Services(OSフレームワークのラッパ)─�
 
 `OtoSanpo.xcodeproj` は XcodeGen による生成物であり、リポジトリに含めない。`project.yml` を編集して `scripts/setup.sh` で再生成する。ビルド・テストの実行方法は CLAUDE.md を参照。
 
+署名の Team ID は生成物に残せないため、`Support/Signing.xcconfig`(gitignore 対象、`Support/Signing.example.xcconfig` から生成)に置き、`project.yml` の `configFiles` で読み込む。`DEVELOPMENT_TEAM` を `project.yml` の `settings` に書くと xcconfig を上書きしてしまうため書かない。Team ID の確認は `scripts/show_teams.sh`(証明書の OU。**証明書名の括弧内は開発者 ID であって Team ID ではない**)、設定は `scripts/set_team.sh <TEAM_ID>`、ビルド確認は `scripts/build_device.sh`(接続中の実機を自動検出。無料アカウントではこの実機指定ビルドで初めてデバイスがチームに登録される)。
+
 ## シミュレータでの制約と代替
 
 | 実機依存機能 | シミュレータでの代替 |
@@ -48,4 +52,8 @@ App(SwiftUI・統合)──▶ Services(OSフレームワークのラッパ)─�
 
 ## 未確認事項
 
-本スキャフォールドは Xcode の無い環境で生成した。**初回ビルドは未実施**であり、コンパイルエラーが残っている可能性がある。最初の作業は `scripts/setup.sh` → Xcode でのビルドエラー解消。
+シミュレータ向けビルドとユニットテストは通っている(2026-08-14 時点)。未確認は以下。
+
+- **実機ビルド**: Apple ID 未登録のため署名証明書がなく、`scripts/build_device.sh` は Team ID 設定待ち
+- **実機動作**: 位置情報・AirPods モーション・音声出力は一度も検証していない
+- **バックグラウンド動作**: 画面消灯・ポケット収納時に `CMHeadphoneMotionManager` の更新が続くか、Timer が動き続けるかは未検証。ここが崩れるとポケット運用の前提が成立しない

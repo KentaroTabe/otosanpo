@@ -5,11 +5,19 @@ options:
     iOS: "17.0"
   createIntermediateGroups: true
 
+# DEVELOPMENT_TEAM は個人固有のため xcconfig 側に置く(この生成物は毎回作り直されるため、
+# Xcode の GUI で設定しても setup.sh のたびに消える)。実体は Support/Signing.xcconfig。
+configFiles:
+  Debug: Support/Signing.xcconfig
+  Release: Support/Signing.xcconfig
+
 settings:
   base:
     SWIFT_VERSION: "5.9"
     TARGETED_DEVICE_FAMILY: "1"
     GENERATE_INFOPLIST_FILE: NO
+    CODE_SIGN_STYLE: Automatic
+    # DEVELOPMENT_TEAM はここに書かない(ここの値が xcconfig を上書きしてしまうため)
 
 targets:
   OtoSanpo:
@@ -34,6 +42,9 @@ targets:
         NSMotionUsageDescription: >-
           うなずき・首振りの応答を検出するため、AirPods のモーションデータを使用します。
         ITSAppUsesNonExemptEncryption: false
+        # フィールドログ(Documents)を Finder / Files アプリから取り出せるようにする
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
 
   OtoSanpoTests:
     type: bundle.unit-test

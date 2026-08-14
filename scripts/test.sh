@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # 使い方: scripts/test.sh [シミュレータ名]
-# 例:     scripts/test.sh "iPhone 16"
+# 例:     scripts/test.sh "iPhone 17"
 # ログは logs/test.log に出力し、結果サマリのみ表示する
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SIM="${1:-iPhone 16}"
+SIM="${1:-iPhone 17}"
 mkdir -p logs
 LOG=logs/test.log
 

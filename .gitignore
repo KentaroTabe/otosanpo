@@ -1,6 +1,8 @@
 .DS_Store
+Support/Signing.xcconfig
 logs/
 build/
 DerivedData/
 *.xcodeproj
 xcuserdata/
+field-logs/
