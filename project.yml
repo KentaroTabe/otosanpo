@@ -1,0 +1,60 @@
+name: OtoSanpo
+options:
+  bundleIdPrefix: dev.otosanpo
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "1"
+    GENERATE_INFOPLIST_FILE: NO
+
+targets:
+  OtoSanpo:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: config/parameters.json
+        buildPhase: resources
+    info:
+      path: Support/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIBackgroundModes: [audio, location]
+        NSLocationWhenInUseUsageDescription: >-
+          散歩中の現在地から、寄り道の提案と帰路の方向案内を行うために使用します。
+          位置の履歴は端末内にのみ保存され、外部に送信されません。
+        NSLocationAlwaysAndWhenInUseUsageDescription: >-
+          ポケットに入れたままでも案内を続けるため、バックグラウンドでも位置情報を使用します。
+          履歴は端末内にのみ保存されます。
+        NSMotionUsageDescription: >-
+          うなずき・首振りの応答を検出するため、AirPods のモーションデータを使用します。
+        ITSAppUsesNonExemptEncryption: false
+
+  OtoSanpoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: OtoSanpo
+
+schemes:
+  OtoSanpo:
+    build:
+      targets:
+        OtoSanpo: all
+        OtoSanpoTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - OtoSanpoTests
