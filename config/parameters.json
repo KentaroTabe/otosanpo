@@ -29,10 +29,10 @@
     "min_speed_for_course_m_per_s": 0.7,
     "max_course_accuracy_deg": 45,
     "max_fix_age_sec": 10,
-    "allow_compass_fallback": true
+    "allow_compass_fallback": false
   },
   "gesture": {
-    "nod_pitch_threshold_deg": 10,
+    "nod_pitch_threshold_deg": 8,
     "shake_yaw_threshold_deg": 12,
     "min_reversals": 2,
     "window_sec": 1.6,

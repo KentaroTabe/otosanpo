@@ -60,6 +60,12 @@ NR == 1 && $1 == "time" { next }
     y = numafter(msg, "yaw 振幅 ")
     if (p > nearPitchMax) nearPitchMax = p
     if (y > nearYawMax) nearYawMax = y
+    # 閾値 T の検出条件は「振幅 > 2T」。候補となる T ごとに、歩行中に何回
+    # 条件を満たしたか(= 検出を常時有効にしたら何回誤検出したか)を数える
+    for (t = 5; t <= 14; t++) {
+      if (p > 2 * t) nearPitchOver[t]++
+      if (y > 2 * t) nearYawOver[t]++
+    }
     nearLines[++nNearShown] = hhmmss($1) "  " msg
   } else if ($2 == "promptingReturn" && index(msg, "モーション ") == 1) {
     prompt[++nPrompt] = hhmmss($1) "  " msg
@@ -117,6 +123,14 @@ END {
 
   section("歩行中の誤検出候補(閾値を下げられる余地)")
   printf "  件数=%d / 最大 pitch 振幅=%.1f° / 最大 yaw 振幅=%.1f°\n", nNear, nearPitchMax, nearYawMax
+  if (nNear > 0) {
+    print "  閾値を下げた場合に歩行中の動きが検出条件(振幅 > 閾値 x2)を満たす回数:"
+    print "    閾値   pitch(うなずき)  yaw(首振り)"
+    for (t = 14; t >= 5; t--) {
+      printf "    ±%2d°        %5d 回        %5d 回\n", t, nearPitchOver[t], nearYawOver[t]
+    }
+    print "  ※ 記録は閾値の 0.7 倍を超えた区間だけ。それ未満の分布はこのログには無い"
+  }
   dump(nearLines, nNearShown, 20)
 
   section("帰路")
