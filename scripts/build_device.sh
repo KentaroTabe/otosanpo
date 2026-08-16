@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # 使い方:
-#   scripts/build_device.sh           接続中の iOS 実機へビルド → インストール → 起動
+#   scripts/build_device.sh           接続中の iOS 実機向けにビルドする
 #   scripts/build_device.sh <UDID>    デバイスを明示指定
 #
+# ビルドのみ。端末へのインストールと起動は Xcode から手動で行う
+# (このスクリプトが実機を勝手に操作しないようにするため)。
 # ログは logs/build_device.log に出力し、失敗時のみ末尾を表示する。
 # 無料(Personal Team)アカウントでは、実機を指定してビルドした時に初めてデバイスが
 # チームへ登録され、プロビジョニングプロファイルが作られる。generic 指定では登録されない。
-#
-# デバッガを繋がずに起動するので、この後 USB を抜いてもアプリは動き続ける。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BUNDLE_ID=dev.otosanpo.OtoSanpo
 DERIVED=build
 APP="$DERIVED/Build/Products/Debug-iphoneos/OtoSanpo.app"
 
@@ -42,14 +41,5 @@ if ! xcodebuild -project OtoSanpo.xcodeproj -scheme OtoSanpo \
   exit 1
 fi
 echo "ビルド成功(署名 OK)"
-
-if [ ! -d "$APP" ]; then
-  echo "ビルド生成物が見つかりません: $APP" >&2
-  exit 1
-fi
-
-xcrun devicectl device install app --device "$UDID" "$APP" >> "$LOG" 2>&1
-echo "インストール完了"
-
-xcrun devicectl device process launch --device "$UDID" "$BUNDLE_ID" >> "$LOG" 2>&1
-echo "起動しました(この後 USB を抜いても動作します)"
+echo "生成物: $APP"
+echo "端末へのインストールは Xcode から行ってください。"

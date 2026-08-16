@@ -29,6 +29,7 @@ final class WalkSessionController: ObservableObject {
 
     private var extensionsUsed = 0
     private var directionUnavailableLogged = false
+    private var lastSuggestionPoint: GeoPoint?
     private var sessionEnd: Date?
     private var ackEnd: Date?
     private var suggestionTimer: Timer?
@@ -98,6 +99,7 @@ final class WalkSessionController: ObservableObject {
         }
         extensionsUsed = 0
         ackEnd = nil
+        lastSuggestionPoint = nil
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
@@ -225,6 +227,12 @@ final class WalkSessionController: ObservableObject {
               let p = location.position,
               let h = home,
               let end = sessionEnd else { return }
+        // 前回提案した地点からほとんど動いていないなら評価しない。
+        // 立ち止まっている間や同じ交差点で繰り返し鳴らさないため
+        if let last = lastSuggestionPoint,
+           Geo.distanceM(last, p) < params.route.suggestionMinTravelM {
+            return
+        }
         let fix = location.motionFix()
         guard let travel = TravelDirection.resolve(fix, params: params.location) else {
             noteDirectionUnavailable()
@@ -245,6 +253,7 @@ final class WalkSessionController: ObservableObject {
                                             grid: grid, homewardBias: bias,
                                             route: params.route, now: Date()) {
             synth?.play(.suggestion, pan: s.pan)
+            lastSuggestionPoint = p
             log("提案: \(label(for: s.direction)) [\(context)]")
         } else {
             // 「なぜ鳴らなかったか」を後から追えるようにする(直進が最良 or スコア不足)
@@ -260,6 +269,9 @@ final class WalkSessionController: ObservableObject {
         if let ack = ackEnd, Date() < ack {
             synth?.play(.returnAck)
             interval = params.audio.returnAckRepeatIntervalSec
+            // 8 秒毎に 60 秒間という周期を後から検証できるようにする
+            logToFile(String(format: "帰路確認音 残り=%.0fs 間隔=%.1fs",
+                             ack.timeIntervalSinceNow, interval))
         } else {
             playBeacon()
             interval = beaconInterval()

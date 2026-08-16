@@ -36,6 +36,10 @@ public struct AppParameters: Codable, Equatable {
         public var sectorRadiusM: Double
         public var suggestionMinScore: Double
         public var excludedFamiliarity: Double
+        /// 直進のスコアをこの差以上上回った時だけ提案する(僅差で曲がらせない)
+        public var suggestionMarginOverStraight: Double
+        /// 前回提案した地点からこの距離以上進むまで、次の提案を出さない [m]
+        public var suggestionMinTravelM: Double
     }
 
     public struct Location: Codable, Equatable {

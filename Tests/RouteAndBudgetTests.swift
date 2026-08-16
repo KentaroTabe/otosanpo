@@ -57,7 +57,8 @@ final class VisitGridTests: XCTestCase {
         var g = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
         let route = AppParameters.Route(
             cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
-            sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8)
+            sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
+            suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30)
         let north = Geo.destination(from: origin, bearingDeg: 0, distanceM: 100)
         let now = Date(timeIntervalSince1970: 0)
         g.recordVisit(at: north, date: now)
@@ -73,7 +74,8 @@ final class BearingSuggesterTests: XCTestCase {
     private let origin = GeoPoint(latitude: 35.0, longitude: 137.0)
     private let route = AppParameters.Route(
         cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
-        sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8)
+        sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
+        suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30)
 
     func testAllNovelPrefersStraightAndStaysSilent() {
         // 全方向が未踏なら最良は直進 → 直進に音は出さない設計なので nil
@@ -100,5 +102,33 @@ final class BearingSuggesterTests: XCTestCase {
                                          route: route, now: now)
         XCTAssertEqual(s?.direction, .right90)
         XCTAssertEqual(s?.pan ?? 0, 1.0, accuracy: 0.01)
+    }
+
+    func testNarrowMarginOverStraightStaysSilent() {
+        // 前方をわずかに通っただけ(直進と横のスコア差が小さい)なら鳴らさない。
+        // 道の有無を知らないため、僅差で曲がらせると曲がれない場所で鳴ることになる
+        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        let now = Date(timeIntervalSince1970: 0)
+        let north = Geo.destination(from: origin, bearingDeg: 0, distanceM: 100)
+        grid.recordVisit(at: north, date: now)
+        let home = Geo.destination(from: origin, bearingDeg: 180, distanceM: 300)
+
+        // この配置では 直進 novelty = 1/(1+1) = 0.5、左右は未踏で 1.0 → 差はちょうど 0.5
+        let narrow = AppParameters.Route(
+            cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
+            sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
+            suggestionMarginOverStraight: 0.6, suggestionMinTravelM: 30)
+        XCTAssertNil(BearingSuggester.suggest(position: origin, headingDeg: 0, home: home,
+                                              grid: grid, homewardBias: 0,
+                                              route: narrow, now: now))
+
+        // 同じ状況でも差の要求を下げれば鳴る(閾値だけの違いであることを確かめる)
+        let loose = AppParameters.Route(
+            cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
+            sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
+            suggestionMarginOverStraight: 0.4, suggestionMinTravelM: 30)
+        XCTAssertNotNil(BearingSuggester.suggest(position: origin, headingDeg: 0, home: home,
+                                                 grid: grid, homewardBias: 0,
+                                                 route: loose, now: now))
     }
 }

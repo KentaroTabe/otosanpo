@@ -21,7 +21,9 @@
     "sector_width_deg": 60,
     "sector_radius_m": 250,
     "suggestion_min_score": 0.15,
-    "excluded_familiarity": 8.0
+    "excluded_familiarity": 8.0,
+    "suggestion_margin_over_straight": 0.05,
+    "suggestion_min_travel_m": 30
   },
   "location": {
     "min_speed_for_course_m_per_s": 0.7,
