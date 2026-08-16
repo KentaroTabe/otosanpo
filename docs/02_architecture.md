@@ -40,7 +40,7 @@ App(SwiftUI・統合)──▶ Services(OSフレームワークのラッパ)─�
 
 `OtoSanpo.xcodeproj` は XcodeGen による生成物であり、リポジトリに含めない。`project.yml` を編集して `scripts/setup.sh` で再生成する。ビルド・テストの実行方法は CLAUDE.md を参照。
 
-署名の Team ID は生成物に残せないため、`Support/Signing.xcconfig`(gitignore 対象、`Support/Signing.example.xcconfig` から生成)に置き、`project.yml` の `configFiles` で読み込む。`DEVELOPMENT_TEAM` を `project.yml` の `settings` に書くと xcconfig を上書きしてしまうため書かない。Team ID の確認は `scripts/show_teams.sh`(証明書の OU。**証明書名の括弧内は開発者 ID であって Team ID ではない**)、設定は `scripts/set_team.sh <TEAM_ID>`、ビルド確認は `scripts/build_device.sh`(接続中の実機を自動検出。無料アカウントではこの実機指定ビルドで初めてデバイスがチームに登録される)。
+署名の Team ID は生成物に残せないため、`Support/Signing.xcconfig`(gitignore 対象、`Support/Signing.example.xcconfig` から生成)に置き、`project.yml` の `configFiles` で読み込む。`DEVELOPMENT_TEAM` を `project.yml` の `settings` に書くと xcconfig を上書きしてしまうため書かない。Team ID の確認は `scripts/show_teams.sh`(証明書の OU。**証明書名の括弧内は開発者 ID であって Team ID ではない**)、設定は `scripts/set_team.sh <TEAM_ID>`、実機への配備は `scripts/build_device.sh`(接続中の実機を自動検出し、ビルド → インストール → 起動まで行う。無料アカウントではこの実機指定ビルドで初めてデバイスがチームに登録される)。
 
 ## シミュレータでの制約と代替
 

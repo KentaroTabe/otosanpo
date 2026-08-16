@@ -5,7 +5,7 @@
 ## ビルド・テスト
 
 - `OtoSanpo.xcodeproj` は **XcodeGen による生成物**。直接編集せず、`project.yml` を編集して `scripts/setup.sh` で再生成する
-- ビルド: `scripts/build.sh`(シミュレータ) / `scripts/build_device.sh`(実機・署名確認)
+- ビルド: `scripts/build.sh`(シミュレータ) / `scripts/build_device.sh`(実機へビルド → インストール → 起動。デバッガを繋がないので USB を抜いても動作する)
 - 署名: Team ID は `Support/Signing.xcconfig`(gitignore 対象)に置く。Team ID の確認は `scripts/show_teams.sh`(**証明書名の括弧内は開発者 ID であり Team ID ではない。OU が Team ID**)、設定は `scripts/set_team.sh <TEAM_ID>`。`project.yml` の `settings` に `DEVELOPMENT_TEAM` を書かない(xcconfig を上書きするため)
 - 無料アカウントでは、実機を UDID 指定してビルドした時に初めてデバイスがチームに登録される。`generic/platform=iOS` では登録されない
 - テスト: `scripts/test.sh [シミュレータ名]`(既定: `iPhone 17`。手元の Xcode にあるシミュレータ名に合わせて引数で指定)
