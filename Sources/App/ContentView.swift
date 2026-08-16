@@ -85,6 +85,13 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("音さんぽ")
+            .alert("操作できませんでした",
+                   isPresented: Binding(get: { controller.alertMessage != nil },
+                                        set: { if !$0 { controller.alertMessage = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(controller.alertMessage ?? "")
+            }
         }
     }
 

@@ -38,6 +38,14 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         manager.requestWhenInUseAuthorization()
     }
 
+    /// 画面を開いている間だけの取得。起動直後に呼び、自宅設定や状態表示に使う fix を先に用意する。
+    /// バックグラウンド更新は有効にしない(散歩していない間は前面にいる時だけ位置を使う)。
+    func startForeground() {
+        manager.startUpdatingLocation()
+        manager.startUpdatingHeading()
+    }
+
+    /// 散歩セッション用。ポケットに入れたままの追跡のためバックグラウンド更新を有効にする。
     func start() {
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true

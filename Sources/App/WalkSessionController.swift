@@ -15,6 +15,8 @@ final class WalkSessionController: ObservableObject {
     /// ヘッドフォンモーションの受信状況。検出できない原因の切り分けに使う
     @Published private(set) var motionStatusLine = "ヘッドフォンモーション: 未開始"
     @Published private(set) var eventLog: [String] = []
+    /// 操作が通らなかったことを画面で知らせる(nil で非表示)
+    @Published var alertMessage: String?
 
     let params: AppParameters
 
@@ -57,14 +59,18 @@ final class WalkSessionController: ObservableObject {
             }
         }
         location.requestPermission()
+        // 起動時から取得しておく。ボタンを押した時に fix が無くて失敗するのを避ける
+        location.startForeground()
     }
 
     // MARK: - UI から呼ばれる操作
 
     func setHomeHere() {
         guard let p = location.position else {
-            log("現在地が未取得です。少し待ってから再試行してください")
-            location.start()
+            // 失敗はイベントログだけでは気づけない。画面を止めて知らせる
+            alertMessage = "現在地をまだ取得できていません。空の見える場所で数秒待ってから、もう一度お試しください。"
+            log("自宅の設定に失敗(現在地が未取得)")
+            location.startForeground()
             return
         }
         home = p
@@ -75,7 +81,8 @@ final class WalkSessionController: ObservableObject {
     func start() {
         guard state == .idle || state == .arrived else { return }
         guard home != nil else {
-            log("先に自宅を設定してください")
+            alertMessage = "先に「自宅を現在地に設定」を押してください。帰路の基準になります。"
+            log("開始できません(自宅が未設定)")
             return
         }
         if synth == nil {
@@ -391,8 +398,13 @@ final class WalkSessionController: ObservableObject {
     }
 
     private func updateStatus() {
-        guard let p = location.position, let h = home else {
-            statusLine = "位置情報待ち"
+        // 「現在地が無い」のか「自宅が未設定」なのかを取り違えないよう分けて示す
+        guard let p = location.position else {
+            statusLine = "現在地を取得中…(取得できるまで自宅は設定できません)"
+            return
+        }
+        guard let h = home else {
+            statusLine = "現在地を取得しました。自宅を設定してください"
             return
         }
         let d = Geo.distanceM(p, h)

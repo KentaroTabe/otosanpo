@@ -53,6 +53,7 @@ score(dir)    = novelty(dir) − homewardBias × (自宅方位との角度差 / 
 
 - 位置履歴(VisitGrid)と自宅座標は**端末内にのみ保存**(Application Support / UserDefaults)。送信コードは存在しない
 - フィールドログ(`Documents/otosanpo-field-log.tsv`)は時刻・状態・座標・メッセージを追記する開発用の記録。端末内にのみ保存し、書き出すかどうかは利用者の操作(共有シート / Finder)に委ねる。ContentView から消去できる
+- 起動中は前面にいる間だけ位置を取得する(`startForeground`)。自宅設定やステータス表示に使う fix を先に用意するためで、**バックグラウンド更新は散歩セッション中のみ**有効にする
 - バックグラウンド位置利用中はステータスバーに明示(`showsBackgroundLocationIndicator = true`)
 - 権限文言にも「端末内にのみ保存」を明記(project.yml の Info properties)
 
