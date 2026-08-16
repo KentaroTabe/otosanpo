@@ -225,7 +225,8 @@ final class WalkSessionController: ObservableObject {
               let p = location.position,
               let h = home,
               let end = sessionEnd else { return }
-        guard let travel = TravelDirection.resolve(location.motionFix(), params: params.location) else {
+        let fix = location.motionFix()
+        guard let travel = TravelDirection.resolve(fix, params: params.location) else {
             noteDirectionUnavailable()
             return
         }
@@ -236,8 +237,10 @@ final class WalkSessionController: ObservableObject {
         let bias = ReturnBudget.homewardBias(distanceM: Geo.distanceM(p, h),
                                              allowedRadiusM: allowed,
                                              p: params.budget)
-        let context = String(format: "方向=%@ %.0f° 自宅まで=%.0fm 許容=%.0fm bias=%.2f",
-                             label(for: travel.source), heading, Geo.distanceM(p, h), allowed, bias)
+        // 端末コンパスへ退避した理由を後から特定できるよう、判定に使った生値も残す
+        let context = String(format: "方向=%@ %.0f° 自宅まで=%.0fm 許容=%.0fm bias=%.2f [%@]",
+                             label(for: travel.source), heading, Geo.distanceM(p, h), allowed, bias,
+                             summary(of: fix))
         if let s = BearingSuggester.suggest(position: p, headingDeg: heading, home: h,
                                             grid: grid, homewardBias: bias,
                                             route: params.route, now: Date()) {
@@ -270,7 +273,8 @@ final class WalkSessionController: ObservableObject {
     private func playBeacon() {
         guard let p = location.position, let h = home else { return }
         let bearingHome = Geo.bearingDeg(from: p, to: h)
-        guard let travel = TravelDirection.resolve(location.motionFix(), params: params.location) else {
+        let fix = location.motionFix()
+        guard let travel = TravelDirection.resolve(fix, params: params.location) else {
             // 進行方向が不明なときは左右を付けない(誤った定位を出すより中央で鳴らす)
             noteDirectionUnavailable()
             synth?.play(.homeBeacon)
@@ -280,9 +284,9 @@ final class WalkSessionController: ObservableObject {
         let rel = Geo.angularDiffDeg(bearingHome, travel.deg)
         let pan = Float(sin(rel * .pi / 180))
         synth?.play(.homeBeacon, pan: pan)
-        logToFile(String(format: "ビーコン 距離=%.0fm 自宅方位=%.0f° 進行=%.0f°(%@) pan=%.2f 間隔=%.1fs",
+        logToFile(String(format: "ビーコン 距離=%.0fm 自宅方位=%.0f° 進行=%.0f°(%@) pan=%.2f 間隔=%.1fs [%@]",
                          Geo.distanceM(p, h), bearingHome, travel.deg,
-                         label(for: travel.source), pan, beaconInterval()))
+                         label(for: travel.source), pan, beaconInterval(), summary(of: fix)))
     }
 
     private func beaconInterval() -> TimeInterval {
@@ -437,6 +441,16 @@ final class WalkSessionController: ObservableObject {
         guard directionUnavailableLogged else { return }
         directionUnavailableLogged = false
         log("進行方向を取得しました")
+    }
+
+    /// TravelDirection の判定材料。course が使われなかった理由の切り分けに使う
+    private func summary(of f: MotionFix) -> String {
+        func num(_ v: Double?, _ format: String) -> String {
+            guard let v else { return "-" }
+            return String(format: format, v)
+        }
+        return "course=\(num(f.courseDeg, "%.0f")) 速度=\(num(f.speedMps, "%.2f"))m/s"
+            + " course精度=\(num(f.courseAccuracyDeg, "%.0f")) 経過=\(num(f.ageSec, "%.1f"))s"
     }
 
     private func label(for s: DirectionSource) -> String {
