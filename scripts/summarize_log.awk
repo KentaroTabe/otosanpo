@@ -54,6 +54,12 @@ NR == 1 && $1 == "time" { next }
     nAck++
     if (nAck == 1) ackFirst = hhmmss($1)
     ackLast = hhmmss($1)
+  } else if (index(msg, "影検出") == 1) {
+    nShadow++
+    if (index(msg, "うなずき") > 0) nShadowNod++; else nShadowShake++
+    shadowLines[++nShadowShown] = hhmmss($1) "  [" $2 "] " msg
+  } else if (index(msg, "ビーコン(中央)") == 1) {
+    nBeaconCenter++
   } else if (index(msg, "誤検出候補") == 1) {
     nNear++
     p = numafter(msg, "pitch 振幅 ")
@@ -77,9 +83,21 @@ NR == 1 && $1 == "time" { next }
     events[++nEvent] = hhmmss($1) "  [" $2 "] " msg
   }
 
-  # 進行方向の取得元
-  if (index(msg, "移動方向") > 0) nCourse++
+  # 進行方向の取得元。保持値は「course が途切れていた区間」を意味するので分けて数える
+  if (index(msg, "移動方向(保持)") > 0) nHeld++
+  else if (index(msg, "移動方向") > 0) nCourse++
   else if (index(msg, "端末コンパス") > 0) nCompass++
+
+  # 位置の水平精度(方向の判定には使っていないが、位置がどれだけ確かかを見る)
+  if (index(msg, "水平精度=") > 0) {
+    acc = numafter(msg, "水平精度=")
+    if (acc >= 0) {
+      nAcc++
+      accSum += acc
+      if (nAcc == 1 || acc > accMax) accMax = acc
+      if (nAcc == 1 || acc < accMin) accMin = acc
+    }
+  }
 }
 
 function section(title) {
@@ -101,7 +119,14 @@ END {
   printf "状態別行数:"
   for (s in stateCount) printf " %s=%d", s, stateCount[s]
   printf "\n"
-  printf "進行方向の取得元: 移動方向=%d 端末コンパス=%d\n", nCourse, nCompass
+  printf "進行方向の取得元: 移動方向=%d 移動方向(保持)=%d 端末コンパス=%d\n",
+         nCourse, nHeld, nCompass
+  if (nAcc > 0) {
+    printf "位置の水平精度: 最良=%.0fm 平均=%.0fm 最悪=%.0fm(%d 件)\n",
+           accMin, accSum / nAcc, accMax, nAcc
+  } else {
+    print "位置の水平精度: 記録なし(この版では出していない)"
+  }
 
   section("状態遷移")
   dump(transitions, nTrans, 0)
@@ -121,6 +146,14 @@ END {
     dump(prompt, nPrompt, 60)
   }
 
+  section("影検出(応答待ち以外で検出器が反応した回数 = 誤検出の実測)")
+  if (nShadow == 0) {
+    print "  0 回。この閾値では歩行中に検出条件が成立しなかった"
+  } else {
+    printf "  %d 回(うなずき=%d / 首振り=%d)\n", nShadow, nShadowNod, nShadowShake
+    dump(shadowLines, nShadowShown, 20)
+  }
+
   section("歩行中の誤検出候補(閾値を下げられる余地)")
   printf "  件数=%d / 最大 pitch 振幅=%.1f° / 最大 yaw 振幅=%.1f°\n", nNear, nearPitchMax, nearYawMax
   if (nNear > 0) {
@@ -135,6 +168,7 @@ END {
 
   section("帰路")
   printf "  確認音=%d 回(%s 〜 %s)\n", nAck, (nAck ? ackFirst : "-"), (nAck ? ackLast : "-")
+  printf "  中央で鳴らした(左右なし)=%d 回\n", nBeaconCenter
   printf "  ビーコン=%d 回 / 自宅まで 最遠=%.0fm 最近=%.0fm / 平均間隔=%.1fs / 左右の切替=%d 回\n",
          nBeacon, beaconMaxD, beaconMinD, (nBeacon ? beaconSumIv / nBeacon : 0), nPanFlip
   printf "  以下は %d 回に 1 行の間引き\n", beaconStride

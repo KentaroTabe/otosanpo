@@ -26,6 +26,9 @@ final class WalkSessionController: ObservableObject {
     private var synth: EarconSynth?
     private var grid: VisitGrid
     private var detector: HeadGestureDetector
+    /// 応答待ち以外でも同じ判定を回し、結果を記録だけする検出器。
+    /// 動作には一切影響しない(docs/04「影検出」)
+    private var shadowDetector: HeadGestureDetector
 
     private var extensionsUsed = 0
     /// 直前まで有効だった course。course が一時的に無効になっても左右を出し続けるために保持する
@@ -46,6 +49,7 @@ final class WalkSessionController: ObservableObject {
         grid = GridStore.load(cellSizeM: params.route.cellSizeM,
                               halfLifeDays: params.route.visitHalfLifeDays)
         detector = HeadGestureDetector(params: params.gesture)
+        shadowDetector = HeadGestureDetector(params: params.gesture)
         home = HomeStore.load()
 
         location.$position
@@ -102,8 +106,9 @@ final class WalkSessionController: ObservableObject {
         extensionsUsed = 0
         ackEnd = nil
         lastSuggestionPoint = nil
-        // 前回の散歩の向きを持ち越さない
+        // 前回の散歩の向き・影検出の窓を持ち越さない
         lastGoodCourse = nil
+        shadowDetector = HeadGestureDetector(params: params.gesture)
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
@@ -337,16 +342,27 @@ final class WalkSessionController: ObservableObject {
 
     private func onHeadSample(_ s: HeadSample) {
         accumulateMotionDiagnostics(s)
-        guard state == .promptingReturn else { return }
-        switch detector.ingest(s) {
-        case .nod:
-            log("うなずきを検出")
-            apply(.nod)
-        case .shake:
-            log("首振りを検出")
-            apply(.shake)
-        case nil:
-            break
+
+        if state == .promptingReturn {
+            switch detector.ingest(s) {
+            case .nod:
+                log("うなずきを検出")
+                apply(.nod)
+            case .shake:
+                log("首振りを検出")
+                apply(.shake)
+            case nil:
+                break
+            }
+            return
+        }
+
+        // 応答待ち以外でも同じ判定を回し、記録だけする。
+        // 実際の応答は数秒で終わるため、その短い窓を狙って誤検出を観察するのは現実的でない。
+        // 散歩中ずっと影で回しておけば、閾値の誤検出率をテスト手順を変えずに数えられる
+        guard state == .wandering || state == .returning else { return }
+        if let g = shadowDetector.ingest(s) {
+            logToFile("影検出: \(g == .nod ? "うなずき" : "首振り")(動作には影響しない)")
         }
     }
 
@@ -489,6 +505,7 @@ final class WalkSessionController: ObservableObject {
         }
         return "course=\(num(f.courseDeg, "%.0f")) 速度=\(num(f.speedMps, "%.2f"))m/s"
             + " course精度=\(num(f.courseAccuracyDeg, "%.0f")) 経過=\(num(f.ageSec, "%.1f"))s"
+            + " 水平精度=\(num(f.horizontalAccuracyM, "%.0f"))m"
     }
 
     private func label(for s: DirectionSource) -> String {

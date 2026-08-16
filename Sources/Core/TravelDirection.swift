@@ -13,15 +13,19 @@ public struct MotionFix: Equatable {
     public var compassHeadingDeg: Double?
     /// 位置更新からの経過秒(nil = 不明)
     public var ageSec: Double?
+    /// CLLocation.horizontalAccuracy(m、負値は無効)。
+    /// 方向の判定には使わないが、「そもそも位置がどれだけ確かか」を後から見るために運ぶ
+    public var horizontalAccuracyM: Double?
 
     public init(courseDeg: Double? = nil, courseAccuracyDeg: Double? = nil,
                 speedMps: Double? = nil, compassHeadingDeg: Double? = nil,
-                ageSec: Double? = nil) {
+                ageSec: Double? = nil, horizontalAccuracyM: Double? = nil) {
         self.courseDeg = courseDeg
         self.courseAccuracyDeg = courseAccuracyDeg
         self.speedMps = speedMps
         self.compassHeadingDeg = compassHeadingDeg
         self.ageSec = ageSec
+        self.horizontalAccuracyM = horizontalAccuracyM
     }
 }
 

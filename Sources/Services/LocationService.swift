@@ -17,6 +17,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     private var courseAccuracyDeg: Double?
     private var speedMps: Double?
     private var lastFixDate: Date?
+    private var horizontalAccuracyM: Double?
 
     /// 現時点の推定材料をまとめて返す(経過秒は読み出し時に計算する)
     func motionFix(now: Date = Date()) -> MotionFix {
@@ -24,7 +25,8 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
                   courseAccuracyDeg: courseAccuracyDeg,
                   speedMps: speedMps,
                   compassHeadingDeg: headingDeg,
-                  ageSec: lastFixDate.map { now.timeIntervalSince($0) })
+                  ageSec: lastFixDate.map { now.timeIntervalSince($0) },
+                  horizontalAccuracyM: horizontalAccuracyM)
     }
 
     override init() {
@@ -72,6 +74,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         courseAccuracyDeg = l.courseAccuracy
         speedMps = l.speed
         lastFixDate = l.timestamp
+        horizontalAccuracyM = l.horizontalAccuracy
         position = GeoPoint(latitude: l.coordinate.latitude, longitude: l.coordinate.longitude)
     }
 
