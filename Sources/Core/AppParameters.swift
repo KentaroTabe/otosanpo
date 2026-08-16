@@ -49,6 +49,9 @@ public struct AppParameters: Codable, Equatable {
         public var maxCourseAccuracyDeg: Double
         /// 位置更新からこの秒数を超えた course は使わない [sec]
         public var maxFixAgeSec: Double
+        /// course が使えなくなってから、直前の有効な course を使い続ける上限 [sec]。
+        /// 0 でホールドなし
+        public var courseHoldSec: Double
         /// course が使えないとき端末コンパスへ退避するか
         public var allowCompassFallback: Bool
     }

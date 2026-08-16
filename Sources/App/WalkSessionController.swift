@@ -28,6 +28,8 @@ final class WalkSessionController: ObservableObject {
     private var detector: HeadGestureDetector
 
     private var extensionsUsed = 0
+    /// 直前まで有効だった course。course が一時的に無効になっても左右を出し続けるために保持する
+    private var lastGoodCourse: (deg: Double, at: Date)?
     private var directionUnavailableLogged = false
     private var lastSuggestionPoint: GeoPoint?
     private var sessionEnd: Date?
@@ -100,6 +102,8 @@ final class WalkSessionController: ObservableObject {
         extensionsUsed = 0
         ackEnd = nil
         lastSuggestionPoint = nil
+        // 前回の散歩の向きを持ち越さない
+        lastGoodCourse = nil
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
@@ -234,8 +238,8 @@ final class WalkSessionController: ObservableObject {
             return
         }
         let fix = location.motionFix()
-        guard let travel = TravelDirection.resolve(fix, params: params.location) else {
-            noteDirectionUnavailable()
+        guard let travel = currentTravel(fix) else {
+            noteDirectionUnavailable(fix)
             return
         }
         noteDirectionAvailable()
@@ -286,10 +290,13 @@ final class WalkSessionController: ObservableObject {
         guard let p = location.position, let h = home else { return }
         let bearingHome = Geo.bearingDeg(from: p, to: h)
         let fix = location.motionFix()
-        guard let travel = TravelDirection.resolve(fix, params: params.location) else {
-            // 進行方向が不明なときは左右を付けない(誤った定位を出すより中央で鳴らす)
-            noteDirectionUnavailable()
+        guard let travel = currentTravel(fix) else {
+            // 進行方向が不明なときは左右を付けない(誤った定位を出すより中央で鳴らす)。
+            // 中央で鳴った回数を数えられないと「左右が付かなすぎる」を測れないため記録する
+            noteDirectionUnavailable(fix)
             synth?.play(.homeBeacon)
+            logToFile(String(format: "ビーコン(中央) 距離=%.0fm [%@]",
+                             Geo.distanceM(p, h), summary(of: fix)))
             return
         }
         noteDirectionAvailable()
@@ -436,17 +443,36 @@ final class WalkSessionController: ObservableObject {
         if let end = sessionEnd {
             parts.append("残り \(max(0, Int(end.timeIntervalSinceNow / 60))) 分")
         }
-        // 実機テストで「いま左右の定位が何を基準にしているか」を確認するために表示する
-        let travel = TravelDirection.resolve(location.motionFix(), params: params.location)
+        // 実機テストで「いま左右の定位が何を基準にしているか」を確認するために表示する。
+        // 表示は副作用を持たせたくないので、保持値の更新は行わない
+        let held = lastGoodCourse.map {
+            HeldCourse(deg: $0.deg, ageSec: Date().timeIntervalSince($0.at))
+        }
+        let travel = TravelDirection.resolve(location.motionFix(), held: held, params: params.location)
         parts.append("方向: \(travel.map { label(for: $0.source) } ?? "不明")")
         statusLine = parts.joined(separator: " / ")
     }
 
-    /// 進行方向が取れずに音を控えたことを 1 度だけ記録する(25 秒ごとの連投を避ける)
-    private func noteDirectionUnavailable() {
+    /// 進行方向の解決と、有効だった course の保持をまとめて行う。
+    /// resolve は純粋関数のままにしたいので、保持はここ(Effect 側)の責務にする。
+    private func currentTravel(_ fix: MotionFix, now: Date = Date()) -> TravelDirectionFix? {
+        let held = lastGoodCourse.map {
+            HeldCourse(deg: $0.deg, ageSec: now.timeIntervalSince($0.at))
+        }
+        let travel = TravelDirection.resolve(fix, held: held, params: params.location)
+        if let travel, travel.source == .course {
+            lastGoodCourse = (deg: travel.deg, at: now)
+        }
+        return travel
+    }
+
+    /// 進行方向が取れずに音を控えたことを 1 度だけ記録する(25 秒ごとの連投を避ける)。
+    /// 「なぜ取れなかったか」が分からないと閾値を動かせないため、棄却理由と生値を添える。
+    private func noteDirectionUnavailable(_ fix: MotionFix) {
         guard !directionUnavailableLogged else { return }
         directionUnavailableLogged = true
-        log("進行方向が取得できません(歩き出すと再開します)")
+        let reason = TravelDirection.rejectionReason(fix, params: params.location) ?? "理由不明"
+        log("進行方向が取得できません(\(reason))[\(summary(of: fix))]")
     }
 
     private func noteDirectionAvailable() {
@@ -468,6 +494,7 @@ final class WalkSessionController: ObservableObject {
     private func label(for s: DirectionSource) -> String {
         switch s {
         case .course: "移動方向"
+        case .heldCourse: "移動方向(保持)"
         case .compass: "端末コンパス"
         }
     }
