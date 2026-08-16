@@ -80,10 +80,17 @@ final class WalkSessionController: ObservableObject {
 
     func start() {
         guard state == .idle || state == .arrived else { return }
-        guard home != nil else {
-            alertMessage = "先に「自宅を現在地に設定」を押してください。帰路の基準になります。"
-            log("開始できません(自宅が未設定)")
-            return
+        // 自宅が未設定のときだけ、出発点をそのまま自宅にして開始する(初回の 2 手間を 1 手に)。
+        // 設定済みの場合は上書きしない。出発点が自宅とは限らないため、更新は明示操作に限る
+        if home == nil {
+            guard let p = location.position else {
+                alertMessage = "現在地をまだ取得できていません。空の見える場所で数秒待ってから、もう一度お試しください。"
+                log("開始できません(現在地が未取得で自宅を決められない)")
+                return
+            }
+            home = p
+            HomeStore.save(p)
+            log("出発点を自宅として設定しました")
         }
         if synth == nil {
             synth = try? EarconSynth(audio: params.audio)

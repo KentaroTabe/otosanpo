@@ -9,9 +9,16 @@ struct ContentView: View {
         NavigationStack {
             Form {
                 Section("設定") {
-                    LabeledContent("自宅", value: controller.home == nil ? "未設定" : "設定済み")
-                    Button("自宅を現在地に設定") {
-                        controller.setHomeHere()
+                    if controller.home == nil {
+                        LabeledContent("自宅", value: "未設定")
+                        Text("散歩を開始すると、その場所を自宅として記録します")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        LabeledContent("自宅", value: "設定済み")
+                        Button("自宅を現在地に更新") {
+                            controller.setHomeHere()
+                        }
                     }
                     Stepper(value: $controller.durationMin,
                             in: controller.params.session.minDurationMin...controller.params.session.maxDurationMin,
@@ -27,13 +34,16 @@ struct ContentView: View {
                 }
 
                 Section("セッション") {
-                    Text(stateLabel).font(.headline)
+                    // 開始し忘れに気づけるよう、状態は他より大きく出す
+                    Text(stateLabel)
+                        .font(.title3.bold())
+                        .foregroundStyle(controller.state == .idle ? .secondary : .primary)
                     Text(controller.statusLine).font(.caption)
                     Text(controller.motionStatusLine)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                     if controller.state == .idle || controller.state == .arrived {
-                        Button("散歩を開始") {
+                        Button(controller.home == nil ? "ここを自宅にして散歩を開始" : "散歩を開始") {
                             controller.start()
                         }
                     } else {
