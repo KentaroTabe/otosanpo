@@ -41,6 +41,11 @@ final class WalkSessionController: ObservableObject {
     private var walkMetrics = GaitMetrics()
     private var returnMetrics: GaitMetrics?
     private var returnStart: (distanceM: Double, at: Date)?
+    /// ヘッドフォンの接続状態と、外している間に持ち越したプロンプト
+    private var headphonesConnected = false
+    private var promptPending = false
+    /// 直近のビーコンで鳴らした相対方位と時刻(方向が変わったら次を繰り上げるため)
+    private var lastBeacon: (relDeg: Double, at: Date)?
     private var suggestionTimer: Timer?
     private var beaconTimer: Timer?
     private var promptTimer: Timer?
@@ -65,9 +70,7 @@ final class WalkSessionController: ObservableObject {
             Task { @MainActor in self?.onHeadSample(s) }
         }
         motion.onConnectionChange = { [weak self] connected in
-            Task { @MainActor in
-                self?.log(connected ? "ヘッドフォンを検出しました" : "ヘッドフォンが外れました")
-            }
+            Task { @MainActor in self?.onHeadphoneConnectionChange(connected) }
         }
         location.requestPermission()
         // 起動時から取得しておく。ボタンを押した時に fix が無くて失敗するのを避ける
@@ -116,6 +119,8 @@ final class WalkSessionController: ObservableObject {
         walkMetrics = GaitMetrics()
         returnMetrics = nil
         returnStart = nil
+        promptPending = false
+        lastBeacon = nil
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
@@ -171,12 +176,21 @@ final class WalkSessionController: ObservableObject {
                                                  extensionsUsed: extensionsUsed,
                                                  params: params.session)
         state = next
+        // 応答待ちを抜けたら、保留していたプロンプトは用済み
+        if next != .promptingReturn { promptPending = false }
         for e in effects { run(e) }
     }
 
     private func run(_ effect: WalkEffect) {
         switch effect {
         case .play(let earcon):
+            // 会話などで AirPods を外している間はプロンプトを鳴らさず、再装着時に鳴らし直す。
+            // 応答待ちのまま待つ挙動は変えない(docs/01「応答待ち中に外している間は…」)
+            if earcon == .timeUpPrompt, !headphonesConnected {
+                promptPending = true
+                log("ヘッドフォン未装着のためプロンプトを保留します")
+                return
+            }
             synth?.play(earcon)
 
         case .startSuggestionLoop:
@@ -321,6 +335,7 @@ final class WalkSessionController: ObservableObject {
         let rel = Geo.angularDiffDeg(bearingHome, travel.deg)
         let pan = Float(sin(rel * .pi / 180))
         synth?.play(.homeBeacon, pan: pan)
+        lastBeacon = (relDeg: rel, at: Date())
         logToFile(String(format: "ビーコン 距離=%.0fm 自宅方位=%.0f° 進行=%.0f°(%@) pan=%.2f 間隔=%.1fs [%@]",
                          Geo.distanceM(p, h), bearingHome, travel.deg,
                          label(for: travel.source), pan, beaconInterval(), summary(of: fix)))
@@ -359,8 +374,19 @@ final class WalkSessionController: ObservableObject {
             logReturnMeasurements(now: now)
             apply(.reachedHome)
             log("到着しました")
+        } else if state == .returning {
+            advanceBeaconIfDirectionChanged(at: p, now: now)
         }
         updateStatus()
+    }
+
+    private func onHeadphoneConnectionChange(_ connected: Bool) {
+        headphonesConnected = connected
+        log(connected ? "ヘッドフォンを検出しました" : "ヘッドフォンが外れました")
+        guard connected, promptPending, state == .promptingReturn else { return }
+        promptPending = false
+        synth?.play(.timeUpPrompt)
+        log("再装着を検出したのでプロンプトを鳴らし直します")
     }
 
     private func onHeadSample(_ s: HeadSample) {
@@ -490,6 +516,25 @@ final class WalkSessionController: ObservableObject {
         let travel = TravelDirection.resolve(location.motionFix(), held: held, params: params.location)
         parts.append("方向: \(travel.map { label(for: $0.source) } ?? "不明")")
         statusLine = parts.joined(separator: " / ")
+    }
+
+    /// 角を曲がった直後は、次のビーコンを待たずに繰り上げて鳴らす。
+    /// 遠距離では間隔が最大 5 秒あり、曲がってから 1〜2 音ぶん古い方向を聞かされるため
+    /// (docs/03「ビーコンの距離・方向キュー」の実測課題)。
+    private func advanceBeaconIfDirectionChanged(at p: GeoPoint, now: Date) {
+        // 同意直後の確認音の最中は割り込まない
+        guard let ack = ackEnd, now >= ack else { return }
+        guard let h = home, let last = lastBeacon else { return }
+        guard now.timeIntervalSince(last.at) >= params.audio.beaconMinGapSec else { return }
+        let fix = location.motionFix(now: now)
+        guard let travel = currentTravel(fix, now: now) else { return }
+        let rel = Geo.angularDiffDeg(Geo.bearingDeg(from: p, to: h), travel.deg)
+        let change = abs(Geo.angularDiffDeg(rel, last.relDeg))
+        guard change >= params.audio.beaconDirectionChangeDeg else { return }
+        logToFile(String(format: "ビーコン繰り上げ 方向が %.0f° 変化(%.0f° → %.0f°)",
+                         change, last.relDeg, rel))
+        beaconTimer?.invalidate()
+        fireReturnTick()
     }
 
     /// 帰路の実測を残す。予算模型の 2 係数を実測値と並べて記録し、

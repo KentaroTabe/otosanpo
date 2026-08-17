@@ -84,6 +84,11 @@ public struct AppParameters: Codable, Equatable {
         public var beaconIntervalFarSec: Double
         public var beaconNearDistanceM: Double
         public var beaconFarDistanceM: Double
+        /// 相対方位がこれ以上変わったら、次のビーコンを待たずに繰り上げて鳴らす [deg]。
+        /// 角を曲がってから最大 5 秒待たせないため
+        public var beaconDirectionChangeDeg: Double
+        /// 繰り上げの下限間隔 [sec]。連打を防ぐ
+        public var beaconMinGapSec: Double
         public var earconGain: Double
         public var tones: Tones
 

@@ -52,6 +52,8 @@
     "beacon_interval_far_sec": 5.0,
     "beacon_near_distance_m": 60,
     "beacon_far_distance_m": 600,
+    "beacon_direction_change_deg": 30,
+    "beacon_min_gap_sec": 0.6,
     "earcon_gain": 0.5,
     "tones": {
       "suggestion":     { "freqs_hz": [880.0, 1174.7],        "blip_sec": 0.09, "gap_sec": 0.06 },
