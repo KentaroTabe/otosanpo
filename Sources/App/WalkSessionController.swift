@@ -46,6 +46,12 @@ final class WalkSessionController: ObservableObject {
     private var promptPending = false
     /// 直近のビーコンで鳴らした相対方位と時刻(方向が変わったら次を繰り上げるため)
     private var lastBeacon: (relDeg: Double, at: Date)?
+    /// 顔の向きの推定。定位の基準を進行方位から「顔の向き」へ寄せる
+    private var headingFusion = HeadingFusion()
+    /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
+    private var latestCourseBearing: Double?
+    /// 推定した顔の絶対方位。nil なら進行方位をそのまま使う
+    private var latestFacingBearing: Double?
     private var suggestionTimer: Timer?
     private var beaconTimer: Timer?
     private var promptTimer: Timer?
@@ -121,6 +127,9 @@ final class WalkSessionController: ObservableObject {
         returnStart = nil
         promptPending = false
         lastBeacon = nil
+        headingFusion.reset()
+        latestCourseBearing = nil
+        latestFacingBearing = nil
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
@@ -332,13 +341,21 @@ final class WalkSessionController: ObservableObject {
             return
         }
         noteDirectionAvailable()
-        let rel = Geo.angularDiffDeg(bearingHome, travel.deg)
+        // 定位の基準は「顔の向き」。取れないうちは進行方位で代用する。
+        // 顔基準にすると、首を振っても音が世界に固定されて聞こえる
+        let reference = latestFacingBearing ?? travel.deg
+        let rel = Geo.angularDiffDeg(bearingHome, reference)
         let pan = Float(sin(rel * .pi / 180))
         synth?.play(.homeBeacon, pan: pan)
         lastBeacon = (relDeg: rel, at: Date())
-        logToFile(String(format: "ビーコン 距離=%.0fm 自宅方位=%.0f° 進行=%.0f°(%@) pan=%.2f 間隔=%.1fs [%@]",
+        // 顔基準に切り替えた影響を後から評価できるよう、顔の向きと進行方位の両方を残す
+        let facingLabel = latestFacingBearing.map { String(format: "%.0f°", $0) } ?? "-"
+        let travelPan = sin(Geo.angularDiffDeg(bearingHome, travel.deg) * .pi / 180)
+        logToFile(String(format: "ビーコン 距離=%.0fm 自宅方位=%.0f° 進行=%.0f°(%@) 顔=%@ pan=%.2f"
+                         + "(進行基準なら %.2f) 間隔=%.1fs [%@]",
                          Geo.distanceM(p, h), bearingHome, travel.deg,
-                         label(for: travel.source), pan, beaconInterval(), summary(of: fix)))
+                         label(for: travel.source), facingLabel, pan, travelPan,
+                         beaconInterval(), summary(of: fix)))
     }
 
     private func beaconInterval() -> TimeInterval {
@@ -395,10 +412,24 @@ final class WalkSessionController: ObservableObject {
         log("再装着を検出したのでプロンプトを鳴らし直します")
     }
 
+    /// 顔の絶対方位を更新する。進行方位が取れている間だけ基準線を育てる
+    private func updateFacingBearing(_ s: HeadSample) {
+        guard params.heading.useHeadOrientation else { return }
+        guard let course = latestCourseBearing else { return }
+        let p = HeadingFusion.Params(baselineAlpha: params.heading.baselineAlpha,
+                                     maxOffsetDeg: params.heading.maxOffsetDeg,
+                                     minSamples: params.heading.minSamples)
+        latestFacingBearing = headingFusion.ingest(headYawDeg: s.yawDeg,
+                                                   travelBearingDeg: course, p: p)
+    }
+
     /// 姿勢の基準が変わったときに、検出器と診断の窓を捨てる
     private func resetMotionWindows() {
         detector = HeadGestureDetector(params: params.gesture)
         shadowDetector = HeadGestureDetector(params: params.gesture)
+        // 再装着で yaw の基準が引き直されるため、顔の向きの基準線も作り直す
+        headingFusion.reset()
+        latestFacingBearing = nil
         diagCount = 0
         diagPitchMin = .infinity
         diagPitchMax = -.infinity
@@ -411,6 +442,7 @@ final class WalkSessionController: ObservableObject {
 
     private func onHeadSample(_ s: HeadSample) {
         accumulateMotionDiagnostics(s)
+        updateFacingBearing(s)
 
         if state == .promptingReturn {
             switch detector.ingest(s) {
@@ -594,6 +626,8 @@ final class WalkSessionController: ObservableObject {
         let travel = TravelDirection.resolve(fix, held: held, params: params.location)
         if let travel, travel.source == .course {
             lastGoodCourse = (deg: travel.deg, at: now)
+            // 顔の向きの基準線は、進行方位が信頼できるときにだけ育てる
+            latestCourseBearing = travel.deg
         }
         return travel
     }

@@ -7,6 +7,7 @@ public struct AppParameters: Codable, Equatable {
     public var session: Session
     public var budget: Budget
     public var route: Route
+    public var heading: Heading
     public var gesture: Gesture
     public var audio: Audio
     public var location: Location
@@ -62,6 +63,18 @@ public struct AppParameters: Codable, Equatable {
         public var courseHoldSec: Double
         /// course が使えないとき端末コンパスへ退避するか
         public var allowCompassFallback: Bool
+    }
+
+    /// 顔の向きの推定(HeadingFusion)。docs/03「頭の向きを定位に反映」
+    public struct Heading: Codable, Equatable {
+        /// 顔の向きを定位の基準に使うか。false なら従来どおり進行方位だけを使う
+        public var useHeadOrientation: Bool
+        /// 基準線の追従係数(1 サンプルあたり)。50 Hz で 0.0005 なら時定数は約 40 秒
+        public var baselineAlpha: Double
+        /// 首の相対角として認める上限 [deg]
+        public var maxOffsetDeg: Double
+        /// 基準線が使えると判断するまでの最小サンプル数(50 Hz で 250 = 5 秒)
+        public var minSamples: Int
     }
 
     public struct Gesture: Codable, Equatable {
