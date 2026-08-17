@@ -9,9 +9,16 @@ struct ContentView: View {
         NavigationStack {
             Form {
                 Section("設定") {
-                    LabeledContent("自宅", value: controller.home == nil ? "未設定" : "設定済み")
-                    Button("自宅を現在地に設定") {
-                        controller.setHomeHere()
+                    if controller.home == nil {
+                        LabeledContent("自宅", value: "未設定")
+                        Text("散歩を開始すると、その場所を自宅として記録します")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        LabeledContent("自宅", value: "設定済み")
+                        Button("自宅を現在地に更新") {
+                            controller.setHomeHere()
+                        }
                     }
                     Stepper(value: $controller.durationMin,
                             in: controller.params.session.minDurationMin...controller.params.session.maxDurationMin,
@@ -27,10 +34,16 @@ struct ContentView: View {
                 }
 
                 Section("セッション") {
-                    Text(stateLabel).font(.headline)
+                    // 開始し忘れに気づけるよう、状態は他より大きく出す
+                    Text(stateLabel)
+                        .font(.title3.bold())
+                        .foregroundStyle(controller.state == .idle ? .secondary : .primary)
                     Text(controller.statusLine).font(.caption)
+                    Text(controller.motionStatusLine)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
                     if controller.state == .idle || controller.state == .arrived {
-                        Button("散歩を開始") {
+                        Button(controller.home == nil ? "ここを自宅にして散歩を開始" : "散歩を開始") {
                             controller.start()
                         }
                     } else {
@@ -46,6 +59,34 @@ struct ContentView: View {
                     Button("首振りを発火(延長)") { controller.debugShake() }
                 }
 
+                Section("earcon の試聴") {
+                    Button("提案音(左)") { controller.debugPlay(.suggestion, pan: -1) }
+                    Button("提案音(右)") { controller.debugPlay(.suggestion, pan: 1) }
+                    Button("時間到来") { controller.debugPlay(.timeUpPrompt) }
+                    Button("帰路の確認音") { controller.debugPlay(.returnAck) }
+                    Button("帰路ビーコン") { controller.debugPlay(.homeBeacon) }
+                    Button("到着音") { controller.debugPlay(.arrival) }
+                }
+
+                Section("フィールドログ") {
+                    if let url = controller.fieldLogURL {
+                        ShareLink(item: url) {
+                            Label("ログを書き出す", systemImage: "square.and.arrow.up")
+                        }
+                        Button("ログを消去", role: .destructive) {
+                            controller.clearFieldLog()
+                        }
+                    } else {
+                        Text("まだ記録がありません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("提案・ビーコン・ジェスチャ検出を端末内のファイルに追記します(送信しません)。"
+                         + "Finder の「iPhone > ファイル」からも取り出せます")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("イベントログ") {
                     ForEach(Array(controller.eventLog.suffix(12).reversed().enumerated()),
                             id: \.offset) { _, line in
@@ -54,6 +95,13 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("音さんぽ")
+            .alert("操作できませんでした",
+                   isPresented: Binding(get: { controller.alertMessage != nil },
+                                        set: { if !$0 { controller.alertMessage = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(controller.alertMessage ?? "")
+            }
         }
     }
 

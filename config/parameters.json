@@ -6,10 +6,13 @@
     "extension_step_min": 10,
     "max_extensions": 2,
     "re_prompt_interval_sec": 60,
-    "arrival_radius_m": 40
+    "arrival_radius_m": 10
   },
   "budget": {
     "walking_speed_m_per_min": 70,
+    "min_moving_speed_m_per_s": 0.5,
+    "path_segment_min_m": 10,
+    "max_accuracy_for_metrics_m": 20,
     "detour_factor": 1.3,
     "return_reserve_min": 3,
     "max_return_walk_min": 15,
@@ -21,14 +24,25 @@
     "sector_width_deg": 60,
     "sector_radius_m": 250,
     "suggestion_min_score": 0.15,
-    "excluded_familiarity": 8.0
+    "excluded_familiarity": 8.0,
+    "suggestion_margin_over_straight": 0.05,
+    "suggestion_min_travel_m": 30
+  },
+  "location": {
+    "min_speed_for_course_m_per_s": 0.7,
+    "max_course_accuracy_deg": 70,
+    "max_fix_age_sec": 10,
+    "course_hold_sec": 15,
+    "allow_compass_fallback": false
   },
   "gesture": {
-    "nod_pitch_threshold_deg": 10,
+    "nod_pitch_threshold_deg": 8,
     "shake_yaw_threshold_deg": 12,
     "min_reversals": 2,
     "window_sec": 1.6,
-    "refractory_sec": 1.0
+    "refractory_sec": 1.0,
+    "diagnostics_interval_sec": 0.5,
+    "diagnostics_report_ratio": 0.7
   },
   "audio": {
     "sample_rate": 44100,
@@ -39,6 +53,8 @@
     "beacon_interval_far_sec": 5.0,
     "beacon_near_distance_m": 60,
     "beacon_far_distance_m": 600,
+    "beacon_direction_change_deg": 30,
+    "beacon_min_gap_sec": 0.6,
     "earcon_gain": 0.5,
     "tones": {
       "suggestion":     { "freqs_hz": [880.0, 1174.7],        "blip_sec": 0.09, "gap_sec": 0.06 },

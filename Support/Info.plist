@@ -20,6 +20,8 @@
 	<string>1</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>ポケットに入れたままでも案内を続けるため、バックグラウンドでも位置情報を使用します。 履歴は端末内にのみ保存されます。</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
@@ -31,6 +33,8 @@
 		<string>audio</string>
 		<string>location</string>
 	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

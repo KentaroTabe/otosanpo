@@ -1,0 +1,13 @@
+// 署名設定のテンプレート。
+// scripts/setup.sh がこのファイルを Support/Signing.xcconfig にコピーする(既にあれば何もしない)。
+// 実体の Signing.xcconfig は個人の Team ID を含むため .gitignore 済み。
+//
+// Team ID の調べ方:
+//   1. Xcode > Settings > Accounts で Apple ID を追加(無料アカウントで可)
+//   2. scripts/show_teams.sh を実行する(証明書の OU が Team ID。
+//      証明書名の括弧内は開発者 ID であって Team ID ではない)
+//   3. scripts/set_team.sh <TEAM_ID> で Signing.xcconfig に書き込む
+//
+// 空のままだと実機ビルドは失敗する(シミュレータビルドとテストは空でも通る)。
+
+DEVELOPMENT_TEAM =

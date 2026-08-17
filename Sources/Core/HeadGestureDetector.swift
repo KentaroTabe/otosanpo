@@ -38,17 +38,40 @@ public struct HeadGestureDetector {
         samples.removeAll { s.time - $0.time > p.windowSec }
         guard s.time - lastDetection >= p.refractorySec else { return nil }
 
-        if reversals(of: samples.map(\.pitchDeg), threshold: p.nodPitchThresholdDeg) >= p.minReversals {
+        if reversals(of: Self.unwrapDeg(samples.map(\.pitchDeg)),
+                     threshold: p.nodPitchThresholdDeg) >= p.minReversals {
             lastDetection = s.time
             samples.removeAll()
             return .nod
         }
-        if reversals(of: samples.map(\.yawDeg), threshold: p.shakeYawThresholdDeg) >= p.minReversals {
+        if reversals(of: Self.unwrapDeg(samples.map(\.yawDeg)),
+                     threshold: p.shakeYawThresholdDeg) >= p.minReversals {
             lastDetection = s.time
             samples.removeAll()
             return .shake
         }
         return nil
+    }
+
+    /// ±180° の折り返しを連続値に直す。
+    /// CoreMotion の yaw は -π..π で表されるため、正面が境界付近にあると
+    /// 首を少し振っただけで約 360° のジャンプが現れ、反転判定が壊れる。
+    /// 隣接差が ±180° を超えたら、その分を打ち消すオフセットを積む。
+    static func unwrapDeg(_ series: [Double]) -> [Double] {
+        guard var prev = series.first else { return [] }
+        var out = [prev]
+        var offset = 0.0
+        for v in series.dropFirst() {
+            let d = v - prev
+            if d > 180 {
+                offset -= 360
+            } else if d < -180 {
+                offset += 360
+            }
+            out.append(v + offset)
+            prev = v
+        }
+        return out
     }
 
     /// (min+max)/2 を基準とした偏差が ±threshold を跨いで符号反転した回数
