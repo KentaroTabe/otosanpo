@@ -60,7 +60,9 @@ final class VisitGridTests: XCTestCase {
             cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
             sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
             suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30,
-            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25)
+            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25,
+            intersectionLookaheadM: 35, branchStraightDeg: 25, branchBackwardDeg: 135,
+            crossCostWeight: 0.12, wayClassWeight: 0.08)
         let north = Geo.destination(from: origin, bearingDeg: 0, distanceM: 100)
         let now = Date(timeIntervalSince1970: 0)
         g.recordVisit(at: north, date: now)
@@ -78,7 +80,9 @@ final class BearingSuggesterTests: XCTestCase {
         cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
         sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
         suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30,
-        mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25)
+        mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25,
+        intersectionLookaheadM: 35, branchStraightDeg: 25, branchBackwardDeg: 135,
+        crossCostWeight: 0.12, wayClassWeight: 0.08)
 
     func testAllNovelPrefersStraightAndStaysSilent() {
         // 全方向が未踏なら最良は直進 → 直進に音は出さない設計なので nil
@@ -121,7 +125,9 @@ final class BearingSuggesterTests: XCTestCase {
             cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
             sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
             suggestionMarginOverStraight: 0.6, suggestionMinTravelM: 30,
-            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25)
+            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25,
+            intersectionLookaheadM: 35, branchStraightDeg: 25, branchBackwardDeg: 135,
+            crossCostWeight: 0.12, wayClassWeight: 0.08)
         XCTAssertNil(BearingSuggester.suggest(position: origin, headingDeg: 0, home: home,
                                               grid: grid, homewardBias: 0,
                                               route: narrow, now: now))
@@ -131,7 +137,9 @@ final class BearingSuggesterTests: XCTestCase {
             cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
             sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
             suggestionMarginOverStraight: 0.4, suggestionMinTravelM: 30,
-            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25)
+            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25,
+            intersectionLookaheadM: 35, branchStraightDeg: 25, branchBackwardDeg: 135,
+            crossCostWeight: 0.12, wayClassWeight: 0.08)
         XCTAssertNotNil(BearingSuggester.suggest(position: origin, headingDeg: 0, home: home,
                                                  grid: grid, homewardBias: 0,
                                                  route: loose, now: now))

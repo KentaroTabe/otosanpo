@@ -165,3 +165,101 @@ for acc in [10.0, 15.0, 20.0, 30.0, 50.0] {
 
 print("\n迂回率は「経路長 / 直線距離」。速度積分より経路長が大きく上回る条件は、"
       + "GPS の揺れを経路長として数えている疑いがある。")
+
+// MARK: - 経路データがあれば、道路スナップと提案を再生する
+
+/// ログの時刻表示に合わせる(HH:mm:ss)
+let clock: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss"
+    return f
+}()
+
+let mapPath = args.count >= 4 ? args[3] : "maps/otosanpo-map.json"
+guard let mapData = FileManager.default.contents(atPath: mapPath),
+      let walkMap = try? JSONDecoder().decode(WalkMap.self, from: mapData) else {
+    print("\n経路データが無いため、スナップの再生は省略(\(mapPath))")
+    print("scripts/build_map.sh で生成すると、この先も再生できます。")
+    exit(0)
+}
+
+let r = params.route
+let graph = WalkGraph(map: walkMap, cellSizeM: r.mapIndexCellSizeM)
+print("\n== 道路スナップの再生 ==")
+print("地図: 中心=(\(walkMap.center.latitude), \(walkMap.center.longitude))"
+      + " 半径=\(Int(walkMap.radiusM))m 生成=\(walkMap.generated)"
+      + " 節点=\(walkMap.nodes.count) 道=\(walkMap.ways.count)")
+
+let inMap = all.filter { walkMap.covers($0.point) }
+print("圏内の fix: \(inMap.count) / \(all.count) 件")
+
+var snapped = 0
+var snapSum = 0.0
+var snapMax = 0.0
+var bearingAgree = 0
+var bearingChecked = 0
+var byClass: [WayClass: Int] = [:]
+
+for f in inMap {
+    guard let s = graph.snap(f.point, maxDistanceM: r.snapMaxDistanceM) else { continue }
+    snapped += 1
+    snapSum += s.distanceM
+    snapMax = max(snapMax, s.distanceM)
+    byClass[walkMap.ways[s.wayIndex].cls, default: 0] += 1
+    // course があるなら、道の向きと一致しているかを見る(前後どちらでも「沿っている」)
+    if let course = f.courseDeg, course >= 0 {
+        bearingChecked += 1
+        let d = abs(Geo.angularDiffDeg(s.bearingDeg, course))
+        if min(d, 180 - d) <= 30 { bearingAgree += 1 }
+    }
+}
+
+if inMap.isEmpty {
+    print("圏内の fix がありません。地図の中心が散歩の場所と合っているか確認してください。")
+} else {
+    let rate = Double(snapped) / Double(inMap.count) * 100
+    print(String(format: "道に乗った: %d 件 (%.0f%%) / 平均 %.1fm・最大 %.1fm (上限 %.0fm)",
+                 snapped, rate, snapped > 0 ? snapSum / Double(snapped) : 0,
+                 snapMax, r.snapMaxDistanceM))
+    if bearingChecked > 0 {
+        print(String(format: "道の向きと course が 30° 以内で一致: %d / %d 件 (%.0f%%)",
+                     bearingAgree, bearingChecked,
+                     Double(bearingAgree) / Double(bearingChecked) * 100))
+    }
+    for c in WayClass.allCases {
+        print("  \(c): \(byClass[c] ?? 0) 件")
+    }
+}
+
+// MARK: - 提案の再生(交差点でどう判断したか)
+
+print("\n== 提案の再生(交差点接近の検出 + 分岐の選択)==")
+var grid = VisitGrid(cellSizeM: r.cellSizeM, halfLifeDays: r.visitHalfLifeDays)
+var intersectionsSeen = 0
+var choices: [String] = []
+var lastChoiceAt: GeoPoint?
+
+for f in inMap where f.state == "wandering" {
+    grid.recordVisit(at: f.point, date: f.time)
+    guard let course = f.courseDeg, course >= 0 else { continue }
+    guard let x = graph.upcomingIntersection(from: f.point, bearingDeg: course,
+                                             withinM: r.intersectionLookaheadM) else { continue }
+    intersectionsSeen += 1
+    // 直前に提案した地点から離れていなければ鳴らさない(実機と同じ間引き)
+    if let last = lastChoiceAt, Geo.distanceM(last, f.point) < r.suggestionMinTravelM { continue }
+    guard let c = BranchSuggester.choose(intersection: x, travelBearingDeg: course,
+                                         position: f.point, home: walkMap.center,
+                                         grid: grid, homewardBias: 0,
+                                         route: r, now: f.time) else { continue }
+    lastChoiceAt = f.point
+    choices.append(String(format: "  %@ 交差点まで %.0fm / 分岐 %d 本 → 相対 %+.0f° (%@, 横断 %d) score=%.2f",
+                          clock.string(from: f.time), x.distanceM, x.branches.count,
+                          c.relativeBearingDeg, "\(c.branch.cls)", c.branch.crossCost, c.score))
+}
+
+print("交差点に接近した回数: \(intersectionsSeen)")
+print("提案した回数: \(choices.count)")
+for line in choices.prefix(30) { print(line) }
+if choices.count > 30 { print("  (以下 \(choices.count - 30) 件省略)") }
+print("\n自宅座標はログに無いため、帰宅バイアスは 0 として再生している"
+      + "(交差点検出と分岐選択の確認が目的)。")

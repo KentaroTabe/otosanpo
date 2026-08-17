@@ -47,6 +47,8 @@ final class WalkSessionController: ObservableObject {
     /// 直近のビーコンで鳴らした相対方位と時刻(方向が変わったら次を繰り上げるため)
     private var lastBeacon: (relDeg: Double, at: Date)?
     /// 顔の向きの推定。定位の基準を進行方位から「顔の向き」へ寄せる
+    /// 経路データ。Documents に置かれていれば読む。無ければグリッドのみで動く
+    private var graph: WalkGraph?
     private var headingFusion = HeadingFusion()
     /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
     private var latestCourseBearing: Double?
@@ -66,6 +68,7 @@ final class WalkSessionController: ObservableObject {
         detector = HeadGestureDetector(params: params.gesture)
         shadowDetector = HeadGestureDetector(params: params.gesture)
         home = HomeStore.load()
+        graph = MapStore.load(cellSizeM: params.route.mapIndexCellSizeM)
 
         location.$position
             .sink { [weak self] p in
@@ -295,10 +298,36 @@ final class WalkSessionController: ObservableObject {
         let context = String(format: "方向=%@ %.0f° 自宅まで=%.0fm 許容=%.0fm bias=%.2f [%@]",
                              label(for: travel.source), heading, Geo.distanceM(p, h), allowed, bias,
                              summary(of: fix))
+        // 経路データがあれば、実在する分岐から選ぶ。
+        // 無ければ従来のグリッドのみの推測(±45°/±90°)に落ちる
+        if let graph, graph.map.covers(p) {
+            guard let x = graph.upcomingIntersection(
+                from: p, bearingDeg: heading,
+                withinM: params.route.intersectionLookaheadM) else {
+                logToFile("提案なし(前方に交差点なし) [\(context)]")
+                return
+            }
+            guard let c = BranchSuggester.choose(intersection: x, travelBearingDeg: heading,
+                                                position: p, home: h, grid: grid,
+                                                homewardBias: bias,
+                                                route: params.route, now: Date()) else {
+                logToFile(String(format: "提案なし(分岐 %d 本・交差点まで %.0fm) [%@]",
+                                 x.branches.count, x.distanceM, context))
+                return
+            }
+            // 顔の向きを基準に鳴らす。顔を向けた先が「そちら」になる
+            let reference = latestFacingBearing ?? heading
+            let rel = Geo.angularDiffDeg(c.branch.bearingDeg, reference)
+            synth?.play(.suggestion, relativeBearingDeg: rel)
+            lastSuggestionPoint = p
+            log(String(format: "提案(分岐): 相対 %+.0f° %@ 横断=%d 交差点まで=%.0fm score=%.2f [%@]",
+                       rel, "\(c.branch.cls)", c.branch.crossCost, x.distanceM, c.score, context))
+            return
+        }
+
         if let s = BearingSuggester.suggest(position: p, headingDeg: heading, home: h,
                                             grid: grid, homewardBias: bias,
                                             route: params.route, now: Date()) {
-            // 提案も顔の向きを基準にする。顔を向けた先が「そちら」になる
             let reference = latestFacingBearing ?? heading
             let rel = Geo.angularDiffDeg(s.absoluteBearingDeg, reference)
             synth?.play(.suggestion, relativeBearingDeg: rel)
@@ -574,6 +603,13 @@ final class WalkSessionController: ObservableObject {
         var parts = ["自宅まで \(Int(d)) m(徒歩約 \(Int(ret.rounded())) 分)"]
         if let end = sessionEnd {
             parts.append("残り \(max(0, Int(end.timeIntervalSinceNow / 60))) 分")
+        }
+        // 経路データの有無で提案の質が変わるので、読めているかを画面で示す
+        if let graph {
+            parts.append("地図: 半径\(Int(graph.map.radiusM / 1000))km・\(graph.map.generated)"
+                         + (graph.map.covers(p) ? "" : "(圏外)"))
+        } else {
+            parts.append("地図: 未読込")
         }
         // 実機テストで「いま左右の定位が何を基準にしているか」を確認するために表示する。
         // 表示は副作用を持たせたくないので、保持値の更新は行わない

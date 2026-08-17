@@ -29,7 +29,12 @@
     "suggestion_min_travel_m": 30,
     "map_radius_m": 5000,
     "map_index_cell_size_m": 50,
-    "snap_max_distance_m": 25
+    "snap_max_distance_m": 25,
+    "intersection_lookahead_m": 35,
+    "branch_straight_deg": 25,
+    "branch_backward_deg": 135,
+    "cross_cost_weight": 0.12,
+    "way_class_weight": 0.08
   },
   "location": {
     "min_speed_for_course_m_per_s": 0.7,
@@ -65,6 +70,8 @@
     "beacon_direction_change_deg": 30,
     "beacon_min_gap_sec": 0.6,
     "use_spatial_audio": true,
+    "behind_threshold_deg": 100,
+    "behind_darkness": 0.6,
     "earcon_gain": 0.5,
     "tones": {
       "suggestion":     { "freqs_hz": [880.0, 1174.7],        "blip_sec": 0.09, "gap_sec": 0.06, "noise_mix": 0.25 },

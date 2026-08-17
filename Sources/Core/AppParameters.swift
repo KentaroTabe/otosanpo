@@ -55,6 +55,16 @@ public struct AppParameters: Codable, Equatable {
         public var mapIndexCellSizeM: Double
         /// この距離より離れた点は道に乗せない [m]。水平精度(実測 3〜5 m)より大きく取る
         public var snapMaxDistanceM: Double
+        /// 前方この距離以内の交差点を「これから曲がる場所」として扱う [m]
+        public var intersectionLookaheadM: Double
+        /// 進行方向との差がこれ以内の分岐は「直進」とみなす [deg]
+        public var branchStraightDeg: Double
+        /// 進行方向との差がこれ以上の分岐は「来た道」として候補から外す [deg]
+        public var branchBackwardDeg: Double
+        /// 横断コスト 1 段あたりスコアから引く量
+        public var crossCostWeight: Double
+        /// 道の種別の序列 1 段あたりスコアから引く量(歩行者専用を好む強さ)
+        public var wayClassWeight: Double
     }
 
     public struct Location: Codable, Equatable {
@@ -113,6 +123,11 @@ public struct AppParameters: Codable, Equatable {
         /// 3D 音響(HRTF)で定位するか。false ならステレオパンで代替する。
         /// 3D は前後を区別できるが、モノラル入力と AVAudioEnvironmentNode を要する
         public var useSpatialAudio: Bool
+        /// 相対方位の大きさがこれを超えたら「真後ろ寄り」の音色に切り替える [deg]。
+        /// HRTF では前後が判別できなかった(2026-08-18 実測)ため、音色で分ける
+        public var behindThresholdDeg: Double
+        /// 真後ろ用の音色をどれだけ暗くするか [0..1]。周波数を下げ雑音成分を削る
+        public var behindDarkness: Double
         public var earconGain: Double
         public var tones: Tones
 

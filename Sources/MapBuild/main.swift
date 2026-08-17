@@ -63,16 +63,20 @@ guard let data = FileManager.default.contents(atPath: inputPath) else {
     exit(1)
 }
 
-/// osmium export の GeoJSON は 1 行 1 フィーチャの GeoJSONSeq か、
-/// FeatureCollection のどちらか。どちらでも読めるようにする
+/// osmium export の出力は FeatureCollection か GeoJSONSeq のどちらか。
+/// **GeoJSONSeq は RFC 8142 で各レコードの先頭に RS(0x1E)が入る**。
+/// これを外さないと JSON として読めない(合成データで試すと気づけない落とし穴)。
 func features(from data: Data) -> [[String: Any]] {
     if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
        let list = obj["features"] as? [[String: Any]] {
         return list
     }
     var out: [[String: Any]] = []
-    for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
-        guard let d = line.data(using: .utf8),
+    let text = String(decoding: data, as: UTF8.self)
+    // 改行と RS の両方で区切り、前後の制御文字と空白を落とす
+    for record in text.split(whereSeparator: { $0 == "\n" || $0 == "\u{1E}" }) {
+        let trimmed = record.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let d = trimmed.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
         out.append(obj)
     }

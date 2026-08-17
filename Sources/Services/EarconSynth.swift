@@ -13,6 +13,10 @@ final class EarconSynth {
     private let player = AVAudioPlayerNode()
     private let environment = AVAudioEnvironmentNode()
     private var buffers: [Earcon: AVAudioPCMBuffer] = [:]
+    /// 真後ろ用の暗い音色。HRTF の前後判別は当てにならないため、音色で前後を分ける
+    private var behindBuffers: [Earcon: AVAudioPCMBuffer] = [:]
+    private let behindThresholdDeg: Double
+    private let behindDarkness: Double
     /// 3D 音響として繋げられたか。false の間はステレオパンで代替する
     private(set) var isSpatial = false
 
@@ -40,11 +44,18 @@ final class EarconSynth {
 
         let format = mono
         let gain = audio.earconGain
+        behindThresholdDeg = audio.behindThresholdDeg
+        behindDarkness = audio.behindDarkness
         buffers[.suggestion] = Self.render(audio.tones.suggestion, format: format, gain: gain)
         buffers[.timeUpPrompt] = Self.render(audio.tones.timeUpPrompt, format: format, gain: gain)
         buffers[.returnAck] = Self.render(audio.tones.returnAck, format: format, gain: gain)
         buffers[.homeBeacon] = Self.render(audio.tones.homeBeacon, format: format, gain: gain)
         buffers[.arrival] = Self.render(audio.tones.arrival, format: format, gain: gain)
+        // ビーコンだけは「真後ろ」用の変種を持つ。周波数を下げて雑音成分を削り、
+        // 耳介で高域が遮られた音(= 背後から来る音)に寄せる
+        behindBuffers[.homeBeacon] = Self.render(
+            Self.darken(audio.tones.homeBeacon, by: audio.behindDarkness),
+            format: format, gain: gain)
 
         try Self.configureSession()
         try engine.start()
@@ -59,9 +70,26 @@ final class EarconSynth {
     /// 相対方位(顔の向きを 0、右を正)を指定して鳴らす。
     /// 3D が使えれば前後も区別して定位し、使えなければ左右のパンで代替する。
     /// nil は「方向を付けない」= 正面。
+    /// 「真後ろ寄り」の音色に切り替える閾値を超えているか
+    static func isBehind(_ deg: Double, thresholdDeg: Double) -> Bool {
+        abs(Geo.angularDiffDeg(deg, 0)) > thresholdDeg
+    }
+
+    /// 音色を暗くする(周波数を下げ、雑音成分を削る)。
+    /// `darkness` 0 で変化なし、1 で最も暗い
+    static func darken(_ tone: AppParameters.ToneSpec, by darkness: Double) -> AppParameters.ToneSpec {
+        let d = max(0, min(1, darkness))
+        var out = tone
+        out.freqsHz = tone.freqsHz.map { $0 * (1 - 0.5 * d) }
+        out.noiseMix = tone.noiseMix * (1 - d)
+        return out
+    }
+
     func play(_ e: Earcon, relativeBearingDeg: Double? = nil) {
-        guard let b = buffers[e] else { return }
         let deg = relativeBearingDeg ?? 0
+        // 前後は定位では伝わらない(2026-08-18 実測)。音色で分ける
+        let useBehind = Self.isBehind(deg, thresholdDeg: behindThresholdDeg)
+        guard let b = (useBehind ? behindBuffers[e] : nil) ?? buffers[e] else { return }
         if isSpatial {
             let p = SoundPlacement.position(relativeBearingDeg: deg)
             player.position = AVAudio3DPoint(x: Float(p.x), y: Float(p.y), z: Float(p.z))
