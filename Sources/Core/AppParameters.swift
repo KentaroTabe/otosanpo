@@ -49,6 +49,12 @@ public struct AppParameters: Codable, Equatable {
         public var suggestionMarginOverStraight: Double
         /// 前回提案した地点からこの距離以上進むまで、次の提案を出さない [m]
         public var suggestionMinTravelM: Double
+        /// 端末に置く経路データの半径 [m]。徒歩 1 時間圏を覆う目安(docs/04)
+        public var mapRadiusM: Double
+        /// 道路スナップの空間索引のセル幅 [m]
+        public var mapIndexCellSizeM: Double
+        /// この距離より離れた点は道に乗せない [m]。水平精度(実測 3〜5 m)より大きく取る
+        public var snapMaxDistanceM: Double
     }
 
     public struct Location: Codable, Equatable {

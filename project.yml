@@ -77,7 +77,30 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         PRODUCT_NAME: otosanpo-replay
 
+  # osmium が出した GeoJSON を端末に置く WalkMap 形式へ変換する開発用ツール(macOS)。
+  # 形式の定義をアプリと共有するため Swift で書く。docs/04「OSM データの持ち方」
+  MapBuild:
+    type: tool
+    platform: macOS
+    deploymentTarget: "13.0"
+    sources:
+      - path: Sources/Core
+      - path: Sources/MapBuild
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: "-"
+        PRODUCT_NAME: otosanpo-mapbuild
+
 schemes:
+  MapBuild:
+    build:
+      targets:
+        MapBuild: all
+    run:
+      config: Debug
+
   Replay:
     build:
       targets:

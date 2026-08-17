@@ -52,6 +52,28 @@ public enum Geo {
         return d
     }
 
+    /// 線分 a→b 上で p に最も近い点と、そこまでの距離 [m]。
+    /// 道路スナップ(GPS の点をどの道の上に乗せるか)の基礎になる。
+    /// 数 km スケールなので、緯度経度を局所的な平面に落として計算する。
+    public static func nearestPointOnSegment(_ p: GeoPoint, from a: GeoPoint, to b: GeoPoint)
+        -> (point: GeoPoint, distanceM: Double, t: Double) {
+        // a を原点に、東西方向を x、南北方向を y のメートルに変換する
+        let lonScale = metersPerDegreeLat * cos(a.latitude * .pi / 180)
+        func toXY(_ q: GeoPoint) -> (x: Double, y: Double) {
+            ((q.longitude - a.longitude) * lonScale, (q.latitude - a.latitude) * metersPerDegreeLat)
+        }
+        let bx = toXY(b), px = toXY(p)
+        let dx = bx.x, dy = bx.y
+        let lenSq = dx * dx + dy * dy
+        // 退化した線分(同じ点が続く way)は端点として扱う
+        guard lenSq > 0 else { return (a, distanceM(p, a), 0) }
+        // 線分上に射影し、0..1 に丸める(線分の外へは出さない)
+        let t = max(0, min(1, (px.x * dx + px.y * dy) / lenSq))
+        let nearest = GeoPoint(latitude: a.latitude + (dy * t) / metersPerDegreeLat,
+                               longitude: a.longitude + (dx * t) / lonScale)
+        return (nearest, distanceM(p, nearest), t)
+    }
+
     /// 平面近似で bearing 方向へ distance 進んだ点(近距離用)
     public static func destination(from p: GeoPoint, bearingDeg: Double, distanceM: Double) -> GeoPoint {
         let t = bearingDeg * .pi / 180

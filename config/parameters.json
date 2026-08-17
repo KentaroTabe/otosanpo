@@ -26,7 +26,10 @@
     "suggestion_min_score": 0.15,
     "excluded_familiarity": 8.0,
     "suggestion_margin_over_straight": 0.05,
-    "suggestion_min_travel_m": 30
+    "suggestion_min_travel_m": 30,
+    "map_radius_m": 5000,
+    "map_index_cell_size_m": 50,
+    "snap_max_distance_m": 25
   },
   "location": {
     "min_speed_for_course_m_per_s": 0.7,

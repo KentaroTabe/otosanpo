@@ -59,7 +59,8 @@ final class VisitGridTests: XCTestCase {
         let route = AppParameters.Route(
             cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
             sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
-            suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30)
+            suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30,
+            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25)
         let north = Geo.destination(from: origin, bearingDeg: 0, distanceM: 100)
         let now = Date(timeIntervalSince1970: 0)
         g.recordVisit(at: north, date: now)
@@ -76,7 +77,8 @@ final class BearingSuggesterTests: XCTestCase {
     private let route = AppParameters.Route(
         cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
         sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
-        suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30)
+        suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30,
+        mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25)
 
     func testAllNovelPrefersStraightAndStaysSilent() {
         // 全方向が未踏なら最良は直進 → 直進に音は出さない設計なので nil
@@ -118,7 +120,8 @@ final class BearingSuggesterTests: XCTestCase {
         let narrow = AppParameters.Route(
             cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
             sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
-            suggestionMarginOverStraight: 0.6, suggestionMinTravelM: 30)
+            suggestionMarginOverStraight: 0.6, suggestionMinTravelM: 30,
+            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25)
         XCTAssertNil(BearingSuggester.suggest(position: origin, headingDeg: 0, home: home,
                                               grid: grid, homewardBias: 0,
                                               route: narrow, now: now))
@@ -127,7 +130,8 @@ final class BearingSuggesterTests: XCTestCase {
         let loose = AppParameters.Route(
             cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
             sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
-            suggestionMarginOverStraight: 0.4, suggestionMinTravelM: 30)
+            suggestionMarginOverStraight: 0.4, suggestionMinTravelM: 30,
+            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25)
         XCTAssertNotNil(BearingSuggester.suggest(position: origin, headingDeg: 0, home: home,
                                                  grid: grid, homewardBias: 0,
                                                  route: loose, now: now))
