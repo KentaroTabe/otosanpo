@@ -382,6 +382,10 @@ final class WalkSessionController: ObservableObject {
                             accuracyM: fix.horizontalAccuracyM, limits: limits)
             returnMetrics?.add(p, speedMps: fix.speedMps,
                                accuracyM: fix.horizontalAccuracyM, limits: limits)
+            // 位置更新を 1 件ずつ残す。これがあれば、経路長・迂回率・提案の判定といった
+            // 純粋ロジックの変更は、歩き直さずに記録したログの再生で検証できる
+            // (scripts/replay_log.sh)。docs/05「検証の方針」
+            logToFile("fix [\(summary(of: fix))]")
         }
         if commuteLearning {
             grid.markExcluded(at: p, date: now)
