@@ -54,6 +54,8 @@ NR == 1 && $1 == "time" { next }
     nAck++
     if (nAck == 1) ackFirst = hhmmss($1)
     ackLast = hhmmss($1)
+  } else if (index(msg, "帰路実測") == 1 || index(msg, "散歩全体") == 1) {
+    measured[++nMeasured] = hhmmss($1) "  " msg
   } else if (index(msg, "影検出") == 1) {
     nShadow++
     if (index(msg, "うなずき") > 0) nShadowNod++; else nShadowShake++
@@ -144,6 +146,13 @@ END {
   } else {
     printf "  最大 pitch 振幅=%.1f° / 最大 yaw 振幅=%.1f°\n", promptPitchMax, promptYawMax
     dump(prompt, nPrompt, 60)
+  }
+
+  section("歩行の実測(予算模型の係数を合わせるための材料)")
+  if (nMeasured == 0) {
+    print "  記録なし(到着まで到達しなかったか、この版では出していない)"
+  } else {
+    dump(measured, nMeasured, 0)
   }
 
   section("影検出(応答待ち以外で検出器が反応した回数 = 誤検出の実測)")

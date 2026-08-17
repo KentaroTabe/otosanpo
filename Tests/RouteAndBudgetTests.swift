@@ -3,7 +3,7 @@ import XCTest
 
 final class ReturnBudgetTests: XCTestCase {
     private let budget = AppParameters.Budget(
-        walkingSpeedMPerMin: 70, detourFactor: 1.3,
+        walkingSpeedMPerMin: 70, minMovingSpeedMPerS: 0.5, detourFactor: 1.3,
         returnReserveMin: 3, maxReturnWalkMin: 15, softZoneRatio: 0.7)
 
     func testEstimatedReturnMin() {

@@ -23,6 +23,9 @@ public struct AppParameters: Codable, Equatable {
 
     public struct Budget: Codable, Equatable {
         public var walkingSpeedMPerMin: Double
+        /// 平均速度の集計から「立ち止まっている」サンプルを除く下限 [m/s]。
+        /// 実測から歩行速度を求めるための計測用で、判定には使わない
+        public var minMovingSpeedMPerS: Double
         public var detourFactor: Double
         public var returnReserveMin: Double
         public var maxReturnWalkMin: Double

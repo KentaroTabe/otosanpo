@@ -37,6 +37,10 @@ final class WalkSessionController: ObservableObject {
     private var lastSuggestionPoint: GeoPoint?
     private var sessionEnd: Date?
     private var ackEnd: Date?
+    /// 散歩全体と帰路それぞれの歩行実測。予算模型の係数を実測から決めるための計測
+    private var walkMetrics = GaitMetrics()
+    private var returnMetrics: GaitMetrics?
+    private var returnStart: (distanceM: Double, at: Date)?
     private var suggestionTimer: Timer?
     private var beaconTimer: Timer?
     private var promptTimer: Timer?
@@ -106,9 +110,12 @@ final class WalkSessionController: ObservableObject {
         extensionsUsed = 0
         ackEnd = nil
         lastSuggestionPoint = nil
-        // 前回の散歩の向き・影検出の窓を持ち越さない
+        // 前回の散歩の向き・影検出の窓・実測値を持ち越さない
         lastGoodCourse = nil
         shadowDetector = HeadGestureDetector(params: params.gesture)
+        walkMetrics = GaitMetrics()
+        returnMetrics = nil
+        returnStart = nil
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
@@ -121,6 +128,7 @@ final class WalkSessionController: ObservableObject {
     }
 
     func stopManually() {
+        logWalkTotals()
         apply(.stop)
         log("終了しました")
     }
@@ -195,6 +203,11 @@ final class WalkSessionController: ObservableObject {
         case .startReturnPhase:
             promptTimer?.invalidate()
             ackEnd = Date().addingTimeInterval(params.audio.returnAckDurationSec)
+            // 帰路は目的地が決まっている唯一の区間。迂回率の実測はここでしか取れない
+            returnMetrics = GaitMetrics()
+            if let p = location.position, let h = home {
+                returnStart = (distanceM: Geo.distanceM(p, h), at: Date())
+            }
             log("帰路開始に同意。確認音をしばらく繰り返します")
             fireReturnTick()
 
@@ -327,6 +340,12 @@ final class WalkSessionController: ObservableObject {
     private func onPosition(_ p: GeoPoint?) {
         guard let p else { return }
         let now = Date()
+        if state == .wandering || state == .promptingReturn || state == .returning {
+            let speed = location.motionFix(now: now).speedMps
+            let minMoving = params.budget.minMovingSpeedMPerS
+            walkMetrics.add(p, speedMps: speed, minMovingSpeedMps: minMoving)
+            returnMetrics?.add(p, speedMps: speed, minMovingSpeedMps: minMoving)
+        }
         if commuteLearning {
             grid.markExcluded(at: p, date: now)
         } else if state == .wandering || state == .returning {
@@ -334,6 +353,7 @@ final class WalkSessionController: ObservableObject {
         }
         if state == .returning, let h = home,
            Geo.distanceM(p, h) <= params.session.arrivalRadiusM {
+            logReturnMeasurements(now: now)
             apply(.reachedHome)
             log("到着しました")
         }
@@ -467,6 +487,33 @@ final class WalkSessionController: ObservableObject {
         let travel = TravelDirection.resolve(location.motionFix(), held: held, params: params.location)
         parts.append("方向: \(travel.map { label(for: $0.source) } ?? "不明")")
         statusLine = parts.joined(separator: " / ")
+    }
+
+    /// 帰路の実測を残す。予算模型の 2 係数を実測値と並べて記録し、
+    /// 仮置きの値がどれだけずれているかを 1 回の散歩ごとに見えるようにする。
+    private func logReturnMeasurements(now: Date) {
+        guard let m = returnMetrics, let s = returnStart else { return }
+        let elapsedMin = now.timeIntervalSince(s.at) / 60
+        func num(_ v: Double?, _ format: String) -> String {
+            guard let v else { return "-" }
+            return String(format: format, v)
+        }
+        logToFile("帰路実測 直線=\(String(format: "%.0f", s.distanceM))m"
+                  + " 経路長=\(String(format: "%.0f", m.pathLengthM))m"
+                  + " 所要=\(String(format: "%.1f", elapsedMin))min"
+                  + " 平均速度=\(num(m.averageMovingSpeedMPerMin, "%.0f"))m/min(設定 "
+                  + String(format: "%.0f", params.budget.walkingSpeedMPerMin) + ")"
+                  + " 迂回率=\(num(m.detourFactor(straightLineM: s.distanceM), "%.2f"))(設定 "
+                  + String(format: "%.2f", params.budget.detourFactor) + ")")
+        logWalkTotals()
+    }
+
+    /// 散歩全体の実測。途中で終了した場合も残す(帰路が完了しなくても速度は取れる)
+    private func logWalkTotals() {
+        let avg = walkMetrics.averageMovingSpeedMPerMin
+        logToFile("散歩全体 経路長=\(String(format: "%.0f", walkMetrics.pathLengthM))m"
+                  + " 平均速度=\(avg.map { String(format: "%.0f", $0) } ?? "-")m/min"
+                  + " 最高速度=\(String(format: "%.2f", walkMetrics.maxSpeedMps))m/s")
     }
 
     /// 進行方向の解決と、有効だった course の保持をまとめて行う。
