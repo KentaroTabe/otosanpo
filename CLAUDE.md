@@ -9,7 +9,9 @@
 - **実機へのインストールと起動は人が Xcode から行う。** スクリプトやコマンドで実機を操作しない
 - 署名: Team ID は `Support/Signing.xcconfig`(gitignore 対象)に置く。Team ID の確認は `scripts/show_teams.sh`(**証明書名の括弧内は開発者 ID であり Team ID ではない。OU が Team ID**)、設定は `scripts/set_team.sh <TEAM_ID>`。`project.yml` の `settings` に `DEVELOPMENT_TEAM` を書かない(xcconfig を上書きするため)
 - 無料アカウントでは、実機を UDID 指定してビルドした時に初めてデバイスがチームに登録される。`generic/platform=iOS` では登録されない
-- テスト: `scripts/test.sh [シミュレータ名]`(既定: `iPhone 17`。手元の Xcode にあるシミュレータ名に合わせて引数で指定)
+- テスト: `scripts/test.sh [シミュレータ名]`(既定: `iPhone 17`。手元の Xcode にあるシミュレータ名に合わせて引数で指定。手元にあるのは `iPhone 17 Pro`)
+- **増分ビルドが古いまま通ることがある。** 実際に 2 度発生した(未署名の `.app` が残ってシミュレータが起動しない / 追加したテストが実行されない)。テスト数が増えたはずなのに変わらない、原因不明の起動失敗が続く、といった場合は `xcodebuild ... clean` を挟む
+- ファイルを追加・削除したら `scripts/setup.sh` で `.xcodeproj` を再生成する(`project.yml` はディレクトリを glob しているため、生成時点のファイル一覧が焼き込まれる)
 - 完了条件はテスト全緑(グローバル規約どおり)。`logs/` はスクリプトが生成するログ置き場であり、読み書き・コミットの対象にしない
 
 ## パラメータ

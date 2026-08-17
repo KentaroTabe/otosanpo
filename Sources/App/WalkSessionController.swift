@@ -356,13 +356,15 @@ final class WalkSessionController: ObservableObject {
         guard let p else { return }
         let now = Date()
         if state == .wandering || state == .promptingReturn || state == .returning {
-            let speed = location.motionFix(now: now).speedMps
-            let minMoving = params.budget.minMovingSpeedMPerS
-            let minSegment = params.budget.pathSegmentMinM
-            walkMetrics.add(p, speedMps: speed, minMovingSpeedMps: minMoving,
-                            minSegmentM: minSegment)
-            returnMetrics?.add(p, speedMps: speed, minMovingSpeedMps: minMoving,
-                               minSegmentM: minSegment)
+            let fix = location.motionFix(now: now)
+            let limits = GaitMetrics.Limits(
+                minMovingSpeedMps: params.budget.minMovingSpeedMPerS,
+                minSegmentM: params.budget.pathSegmentMinM,
+                maxAccuracyM: params.budget.maxAccuracyForMetricsM)
+            walkMetrics.add(p, speedMps: fix.speedMps,
+                            accuracyM: fix.horizontalAccuracyM, limits: limits)
+            returnMetrics?.add(p, speedMps: fix.speedMps,
+                               accuracyM: fix.horizontalAccuracyM, limits: limits)
         }
         if commuteLearning {
             grid.markExcluded(at: p, date: now)
@@ -383,10 +385,28 @@ final class WalkSessionController: ObservableObject {
     private func onHeadphoneConnectionChange(_ connected: Bool) {
         headphonesConnected = connected
         log(connected ? "ヘッドフォンを検出しました" : "ヘッドフォンが外れました")
+        // 再装着すると姿勢の基準が引き直され、yaw が不連続に跳ぶ。
+        // 段階 8 の実測では装着直後に yaw 振幅 203.7° が記録されており、
+        // 窓に残った古いサンプルと繋がると首振りに化ける。検出器と計測窓を捨てる
+        resetMotionWindows()
         guard connected, promptPending, state == .promptingReturn else { return }
         promptPending = false
         synth?.play(.timeUpPrompt)
         log("再装着を検出したのでプロンプトを鳴らし直します")
+    }
+
+    /// 姿勢の基準が変わったときに、検出器と診断の窓を捨てる
+    private func resetMotionWindows() {
+        detector = HeadGestureDetector(params: params.gesture)
+        shadowDetector = HeadGestureDetector(params: params.gesture)
+        diagCount = 0
+        diagPitchMin = .infinity
+        diagPitchMax = -.infinity
+        diagYawMin = .infinity
+        diagYawMax = -.infinity
+        diagWindowStart = nil
+        diagYawPrevRaw = nil
+        diagYawOffset = 0
     }
 
     private func onHeadSample(_ s: HeadSample) {
@@ -552,7 +572,8 @@ final class WalkSessionController: ObservableObject {
                   + " 平均速度=\(num(m.averageMovingSpeedMPerMin, "%.0f"))m/min(設定 "
                   + String(format: "%.0f", params.budget.walkingSpeedMPerMin) + ")"
                   + " 迂回率=\(num(m.detourFactor(straightLineM: s.distanceM), "%.2f"))(設定 "
-                  + String(format: "%.2f", params.budget.detourFactor) + ")")
+                  + String(format: "%.2f", params.budget.detourFactor) + ")"
+                  + " 精度不足で除外=\(m.rejectedSamples)件")
         logWalkTotals()
     }
 
