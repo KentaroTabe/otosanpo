@@ -6,11 +6,12 @@
     "extension_step_min": 10,
     "max_extensions": 2,
     "re_prompt_interval_sec": 60,
-    "arrival_radius_m": 40
+    "arrival_radius_m": 10
   },
   "budget": {
     "walking_speed_m_per_min": 70,
     "min_moving_speed_m_per_s": 0.5,
+    "path_segment_min_m": 10,
     "detour_factor": 1.3,
     "return_reserve_min": 3,
     "max_return_walk_min": 15,

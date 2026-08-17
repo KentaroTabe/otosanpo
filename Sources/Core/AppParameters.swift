@@ -26,6 +26,9 @@ public struct AppParameters: Codable, Equatable {
         /// 平均速度の集計から「立ち止まっている」サンプルを除く下限 [m/s]。
         /// 実測から歩行速度を求めるための計測用で、判定には使わない
         public var minMovingSpeedMPerS: Double
+        /// 経路長に加算する最小の移動量 [m]。これ未満の差分は GPS の揺れとして捨てる。
+        /// 水平精度(実測 3〜5 m)より大きく取る
+        public var pathSegmentMinM: Double
         public var detourFactor: Double
         public var returnReserveMin: Double
         public var maxReturnWalkMin: Double

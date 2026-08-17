@@ -18,13 +18,23 @@ public struct GaitMetrics: Equatable {
     public init() {}
 
     /// 位置更新を 1 件加える。
-    /// `minMovingSpeedMps` 未満のサンプルは平均速度に入れない(信号待ち・立ち止まりを混ぜない)。
-    /// 経路長は止まっている間も加算されるが、GPS の揺れは水平精度の範囲に収まるため許容する。
-    public mutating func add(_ p: GeoPoint, speedMps: Double?, minMovingSpeedMps: Double) {
+    /// - `minMovingSpeedMps` 未満のサンプルは平均速度に入れない(信号待ち・立ち止まりを混ぜない)
+    /// - 経路長は **`minSegmentM` 以上動いたときだけ**積む。位置更新は 1 秒ごとに来るが、
+    ///   歩行では 1 秒 = 約 1.2 m しか進まない一方、水平精度は 3〜5 m ある。
+    ///   毎回の差分をそのまま足すと GPS の揺れが経路長として累積し、迂回率が過大になる
+    ///   (実測: 直線 317 m の帰路で経路長 419 m。速度の積分から求めた移動距離は約 369 m)
+    public mutating func add(_ p: GeoPoint, speedMps: Double?, minMovingSpeedMps: Double,
+                             minSegmentM: Double) {
         if let last = lastPoint {
-            pathLengthM += Geo.distanceM(last, p)
+            let d = Geo.distanceM(last, p)
+            // 揺れの範囲内の動きは捨てる。基準点は動かさないので、真の移動は次回以降に拾われる
+            if d >= minSegmentM {
+                pathLengthM += d
+                lastPoint = p
+            }
+        } else {
+            lastPoint = p
         }
-        lastPoint = p
         guard let s = speedMps, s >= minMovingSpeedMps else { return }
         movingSpeedSumMps += s
         movingSamples += 1

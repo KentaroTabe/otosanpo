@@ -343,8 +343,11 @@ final class WalkSessionController: ObservableObject {
         if state == .wandering || state == .promptingReturn || state == .returning {
             let speed = location.motionFix(now: now).speedMps
             let minMoving = params.budget.minMovingSpeedMPerS
-            walkMetrics.add(p, speedMps: speed, minMovingSpeedMps: minMoving)
-            returnMetrics?.add(p, speedMps: speed, minMovingSpeedMps: minMoving)
+            let minSegment = params.budget.pathSegmentMinM
+            walkMetrics.add(p, speedMps: speed, minMovingSpeedMps: minMoving,
+                            minSegmentM: minSegment)
+            returnMetrics?.add(p, speedMps: speed, minMovingSpeedMps: minMoving,
+                               minSegmentM: minSegment)
         }
         if commuteLearning {
             grid.markExcluded(at: p, date: now)
