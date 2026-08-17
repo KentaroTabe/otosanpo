@@ -88,12 +88,22 @@ final class EarconSynth {
         // モノラル 1 チャンネル。定位は再生時に位置(またはパン)で付ける
         let out = ch[0]
 
+        // 雑音は再現性のために自前の線形合同法で作る(同じ設定なら毎回同じ音になる)
+        var seed: UInt64 = 0x9E3779B97F4A7C15
+        func nextNoise() -> Double {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Double(Int64(bitPattern: seed >> 11)) / Double(1 << 52) - 1.0
+        }
+        let mix = max(0, min(1, tone.noiseMix))
+
         var idx = 0
         for (i, f) in tone.freqsHz.enumerated() {
             for n in 0..<blipFrames {
                 let t = Double(n) / sr
                 let env = 0.5 * (1 - cos(2 * .pi * Double(n) / Double(blipFrames)))
-                out[idx] = Float(sin(2 * .pi * f * t) * env * gain)
+                let tonal = sin(2 * .pi * f * t)
+                let v = tonal * (1 - mix) + nextNoise() * mix
+                out[idx] = Float(v * env * gain)
                 idx += 1
             }
             if i < count - 1 {

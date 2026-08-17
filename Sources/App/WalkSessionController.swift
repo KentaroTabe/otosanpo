@@ -354,11 +354,12 @@ final class WalkSessionController: ObservableObject {
         lastBeacon = (relDeg: rel, at: Date())
         // 顔基準に切り替えた影響を後から評価できるよう、顔の向きと進行方位の両方を残す
         let facingLabel = latestFacingBearing.map { String(format: "%.0f°", $0) } ?? "-"
+        let baselineLabel = headingFusion.baselineDeg.map { String(format: "%.0f°", $0) } ?? "-"
         let travelPan = sin(Geo.angularDiffDeg(bearingHome, travel.deg) * .pi / 180)
-        logToFile(String(format: "ビーコン 距離=%.0fm 自宅方位=%.0f° 進行=%.0f°(%@) 顔=%@ pan=%.2f"
+        logToFile(String(format: "ビーコン 距離=%.0fm 自宅方位=%.0f° 進行=%.0f°(%@) 顔=%@ 基準線=%@ pan=%.2f"
                          + "(進行基準なら %.2f) 間隔=%.1fs [%@]",
                          Geo.distanceM(p, h), bearingHome, travel.deg,
-                         label(for: travel.source), facingLabel, pan, travelPan,
+                         label(for: travel.source), facingLabel, baselineLabel, pan, travelPan,
                          beaconInterval(), summary(of: fix)))
     }
 
@@ -515,9 +516,15 @@ final class WalkSessionController: ObservableObject {
         let hz = elapsed > 0 ? Double(diagCount) / elapsed : 0
         let pitchRange = diagPitchMax - diagPitchMin
         let yawRange = diagYawMax - diagYawMin
-        motionStatusLine = String(format: "モーション %.0f Hz / pitch 振幅 %.1f°(閾値 %.0f) / yaw 振幅 %.1f°(閾値 %.0f)",
+        // yaw の生値と基準線も出す。CoreMotion の yaw が右回りに増えるのか減るのかを
+        // 屋内で確かめられるようにするため(顔を右に向けて数字が増えるかを見る)。
+        // 2026-08-18 の実測で顔の向きの推定が逆側の定位を出したため、符号の切り分けに使う
+        motionStatusLine = String(format: "モーション %.0f Hz / pitch 振幅 %.1f°(閾値 %.0f) / yaw 振幅 %.1f°(閾値 %.0f)"
+                                  + " / yaw 生値 %.0f° 基準線 %@",
                                   hz, pitchRange, params.gesture.nodPitchThresholdDeg * 2,
-                                  yawRange, params.gesture.shakeYawThresholdDeg * 2)
+                                  yawRange, params.gesture.shakeYawThresholdDeg * 2,
+                                  s.yawDeg,
+                                  headingFusion.baselineDeg.map { String(format: "%.0f°", $0) } ?? "未確立")
         if state == .promptingReturn {
             logToFile(motionStatusLine)
         } else if state != .idle {

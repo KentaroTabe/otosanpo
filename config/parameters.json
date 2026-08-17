@@ -36,7 +36,7 @@
     "allow_compass_fallback": false
   },
   "heading": {
-    "use_head_orientation": true,
+    "use_head_orientation": false,
     "baseline_alpha": 0.0005,
     "max_offset_deg": 90,
     "min_samples": 250
@@ -64,11 +64,11 @@
     "use_spatial_audio": true,
     "earcon_gain": 0.5,
     "tones": {
-      "suggestion":     { "freqs_hz": [880.0, 1174.7],        "blip_sec": 0.09, "gap_sec": 0.06 },
-      "time_up_prompt": { "freqs_hz": [659.3, 784.0, 988.0],  "blip_sec": 0.12, "gap_sec": 0.05 },
-      "return_ack":     { "freqs_hz": [523.3, 392.0],         "blip_sec": 0.18, "gap_sec": 0.08 },
-      "home_beacon":    { "freqs_hz": [440.0],                "blip_sec": 0.07, "gap_sec": 0.0  },
-      "arrival":        { "freqs_hz": [523.3, 659.3, 784.0],  "blip_sec": 0.12, "gap_sec": 0.04 }
+      "suggestion":     { "freqs_hz": [880.0, 1174.7],        "blip_sec": 0.09, "gap_sec": 0.06, "noise_mix": 0.25 },
+      "time_up_prompt": { "freqs_hz": [659.3, 784.0, 988.0],  "blip_sec": 0.12, "gap_sec": 0.05, "noise_mix": 0.0 },
+      "return_ack":     { "freqs_hz": [523.3, 392.0],         "blip_sec": 0.18, "gap_sec": 0.08, "noise_mix": 0.0 },
+      "home_beacon":    { "freqs_hz": [440.0],                "blip_sec": 0.07, "gap_sec": 0.0,  "noise_mix": 0.6 },
+      "arrival":        { "freqs_hz": [523.3, 659.3, 784.0],  "blip_sec": 0.12, "gap_sec": 0.04, "noise_mix": 0.0 }
     }
   }
 }

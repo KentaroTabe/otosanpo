@@ -123,5 +123,10 @@ public struct AppParameters: Codable, Equatable {
         public var freqsHz: [Double]
         public var blipSec: Double
         public var gapSec: Double
+        /// 白色雑音を混ぜる割合 [0..1]。
+        /// 純音には 4〜10 kHz の成分が無く、HRTF の前後判別が依存する耳介の
+        /// スペクトル手がかりを運べない。広帯域成分を足すと前後が聴き分けやすくなる
+        /// (2026-08-18 の実測で、純音のビーコンは前後がほぼ判別不能だった)
+        public var noiseMix: Double
     }
 }
