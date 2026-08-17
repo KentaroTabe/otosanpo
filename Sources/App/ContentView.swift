@@ -60,11 +60,13 @@ struct ContentView: View {
                 }
 
                 Section("earcon の試聴") {
-                    Button("提案音(左)") { controller.debugPlay(.suggestion, pan: -1) }
-                    Button("提案音(右)") { controller.debugPlay(.suggestion, pan: 1) }
+                    Button("提案音(左 90°)") { controller.debugPlay(.suggestion, relativeBearingDeg: -90) }
+                    Button("提案音(右 90°)") { controller.debugPlay(.suggestion, relativeBearingDeg: 90) }
+                    // 3D が効いていれば、正面と真後ろが聴き分けられる(パンでは同じに聞こえる)
+                    Button("ビーコン(正面)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: 0) }
+                    Button("ビーコン(真後ろ)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: 180) }
                     Button("時間到来") { controller.debugPlay(.timeUpPrompt) }
                     Button("帰路の確認音") { controller.debugPlay(.returnAck) }
-                    Button("帰路ビーコン") { controller.debugPlay(.homeBeacon) }
                     Button("到着音") { controller.debugPlay(.arrival) }
                 }
 

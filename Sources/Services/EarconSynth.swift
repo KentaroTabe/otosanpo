@@ -11,16 +11,34 @@ import AVFoundation
 final class EarconSynth {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
+    private let environment = AVAudioEnvironmentNode()
     private var buffers: [Earcon: AVAudioPCMBuffer] = [:]
+    /// 3D 音響として繋げられたか。false の間はステレオパンで代替する
+    private(set) var isSpatial = false
 
     init(audio: AppParameters.Audio) throws {
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: audio.sampleRate, channels: 2) else {
+        // 3D 音響(HRTF)は **モノラル入力にしか効かない**。ステレオのままでは
+        // AVAudioEnvironmentNode が定位を付けず、黙って素通りする
+        guard let mono = AVAudioFormat(standardFormatWithSampleRate: audio.sampleRate, channels: 1),
+              let stereo = AVAudioFormat(standardFormatWithSampleRate: audio.sampleRate, channels: 2) else {
             throw NSError(domain: "EarconSynth", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "AVAudioFormat の生成に失敗"])
         }
         engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: format)
+        if audio.useSpatialAudio {
+            engine.attach(environment)
+            engine.connect(player, to: environment, format: mono)
+            engine.connect(environment, to: engine.mainMixerNode, format: stereo)
+            // 聴取者は原点。音源はこちらで動かす(頭の向きは HeadingFusion が方位に織り込む)
+            environment.listenerPosition = AVAudio3DPoint(x: 0, y: 0, z: 0)
+            player.renderingAlgorithm = .HRTF
+            player.position = AVAudio3DPoint(x: 0, y: 0, z: -1)
+            isSpatial = true
+        } else {
+            engine.connect(player, to: engine.mainMixerNode, format: mono)
+        }
 
+        let format = mono
         let gain = audio.earconGain
         buffers[.suggestion] = Self.render(audio.tones.suggestion, format: format, gain: gain)
         buffers[.timeUpPrompt] = Self.render(audio.tones.timeUpPrompt, format: format, gain: gain)
@@ -38,10 +56,18 @@ final class EarconSynth {
         try session.setActive(true)
     }
 
-    /// pan: -1(左)〜 +1(右)
-    func play(_ e: Earcon, pan: Float = 0) {
+    /// 相対方位(顔の向きを 0、右を正)を指定して鳴らす。
+    /// 3D が使えれば前後も区別して定位し、使えなければ左右のパンで代替する。
+    /// nil は「方向を付けない」= 正面。
+    func play(_ e: Earcon, relativeBearingDeg: Double? = nil) {
         guard let b = buffers[e] else { return }
-        player.pan = max(-1, min(1, pan))
+        let deg = relativeBearingDeg ?? 0
+        if isSpatial {
+            let p = SoundPlacement.position(relativeBearingDeg: deg)
+            player.position = AVAudio3DPoint(x: Float(p.x), y: Float(p.y), z: Float(p.z))
+        } else {
+            player.pan = Float(max(-1, min(1, SoundPlacement.pan(relativeBearingDeg: deg))))
+        }
         player.scheduleBuffer(b)
         if !player.isPlaying {
             player.play()
@@ -59,23 +85,20 @@ final class EarconSynth {
         guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(total)),
               let ch = buf.floatChannelData else { return nil }
         buf.frameLength = AVAudioFrameCount(total)
-        let left = ch[0]
-        let right = ch[1]
+        // モノラル 1 チャンネル。定位は再生時に位置(またはパン)で付ける
+        let out = ch[0]
 
         var idx = 0
         for (i, f) in tone.freqsHz.enumerated() {
             for n in 0..<blipFrames {
                 let t = Double(n) / sr
                 let env = 0.5 * (1 - cos(2 * .pi * Double(n) / Double(blipFrames)))
-                let v = Float(sin(2 * .pi * f * t) * env * gain)
-                left[idx] = v
-                right[idx] = v
+                out[idx] = Float(sin(2 * .pi * f * t) * env * gain)
                 idx += 1
             }
             if i < count - 1 {
                 for _ in 0..<gapFrames {
-                    left[idx] = 0
-                    right[idx] = 0
+                    out[idx] = 0
                     idx += 1
                 }
             }

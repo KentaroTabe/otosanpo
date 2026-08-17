@@ -161,7 +161,7 @@ final class WalkSessionController: ObservableObject {
 
     /// earcon の聴き分け確認用。初回の散歩は全方向が未踏で「直進」が最良になり
     /// 提案音が鳴らないため、音そのものの確認はこの経路で行う。
-    func debugPlay(_ e: Earcon, pan: Float = 0) {
+    func debugPlay(_ e: Earcon, relativeBearingDeg: Double = 0) {
         if synth == nil {
             synth = try? EarconSynth(audio: params.audio)
         }
@@ -169,8 +169,9 @@ final class WalkSessionController: ObservableObject {
             log("音声エンジンの初期化に失敗しました")
             return
         }
-        synth.play(e, pan: pan)
-        log("デバッグ再生: \(e.rawValue) pan=\(String(format: "%.1f", pan))")
+        synth.play(e, relativeBearingDeg: relativeBearingDeg)
+        log("デバッグ再生: \(e.rawValue) 方位=\(String(format: "%.0f", relativeBearingDeg))°"
+            + "(\(synth.isSpatial ? "3D" : "パン"))")
     }
 
     // デバッグ用(シミュレータ・モーション非対応時の代替)
@@ -297,7 +298,10 @@ final class WalkSessionController: ObservableObject {
         if let s = BearingSuggester.suggest(position: p, headingDeg: heading, home: h,
                                             grid: grid, homewardBias: bias,
                                             route: params.route, now: Date()) {
-            synth?.play(.suggestion, pan: s.pan)
+            // 提案も顔の向きを基準にする。顔を向けた先が「そちら」になる
+            let reference = latestFacingBearing ?? heading
+            let rel = Geo.angularDiffDeg(s.absoluteBearingDeg, reference)
+            synth?.play(.suggestion, relativeBearingDeg: rel)
             lastSuggestionPoint = p
             log("提案: \(label(for: s.direction)) [\(context)]")
         } else {
@@ -345,8 +349,8 @@ final class WalkSessionController: ObservableObject {
         // 顔基準にすると、首を振っても音が世界に固定されて聞こえる
         let reference = latestFacingBearing ?? travel.deg
         let rel = Geo.angularDiffDeg(bearingHome, reference)
-        let pan = Float(sin(rel * .pi / 180))
-        synth?.play(.homeBeacon, pan: pan)
+        let pan = SoundPlacement.pan(relativeBearingDeg: rel)
+        synth?.play(.homeBeacon, relativeBearingDeg: rel)
         lastBeacon = (relDeg: rel, at: Date())
         // 顔基準に切り替えた影響を後から評価できるよう、顔の向きと進行方位の両方を残す
         let facingLabel = latestFacingBearing.map { String(format: "%.0f°", $0) } ?? "-"

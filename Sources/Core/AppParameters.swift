@@ -104,6 +104,9 @@ public struct AppParameters: Codable, Equatable {
         public var beaconDirectionChangeDeg: Double
         /// 繰り上げの下限間隔 [sec]。連打を防ぐ
         public var beaconMinGapSec: Double
+        /// 3D 音響(HRTF)で定位するか。false ならステレオパンで代替する。
+        /// 3D は前後を区別できるが、モノラル入力と AVAudioEnvironmentNode を要する
+        public var useSpatialAudio: Bool
         public var earconGain: Double
         public var tones: Tones
 
