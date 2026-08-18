@@ -537,7 +537,8 @@ final class WalkSessionController: ObservableObject {
         guard params.heading.useHeadOrientation else { return }
         let p = HeadingFusion.Params(baselineAlpha: params.heading.baselineAlpha,
                                      maxOffsetDeg: params.heading.maxOffsetDeg,
-                                     minSamples: params.heading.minSamples)
+                                     minSamples: params.heading.minSamples,
+                                     yawSign: params.heading.yawSign)
         latestFacingBearing = headingFusion.ingest(headYawDeg: s.yawDeg,
                                                    travelBearingDeg: course, p: p)
     }

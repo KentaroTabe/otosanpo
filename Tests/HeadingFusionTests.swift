@@ -84,6 +84,39 @@ final class HeadingFusionTests: XCTestCase {
         XCTAssertEqual(facing ?? -1, 45, accuracy: 2.0)
     }
 
+    // MARK: - yaw の符号(実機の CoreMotion は反時計回りが正)
+
+    /// 実機の設定。yaw は方位と逆回りなので −1 を掛けてから使う
+    private let inverted = HeadingFusion.Params(baselineAlpha: 0.05, maxOffsetDeg: 90,
+                                                minSamples: 10, yawSign: -1)
+
+    /// 反時計回りの yaw で首を右へ 40° 振ると yaw は **減る**。
+    /// 符号を直していれば、推定した向きは進行方位の右へ動く
+    func testInvertedYawTurnsFacingToTheRight() {
+        var f = HeadingFusion()
+        for _ in 0..<400 { _ = f.ingest(headYawDeg: 30, travelBearingDeg: 90, p: inverted) }
+        let facing = f.ingest(headYawDeg: -10, travelBearingDeg: 90, p: inverted)
+        XCTAssertEqual(facing ?? -1, 130, accuracy: 2.0)
+    }
+
+    /// 符号を直さないと、同じ動きで **逆側** を指す。
+    /// 2026-08-18 の実測で「自宅が正面なのに右いっぱいで鳴る」が起きた原因
+    func testWrongSignPointsToTheOppositeSide() {
+        var f = HeadingFusion()
+        for _ in 0..<400 { _ = f.ingest(headYawDeg: 30, travelBearingDeg: 90, p: fast) }
+        let facing = f.ingest(headYawDeg: -10, travelBearingDeg: 90, p: fast)
+        XCTAssertEqual(facing ?? -1, 50, accuracy: 2.0)
+    }
+
+    /// 体ごと右に 90° 曲がると、方位は +90°、反時計回りの yaw は −90° 動く。
+    /// 符号が合っていれば相対角は 0 のままで、音は横へ飛ばない
+    func testInvertedYawKeepsOffsetZeroWhenBodyTurns() {
+        var f = HeadingFusion()
+        for _ in 0..<400 { _ = f.ingest(headYawDeg: 30, travelBearingDeg: 90, p: inverted) }
+        let facing = f.ingest(headYawDeg: -60, travelBearingDeg: 180, p: inverted)
+        XCTAssertEqual(facing ?? -1, 180, accuracy: 2.0)
+    }
+
     /// reset 後は基準線を作り直す
     func testResetClearsBaseline() {
         var f = HeadingFusion()

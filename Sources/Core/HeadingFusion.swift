@@ -25,11 +25,18 @@ public struct HeadingFusion: Equatable {
         public let maxOffsetDeg: Double
         /// 基準線が使えると判断するまでの最小サンプル数
         public let minSamples: Int
+        /// yaw の回転の向きを方位に合わせる符号(+1 か −1)。
+        /// **CoreMotion の yaw は反時計回りが正、方位は時計回りが正**なので、
+        /// 揃っていなければ首を右に向けたとき推定は左へ動く。
+        /// 実測(2026-08-18・全ログの曲がった対 38 件で一致 26%)により **−1** で確定
+        public let yawSign: Double
 
-        public init(baselineAlpha: Double, maxOffsetDeg: Double, minSamples: Int) {
+        public init(baselineAlpha: Double, maxOffsetDeg: Double, minSamples: Int,
+                    yawSign: Double = 1) {
             self.baselineAlpha = baselineAlpha
             self.maxOffsetDeg = maxOffsetDeg
             self.minSamples = minSamples
+            self.yawSign = yawSign
         }
     }
 
@@ -48,7 +55,9 @@ public struct HeadingFusion: Equatable {
     /// 基準線が十分に育つまでは nil(呼び出し側は進行方位をそのまま使う)。
     public mutating func ingest(headYawDeg: Double, travelBearingDeg: Double,
                                 p: Params) -> Double? {
-        let raw = Geo.normalizeDeg(headYawDeg - travelBearingDeg)
+        // yaw を方位と同じ回り方に直してから差を取る。
+        // 符号が違うと、体ごと曲がっただけで raw が 2 倍動き、首を振ったと誤認する
+        let raw = Geo.normalizeDeg(headYawDeg * p.yawSign - travelBearingDeg)
         let rad = raw * .pi / 180
 
         defer {
