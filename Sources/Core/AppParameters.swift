@@ -91,6 +91,8 @@ public struct AppParameters: Codable, Equatable {
         public var maxOffsetDeg: Double
         /// 基準線が使えると判断するまでの最小サンプル数(50 Hz で 250 = 5 秒)
         public var minSamples: Int
+        /// yaw と course の対をログに残す間隔 [sec]。回転の向きが揃っているかの判定材料
+        public var logIntervalSec: Double
     }
 
     public struct Gesture: Codable, Equatable {

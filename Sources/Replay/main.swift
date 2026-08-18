@@ -292,6 +292,51 @@ print("\n自宅座標はログに無いため、帰宅バイアスは 0 とし�
 /// 屋内で数字を読んで判断する代わりに、**歩行中の記録から自動で決める**。
 /// 角を曲がれば頭も体も同じ向きに回るので、Δyaw と Δcourse の符号が揃うかを数えればよい。
 print("\n== yaw の符号(HeadingFusion の前提)==")
+/// 「頭向き yaw=12.3° course=45.6°」の対を読む。対がそのまま揃うので判定が素直
+func readHeadingPairs(_ path: String) -> [(time: Date, yawDeg: Double, courseDeg: Double)] {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    var out: [(time: Date, yawDeg: Double, courseDeg: Double)] = []
+    for line in text.split(separator: "\n") {
+        let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        guard cols.count >= 5, cols[4].hasPrefix("頭向き ") else { continue }
+        guard let t = f.date(from: cols[0]),
+              let y = numberAfter("yaw=", in: cols[4]),
+              let c = numberAfter("course=", in: cols[4]) else { continue }
+        out.append((t, y, c))
+    }
+    return out
+}
+
+let pairs = readHeadingPairs(logPath)
+if pairs.count >= 10 {
+    var agree = 0, used = 0
+    for i in 1..<pairs.count {
+        let dt = pairs[i].time.timeIntervalSince(pairs[i - 1].time)
+        guard dt > 0, dt <= 6 else { continue }
+        let dYaw = Geo.angularDiffDeg(pairs[i].yawDeg, pairs[i - 1].yawDeg)
+        let dCourse = Geo.angularDiffDeg(pairs[i].courseDeg, pairs[i - 1].courseDeg)
+        // はっきり回った対だけ数える。小さい変化は雑音
+        guard abs(dYaw) >= 10, abs(dCourse) >= 10 else { continue }
+        used += 1
+        if (dYaw > 0) == (dCourse > 0) { agree += 1 }
+    }
+    if used >= 5 {
+        let rate = Double(agree) / Double(used) * 100
+        print(String(format: "  「頭向き」の対 %d 件のうち符号が一致: %d 件 (%.0f%%)", used, agree, rate))
+        if rate >= 70 {
+            print("  → 符号は揃っている。baseline_alpha の追従が遅すぎた側を疑う。")
+        } else if rate <= 30 {
+            print("  → 符号が反転している。yaw を負にしてから使う必要がある。")
+        } else {
+            print("  → 判定できない。")
+        }
+        exit(0)
+    }
+    print("  「頭向き」の対が \(used) 件しか使えないため、古い方式で判定する")
+}
+
 let yaws = readYaw(logPath)
 if yaws.count < 10 {
     print("  yaw を含む行が足りません(\(yaws.count) 件)。")

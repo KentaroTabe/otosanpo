@@ -35,6 +35,9 @@ final class WalkSessionController: ObservableObject {
     private var lastGoodCourse: (deg: Double, at: Date)?
     private var directionUnavailableLogged = false
     private var lastSuggestionPoint: GeoPoint?
+    private var lastSuggestionAt: Date?
+    /// 提案を出してよい状態か(WalkMachine の効果で切り替える)
+    private var suggestionsEnabled = false
     private var sessionEnd: Date?
     private var ackEnd: Date?
     /// 散歩全体と帰路それぞれの歩行実測。予算模型の係数を実測から決めるための計測
@@ -46,14 +49,16 @@ final class WalkSessionController: ObservableObject {
     private var promptPending = false
     /// 直近のビーコンで鳴らした相対方位と時刻(方向が変わったら次を繰り上げるため)
     private var lastBeacon: (relDeg: Double, at: Date)?
-    /// 顔の向きの推定。定位の基準を進行方位から「顔の向き」へ寄せる
     /// 経路データ。Documents に置かれていれば読む。無ければグリッドのみで動く
     private var graph: WalkGraph?
+    /// 顔の向きの推定。定位の基準を進行方位から「顔の向き」へ寄せる
     private var headingFusion = HeadingFusion()
     /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
     private var latestCourseBearing: Double?
     /// 推定した顔の絶対方位。nil なら進行方位をそのまま使う
     private var latestFacingBearing: Double?
+    /// yaw と course を突き合わせた記録を残した時刻(符号の判定材料。間隔を空けて残す)
+    private var lastHeadingLogAt: Date?
     private var suggestionTimer: Timer?
     private var beaconTimer: Timer?
     private var promptTimer: Timer?
@@ -115,10 +120,8 @@ final class WalkSessionController: ObservableObject {
             HomeStore.save(p)
             log("出発点を自宅として設定しました")
         }
-        if synth == nil {
-            synth = try? EarconSynth(audio: params.audio)
-            if synth == nil { log("音声エンジンの初期化に失敗(未確認要素)") }
-        }
+        ensureSynth()
+        if synth == nil { log("音声エンジンの初期化に失敗(未確認要素)") }
         extensionsUsed = 0
         ackEnd = nil
         lastSuggestionPoint = nil
@@ -133,6 +136,8 @@ final class WalkSessionController: ObservableObject {
         headingFusion.reset()
         latestCourseBearing = nil
         latestFacingBearing = nil
+        lastSuggestionAt = nil
+        lastHeadingLogAt = nil
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
@@ -162,19 +167,28 @@ final class WalkSessionController: ObservableObject {
         log("フィールドログを消去しました")
     }
 
+    /// 音声エンジンを用意する。エンジンの再起動をフィールドログへ流す配線もここで行う
+    private func ensureSynth() {
+        guard synth == nil else { return }
+        let s = try? EarconSynth(audio: params.audio)
+        s?.onEvent = { [weak self] message in
+            Task { @MainActor in self?.log(message) }
+        }
+        synth = s
+    }
+
     /// earcon の聴き分け確認用。初回の散歩は全方向が未踏で「直進」が最良になり
     /// 提案音が鳴らないため、音そのものの確認はこの経路で行う。
     func debugPlay(_ e: Earcon, relativeBearingDeg: Double = 0) {
-        if synth == nil {
-            synth = try? EarconSynth(audio: params.audio)
-        }
+        ensureSynth()
         guard let synth else {
             log("音声エンジンの初期化に失敗しました")
             return
         }
         synth.play(e, relativeBearingDeg: relativeBearingDeg)
         log("デバッグ再生: \(e.rawValue) 方位=\(String(format: "%.0f", relativeBearingDeg))°"
-            + "(\(synth.isSpatial ? "3D" : "パン"))")
+            + "(\(synth.isSpatial ? "3D" : "パン")"
+            + "・エンジン\(synth.isRunning ? "稼働" : "停止"))")
     }
 
     // デバッグ用(シミュレータ・モーション非対応時の代替)
@@ -207,10 +221,14 @@ final class WalkSessionController: ObservableObject {
             synth?.play(earcon)
 
         case .startSuggestionLoop:
-            startSuggestionLoop()
+            // タイマーでは回さない。交差点は「近づいた時」にしか意味を持たないので、
+            // 位置更新のたびに評価する(25 秒ごとの点検では交差点を取りこぼす。
+            // 2026-08-18 の実測: 実機は 13 分で 1 回しか鳴らなかったが、
+            // 同じログを 1 Hz で再生すると 12 回鳴っていた)
+            suggestionsEnabled = true
 
         case .stopSuggestionLoop:
-            suggestionTimer?.invalidate()
+            suggestionsEnabled = false
 
         case .startPromptWindow:
             promptTimer?.invalidate()
@@ -263,16 +281,9 @@ final class WalkSessionController: ObservableObject {
         }
     }
 
-    private func startSuggestionLoop() {
-        suggestionTimer?.invalidate()
-        suggestionTimer = Timer.scheduledTimer(withTimeInterval: params.audio.suggestionMinIntervalSec,
-                                               repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tickSuggestion() }
-        }
-    }
-
     private func tickSuggestion() {
-        guard state == .wandering,
+        guard suggestionsEnabled,
+              state == .wandering,
               let p = location.position,
               let h = home,
               let end = sessionEnd else { return }
@@ -280,6 +291,11 @@ final class WalkSessionController: ObservableObject {
         // 立ち止まっている間や同じ交差点で繰り返し鳴らさないため
         if let last = lastSuggestionPoint,
            Geo.distanceM(last, p) < params.route.suggestionMinTravelM {
+            return
+        }
+        // 密な交差点で連続して鳴らないよう、時間の下限も置く
+        if let at = lastSuggestionAt,
+           Date().timeIntervalSince(at) < params.audio.suggestionMinIntervalSec {
             return
         }
         let fix = location.motionFix()
@@ -320,6 +336,7 @@ final class WalkSessionController: ObservableObject {
             let rel = Geo.angularDiffDeg(c.branch.bearingDeg, reference)
             synth?.play(.suggestion, relativeBearingDeg: rel)
             lastSuggestionPoint = p
+            lastSuggestionAt = Date()
             log(String(format: "提案(分岐): 相対 %+.0f° %@ 横断=%d 交差点まで=%.0fm score=%.2f [%@]",
                        rel, "\(c.branch.cls)", c.branch.crossCost, x.distanceM, c.score, context))
             return
@@ -332,6 +349,7 @@ final class WalkSessionController: ObservableObject {
             let rel = Geo.angularDiffDeg(s.absoluteBearingDeg, reference)
             synth?.play(.suggestion, relativeBearingDeg: rel)
             lastSuggestionPoint = p
+            lastSuggestionAt = Date()
             log("提案: \(label(for: s.direction)) [\(context)]")
         } else {
             // 「なぜ鳴らなかったか」を後から追えるようにする(直進が最良 or スコア不足)
@@ -433,6 +451,8 @@ final class WalkSessionController: ObservableObject {
             log("到着しました")
         } else if state == .returning {
             advanceBeaconIfDirectionChanged(at: p, now: now)
+        } else if state == .wandering {
+            tickSuggestion()
         }
         updateStatus()
     }
@@ -452,8 +472,17 @@ final class WalkSessionController: ObservableObject {
 
     /// 顔の絶対方位を更新する。進行方位が取れている間だけ基準線を育てる
     private func updateFacingBearing(_ s: HeadSample) {
-        guard params.heading.useHeadOrientation else { return }
         guard let course = latestCourseBearing else { return }
+        // yaw と course の対を一定間隔で残す。角を曲がれば両方が同じだけ回るので、
+        // 回転の向きが揃っているかを後から自動判定できる(再生ツールが読む)
+        let now = Date()
+        if state == .wandering || state == .returning,
+           lastHeadingLogAt == nil
+            || now.timeIntervalSince(lastHeadingLogAt!) >= params.heading.logIntervalSec {
+            lastHeadingLogAt = now
+            logToFile(String(format: "頭向き yaw=%.1f° course=%.1f°", s.yawDeg, course))
+        }
+        guard params.heading.useHeadOrientation else { return }
         let p = HeadingFusion.Params(baselineAlpha: params.heading.baselineAlpha,
                                      maxOffsetDeg: params.heading.maxOffsetDeg,
                                      minSamples: params.heading.minSamples)
@@ -603,6 +632,10 @@ final class WalkSessionController: ObservableObject {
         var parts = ["自宅まで \(Int(d)) m(徒歩約 \(Int(ret.rounded())) 分)"]
         if let end = sessionEnd {
             parts.append("残り \(max(0, Int(end.timeIntervalSinceNow / 60))) 分")
+        }
+        // 無音に気づけるよう、音声エンジンの稼働状態を画面に出す
+        if let synth {
+            parts.append("音声: \(synth.isRunning ? "稼働" : "停止")")
         }
         // 経路データの有無で提案の質が変わるので、読めているかを画面で示す
         if let graph {
