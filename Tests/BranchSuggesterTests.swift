@@ -139,6 +139,52 @@ final class BranchSuggesterTests: XCTestCase {
         XCTAssertEqual(c?.relativeBearingDeg ?? 0, 90, accuracy: 1.0)  // 西
     }
 
+    /// 歩き込んで新鮮さが枯れた界隈でも、相対的に良い分岐があれば鳴る。
+    /// 絶対値の下限を課していた頃は、交差点接近 824 回に対し提案 0 件だった(2026-08-18 実測)
+    func testSuggestsEvenWhenEverythingIsFamiliar() {
+        let g = crossroads()
+        let p = GeoPoint(latitude: lat(20), longitude: lon(0))
+        let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
+        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        let now = Date(timeIntervalSince1970: 0)
+        // 全方向を歩き込む(絶対値の下限を割る水準)。直進(南)はさらに濃く
+        for b in [90.0, 270.0] {
+            let q = Geo.destination(from: x.point, bearingDeg: b, distanceM: 100)
+            for _ in 0..<5 { grid.recordVisit(at: q, date: now) }
+        }
+        let south = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 100)
+        for _ in 0..<40 { grid.recordVisit(at: south, date: now) }
+        let home = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 500)
+
+        let d = BranchSuggester.decide(intersection: x, travelBearingDeg: 180,
+                                       position: p, home: home, grid: grid,
+                                       homewardBias: 0, route: route, now: now)
+        guard case .suggest(let c) = d else {
+            return XCTFail("馴染んだ界隈でも相対的に良い分岐は鳴るべき: \(d)")
+        }
+        // 絶対スコアは低くてよい。直進より良いことが条件
+        XCTAssertLessThan(c.score, route.suggestionMinScore)
+        XCTAssertEqual(abs(c.relativeBearingDeg), 90, accuracy: 1.0)
+    }
+
+    /// 黙った理由が分かる(内訳が取れないと調整できない)
+    func testSilenceCarriesItsReason() {
+        let g = crossroads()
+        let p = GeoPoint(latitude: lat(20), longitude: lon(0))
+        let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
+        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        let now = Date(timeIntervalSince1970: 0)
+        for b in [90.0, 270.0] {
+            let q = Geo.destination(from: x.point, bearingDeg: b, distanceM: 100)
+            for _ in 0..<5 { grid.recordVisit(at: q, date: now) }
+        }
+        let home = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 500)
+        let d = BranchSuggester.decide(intersection: x, travelBearingDeg: 180,
+                                       position: p, home: home, grid: grid,
+                                       homewardBias: 0, route: route, now: now)
+        XCTAssertEqual(d, .silent(.straightIsBest))
+    }
+
     /// 分岐が 2 方向しかない(道が続いているだけ)場所では交差点として扱わない
     func testStraightThroughNodeIsNotAnIntersection() {
         let map = WalkMap(center: GeoPoint(latitude: lat(0), longitude: lon(0)),

@@ -24,7 +24,19 @@ public enum BranchSuggester {
         }
     }
 
-    /// 交差点の分岐から 1 本選ぶ。鳴らす価値が無ければ nil。
+    /// 分岐を選ばなかった理由。「鳴らない」の内訳が分からないと調整できない
+    public enum Silence: String, Equatable {
+        case noCandidates = "候補なし"
+        case straightIsBest = "直進が最良"
+        case marginTooSmall = "直進との差が小さい"
+    }
+
+    public enum Decision: Equatable {
+        case suggest(Choice)
+        case silent(Silence)
+    }
+
+    /// 交差点の分岐から 1 本選ぶ。鳴らす価値が無ければ理由つきで黙る。
     ///
     /// - Parameters:
     ///   - intersection: 前方の交差点
@@ -38,6 +50,20 @@ public enum BranchSuggester {
                               position: GeoPoint, home: GeoPoint,
                               grid: VisitGrid, homewardBias: Double,
                               route: AppParameters.Route, now: Date) -> Choice? {
+        if case .suggest(let c) = decide(intersection: intersection,
+                                         travelBearingDeg: travelBearingDeg,
+                                         position: position, home: home, grid: grid,
+                                         homewardBias: homewardBias, route: route, now: now) {
+            return c
+        }
+        return nil
+    }
+
+    public static func decide(intersection: UpcomingIntersection,
+                              travelBearingDeg: Double,
+                              position: GeoPoint, home: GeoPoint,
+                              grid: VisitGrid, homewardBias: Double,
+                              route: AppParameters.Route, now: Date) -> Decision {
         let homeBearing = Geo.bearingDeg(from: position, to: home)
         var straightScore: Double?
         var best: Choice?
@@ -65,12 +91,20 @@ public enum BranchSuggester {
             }
         }
 
-        guard let b = best else { return nil }
+        guard let b = best else { return .silent(.noCandidates) }
         // 直進が最良なら鳴らさない(直進に音は要らない)
-        guard abs(b.relativeBearingDeg) > route.branchStraightDeg else { return nil }
-        guard b.score >= route.suggestionMinScore else { return nil }
+        guard abs(b.relativeBearingDeg) > route.branchStraightDeg else {
+            return .silent(.straightIsBest)
+        }
+        // **絶対値の下限は課さない**(`suggestion_min_score` はグリッドのみの経路で使う)。
+        // 分岐選択は「ここにある道のうちどれが良いか」という相対比較であり、
+        // 絶対的な新鮮さの下限を課すと、歩き込んだ界隈では一切鳴らなくなる。
+        // 実測(2026-08-18): 交差点接近 824 回に対し提案 0 件。最良スコアの中央値は
+        // -0.17 で、閾値 0.15 に遠く届いていなかった(docs/04)
         // 直進との差がはっきりしている時だけ鳴らす
-        if let s = straightScore, b.score - s < route.suggestionMarginOverStraight { return nil }
-        return b
+        if let s = straightScore, b.score - s < route.suggestionMarginOverStraight {
+            return .silent(.marginTooSmall)
+        }
+        return .suggest(b)
     }
 }

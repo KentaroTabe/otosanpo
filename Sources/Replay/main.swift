@@ -249,6 +249,26 @@ if inMap.isEmpty {
 
 print("\n== 提案の再生(交差点接近の検出 + 分岐の選択)==")
 var grid = VisitGrid(cellSizeM: r.cellSizeM, halfLifeDays: r.visitHalfLifeDays)
+
+// 端末の VisitGrid は過去の散歩ぶん馴染み度を溜めている。
+// 同じ状態を再現しないと「なぜ鳴らないか」を再生で判定できないので、
+// 手元にある過去のログを時系列順にすべて流し込んでから評価する
+var historyFixes = 0
+if let files = try? FileManager.default.contentsOfDirectory(atPath: "field-logs") {
+    for name in files.filter({ $0.hasSuffix(".tsv") }).sorted()
+    where !logPath.hasSuffix(name) {
+        for f in readFixes("field-logs/" + name)
+        where f.state == "wandering" || f.state == "returning" {
+            grid.recordVisit(at: f.point, date: f.time)
+            historyFixes += 1
+        }
+    }
+}
+print("過去のログから馴染み度を再構成: \(historyFixes) 件")
+
+/// 却下の理由を数える。「鳴らない」の内訳が分からないと調整できない
+var rejected: [String: Int] = [:]
+var bestScores: [Double] = []
 var intersectionsSeen = 0
 var choices: [String] = []
 var lastChoiceAt: GeoPoint?
@@ -261,6 +281,36 @@ for f in inMap where f.state == "wandering" {
     intersectionsSeen += 1
     // 直前に提案した地点から離れていなければ鳴らさない(実機と同じ間引き)
     if let last = lastChoiceAt, Geo.distanceM(last, f.point) < r.suggestionMinTravelM { continue }
+
+    // 却下の内訳を出す。BranchSuggester と同じ計算を並べて、どの門で落ちたかを見る
+    let homeBearing = Geo.bearingDeg(from: f.point, to: walkMap.center)
+    var localBest: (rel: Double, score: Double)?
+    var straight: Double?
+    for b in x.branches {
+        let rel = Geo.angularDiffDeg(b.bearingDeg, course)
+        if abs(rel) >= r.branchBackwardDeg { continue }
+        let fam = grid.sectorFamiliarity(from: x.point, bearingDeg: b.bearingDeg,
+                                         params: r, now: f.time)
+        let score = 1.0 / (1.0 + fam)
+            - 0 * abs(Geo.angularDiffDeg(b.bearingDeg, homeBearing)) / 180.0
+            - Double(b.crossCost) * r.crossCostWeight
+            - Double(b.cls.preferenceRank) * r.wayClassWeight
+        if abs(rel) <= r.branchStraightDeg {
+            if straight == nil || score > straight! { straight = score }
+        }
+        if localBest == nil || score > localBest!.score { localBest = (rel, score) }
+    }
+    if let lb = localBest {
+        bestScores.append(lb.score)
+        if abs(lb.rel) <= r.branchStraightDeg {
+            rejected["直進が最良", default: 0] += 1
+        } else if lb.score < r.suggestionMinScore {
+            rejected["スコア不足(< \(r.suggestionMinScore))", default: 0] += 1
+        } else if let st = straight, lb.score - st < r.suggestionMarginOverStraight {
+            rejected["直進との差が小さい", default: 0] += 1
+        }
+    }
+
     guard let c = BranchSuggester.choose(intersection: x, travelBearingDeg: course,
                                          position: f.point, home: walkMap.center,
                                          grid: grid, homewardBias: 0,
@@ -273,6 +323,15 @@ for f in inMap where f.state == "wandering" {
 
 print("交差点に接近した回数: \(intersectionsSeen)")
 print("提案した回数: \(choices.count)")
+if !rejected.isEmpty {
+    print("却下の内訳(移動距離の間引きを通った分):")
+    for (k, v) in rejected.sorted(by: { $0.value > $1.value }) { print("  \(k): \(v) 回") }
+}
+if !bestScores.isEmpty {
+    let sorted = bestScores.sorted()
+    print(String(format: "最良スコアの分布: 最小 %.2f / 中央 %.2f / 最大 %.2f (閾値 %.2f)",
+                 sorted.first!, sorted[sorted.count / 2], sorted.last!, r.suggestionMinScore))
+}
 for line in choices.prefix(30) { print(line) }
 if choices.count > 30 { print("  (以下 \(choices.count - 30) 件省略)") }
 print("\n自宅座標はログに無いため、帰宅バイアスは 0 として再生している"

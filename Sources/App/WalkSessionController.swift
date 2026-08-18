@@ -338,12 +338,15 @@ final class WalkSessionController: ObservableObject {
                 logToFile("提案なし(前方に交差点なし) [\(context)]")
                 return
             }
-            guard let c = BranchSuggester.choose(intersection: x, travelBearingDeg: heading,
-                                                position: p, home: h, grid: grid,
-                                                homewardBias: bias,
-                                                route: params.route, now: Date()) else {
-                logToFile(String(format: "提案なし(分岐 %d 本・交差点まで %.0fm) [%@]",
-                                 x.branches.count, x.distanceM, context))
+            let decision = BranchSuggester.decide(intersection: x, travelBearingDeg: heading,
+                                                  position: p, home: h, grid: grid,
+                                                  homewardBias: bias,
+                                                  route: params.route, now: Date())
+            guard case .suggest(let c) = decision else {
+                if case .silent(let why) = decision {
+                    logToFile(String(format: "提案なし(%@・分岐 %d 本・交差点まで %.0fm) [%@]",
+                                     why.rawValue, x.branches.count, x.distanceM, context))
+                }
                 return
             }
             lastSuggestionPoint = p
