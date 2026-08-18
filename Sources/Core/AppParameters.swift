@@ -16,7 +16,10 @@ public struct AppParameters: Codable, Equatable {
         public var defaultDurationMin: Double
         public var minDurationMin: Double
         public var maxDurationMin: Double
-        public var extensionStepMin: Double
+        /// 延長 1 回で足す時間の、元の設定時間に対する比。
+        /// 固定分ではなく比例にする(30 分の散歩と 90 分の散歩で延長の意味を揃える。
+        /// 2026-08-17 決定、係数は暫定)
+        public var extensionRatio: Double
         public var maxExtensions: Int
         public var rePromptIntervalSec: Double
         public var arrivalRadiusM: Double
@@ -34,7 +37,6 @@ public struct AppParameters: Codable, Equatable {
         public var maxAccuracyForMetricsM: Double
         public var detourFactor: Double
         public var returnReserveMin: Double
-        public var maxReturnWalkMin: Double
         public var softZoneRatio: Double
     }
 
@@ -130,6 +132,13 @@ public struct AppParameters: Codable, Equatable {
         public var behindThresholdDeg: Double
         /// 真後ろ用の音色をどれだけ暗くするか [0..1]。周波数を下げ雑音成分を削る
         public var behindDarkness: Double
+        /// 曲がり角の誘導音の間隔 [sec]。遠いほど疎、近いほど密(ガイガーカウンター方式)
+        public var guidanceIntervalFarSec: Double
+        public var guidanceIntervalNearSec: Double
+        /// この距離以内を「角の直前」とみなし、間隔を最小にする [m]
+        public var guidanceNearDistanceM: Double
+        /// 角からこの距離以上離れたら誘導を終える [m](通過後は間隔が開いて自然に消える)
+        public var guidanceEndDistanceM: Double
         public var earconGain: Double
         public var tones: Tones
 

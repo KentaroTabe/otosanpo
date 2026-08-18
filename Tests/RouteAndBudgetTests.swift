@@ -5,17 +5,31 @@ final class ReturnBudgetTests: XCTestCase {
     private let budget = AppParameters.Budget(
         walkingSpeedMPerMin: 70, minMovingSpeedMPerS: 0.5, pathSegmentMinM: 10,
         maxAccuracyForMetricsM: 20, detourFactor: 1.3,
-        returnReserveMin: 3, maxReturnWalkMin: 15, softZoneRatio: 0.7)
+        returnReserveMin: 3, softZoneRatio: 0.7)
 
     func testEstimatedReturnMin() {
         // 700 m * 1.3 / 70 = 13 分
         XCTAssertEqual(ReturnBudget.estimatedReturnMin(distanceM: 700, p: budget), 13, accuracy: 0.01)
     }
 
-    func testAllowedRadiusCappedByMaxReturnWalk() {
-        // 残り 60 分でも、帰路は maxReturnWalkMin = 15 分ぶんが天井
+    func testAllowedRadiusGrowsWithRemainingTime() {
+        // 天井(max_return_walk_min)は廃止した。残り時間に応じて許容半径は伸び続ける。
+        // 天井があると予算が飽和し、延長しても条件が抜けなくなる(docs/03)
         let r = ReturnBudget.allowedRadiusM(remainingMin: 60, p: budget)
-        XCTAssertEqual(r, 15 * 70 / 1.3, accuracy: 0.01)
+        XCTAssertEqual(r, 57 * 70 / 1.3, accuracy: 0.01)
+    }
+
+    func testShouldPromptReturnAtTheTurnaroundMoment() {
+        // 帰宅推定 = 700 × 1.3 / 70 = 13 分。予備 3 分 → 残り 16 分ちょうどで発火
+        XCTAssertFalse(ReturnBudget.shouldPromptReturn(remainingMin: 17, distanceM: 700, p: budget))
+        XCTAssertTrue(ReturnBudget.shouldPromptReturn(remainingMin: 16, distanceM: 700, p: budget))
+        XCTAssertTrue(ReturnBudget.shouldPromptReturn(remainingMin: 10, distanceM: 700, p: budget))
+    }
+
+    func testShouldPromptNearHomeOnlyWhenTimeIsAlmostUp() {
+        // 自宅の目の前に居れば、残りが予備時間を切るまで鳴らない
+        XCTAssertFalse(ReturnBudget.shouldPromptReturn(remainingMin: 5, distanceM: 10, p: budget))
+        XCTAssertTrue(ReturnBudget.shouldPromptReturn(remainingMin: 3, distanceM: 10, p: budget))
     }
 
     func testAllowedRadiusShrinksAsTimeRunsOut() {

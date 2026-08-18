@@ -31,6 +31,8 @@ final class WalkSessionController: ObservableObject {
     private var shadowDetector: HeadGestureDetector
 
     private var extensionsUsed = 0
+    /// この散歩の設定時間(開始時に確定)。延長量とプロンプト条件の分母になる
+    private var plannedDurationMin: Double = 0
     /// 直前まで有効だった course。course が一時的に無効になっても左右を出し続けるために保持する
     private var lastGoodCourse: (deg: Double, at: Date)?
     private var directionUnavailableLogged = false
@@ -49,6 +51,10 @@ final class WalkSessionController: ObservableObject {
     private var promptPending = false
     /// 直近のビーコンで鳴らした相対方位と時刻(方向が変わったら次を繰り上げるため)
     private var lastBeacon: (relDeg: Double, at: Date)?
+    /// 進行中の曲がり角誘導。1 つの曲がるイベントに対して、角へ近づくほど間隔の詰まる
+    /// 連続音を出し、通り過ぎたら間隔が開いて自然に消える(2026-08-18 のユーザー要望)
+    private var turnGuidance: (point: GeoPoint, bearingDeg: Double, startedAt: Date)?
+    private var guidanceTimer: Timer?
     /// 経路データ。Documents に置かれていれば読む。無ければグリッドのみで動く
     private var graph: WalkGraph?
     /// 顔の向きの推定。定位の基準を進行方位から「顔の向き」へ寄せる
@@ -123,6 +129,7 @@ final class WalkSessionController: ObservableObject {
         ensureSynth()
         if synth == nil { log("音声エンジンの初期化に失敗(未確認要素)") }
         extensionsUsed = 0
+        plannedDurationMin = durationMin
         ackEnd = nil
         lastSuggestionPoint = nil
         // 前回の散歩の向き・影検出の窓・実測値を持ち越さない
@@ -138,6 +145,8 @@ final class WalkSessionController: ObservableObject {
         latestFacingBearing = nil
         lastSuggestionAt = nil
         lastHeadingLogAt = nil
+        turnGuidance = nil
+        guidanceTimer?.invalidate()
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
@@ -201,6 +210,7 @@ final class WalkSessionController: ObservableObject {
     private func apply(_ event: WalkEvent) {
         let (next, effects) = WalkMachine.reduce(state: state, event: event,
                                                  extensionsUsed: extensionsUsed,
+                                                 plannedDurationMin: plannedDurationMin,
                                                  params: params.session)
         state = next
         // 応答待ちを抜けたら、保留していたプロンプトは用済み
@@ -229,6 +239,7 @@ final class WalkSessionController: ObservableObject {
 
         case .stopSuggestionLoop:
             suggestionsEnabled = false
+            stopTurnGuidance("提案の停止")
 
         case .startPromptWindow:
             promptTimer?.invalidate()
@@ -258,6 +269,8 @@ final class WalkSessionController: ObservableObject {
 
         case .stopLoops:
             suggestionTimer?.invalidate()
+            guidanceTimer?.invalidate()
+            turnGuidance = nil
             beaconTimer?.invalidate()
             promptTimer?.invalidate()
             timeUpTimer?.invalidate()
@@ -282,6 +295,8 @@ final class WalkSessionController: ObservableObject {
     }
 
     private func tickSuggestion() {
+        // 誘導が鳴っている間は次の提案を評価しない(1 つの曲がるイベントに 1 つの誘導)
+        guard turnGuidance == nil else { return }
         guard suggestionsEnabled,
               state == .wandering,
               let p = location.position,
@@ -331,14 +346,16 @@ final class WalkSessionController: ObservableObject {
                                  x.branches.count, x.distanceM, context))
                 return
             }
-            // 顔の向きを基準に鳴らす。顔を向けた先が「そちら」になる
-            let reference = latestFacingBearing ?? heading
-            let rel = Geo.angularDiffDeg(c.branch.bearingDeg, reference)
-            synth?.play(.suggestion, relativeBearingDeg: rel)
             lastSuggestionPoint = p
             lastSuggestionAt = Date()
             log(String(format: "提案(分岐): 相対 %+.0f° %@ 横断=%d 交差点まで=%.0fm score=%.2f [%@]",
-                       rel, "\(c.branch.cls)", c.branch.crossCost, x.distanceM, c.score, context))
+                       c.relativeBearingDeg, "\(c.branch.cls)", c.branch.crossCost,
+                       x.distanceM, c.score, context))
+            // 単発で鳴らさず、角までの誘導を始める。
+            // 35 m 手前の 1 音だけでは「言われた場所に道が無い」ように聞こえる
+            // (2026-08-18 の実測: 提案 9 件中 7 件が 32〜35 m 手前 = 探索範囲の縁で鳴っており、
+            //  体感では半分が「道の無い場所」だった)
+            startTurnGuidance(at: x.point, branchBearingDeg: c.branch.bearingDeg)
             return
         }
 
@@ -452,6 +469,7 @@ final class WalkSessionController: ObservableObject {
         } else if state == .returning {
             advanceBeaconIfDirectionChanged(at: p, now: now)
         } else if state == .wandering {
+            checkReturnPrompt(at: p)
             tickSuggestion()
         }
         updateStatus()
@@ -671,6 +689,69 @@ final class WalkSessionController: ObservableObject {
                          change, last.relDeg, rel))
         beaconTimer?.invalidate()
         fireReturnTick()
+    }
+
+    // MARK: - 曲がり角の誘導
+
+    /// 角へ近づくほど間隔が詰まり、通り過ぎると間隔が開いて消える連続音。
+    /// ビーコンと同じガイガーカウンター方式を「次の角」に適用したもの。
+    /// 音は suggestion の 1 種だけを使い、リズムで距離を伝える(語彙 5 種の原則を守る)。
+    private func startTurnGuidance(at point: GeoPoint, branchBearingDeg: Double) {
+        turnGuidance = (point: point, bearingDeg: branchBearingDeg, startedAt: Date())
+        fireGuidanceTick()
+    }
+
+    private func stopTurnGuidance(_ reason: String) {
+        guard turnGuidance != nil else { return }
+        turnGuidance = nil
+        guidanceTimer?.invalidate()
+        logToFile("誘導終了(\(reason))")
+    }
+
+    private func fireGuidanceTick() {
+        guard state == .wandering, let g = turnGuidance, let p = location.position else {
+            stopTurnGuidance("状態が変わった")
+            return
+        }
+        let d = Geo.distanceM(p, g.point)
+        // 角から離れすぎたら終わり(曲がった後も、無視して直進した後も、ここに落ちる)
+        if d > params.audio.guidanceEndDistanceM {
+            stopTurnGuidance(String(format: "角から %.0fm 離れた", d))
+            return
+        }
+        // 向き: 常に「いまの自分から見た角の先の方向」。曲がり終わると正面に来る
+        let reference = latestFacingBearing ?? currentTravel(location.motionFix())?.deg
+        let rel = reference.map { Geo.angularDiffDeg(g.bearingDeg, $0) }
+        synth?.play(.suggestion, relativeBearingDeg: rel)
+        // 間隔: 角までの距離で決める(近いほど密)
+        let a = params.audio
+        let span = params.route.intersectionLookaheadM - a.guidanceNearDistanceM
+        let t = span > 0 ? min(1, max(0, (d - a.guidanceNearDistanceM) / span)) : 0
+        let interval = a.guidanceIntervalNearSec
+            + t * (a.guidanceIntervalFarSec - a.guidanceIntervalNearSec)
+        logToFile(String(format: "誘導 角まで=%.0fm 相対=%@ 間隔=%.1fs",
+                         d, rel.map { String(format: "%+.0f°", $0) } ?? "-", interval))
+        guidanceTimer?.invalidate()
+        guidanceTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.fireGuidanceTick() }
+        }
+    }
+
+    /// 「今帰り始めれば設定時間ちょうどに着く」瞬間にプロンプトを発火する。
+    /// sessionEnd で鳴らす方式では鳴った時点からさらに帰路の時間がかかり、
+    /// 実測でも利用者はタイマーの 6 分前に「帰るべき時が過ぎている」と感じて手動発火した
+    /// (2026-08-18)。sessionEnd のタイマーは GPS が取れない場合の後詰めとして残す。
+    private func checkReturnPrompt(at p: GeoPoint) {
+        guard let h = home, let end = sessionEnd else { return }
+        let remainingMin = end.timeIntervalSinceNow / 60
+        guard ReturnBudget.shouldPromptReturn(remainingMin: remainingMin,
+                                              distanceM: Geo.distanceM(p, h),
+                                              p: params.budget) else { return }
+        log(String(format: "帰りどきです(残り %.0f 分・帰宅推定 %.0f 分)",
+                   remainingMin,
+                   ReturnBudget.estimatedReturnMin(distanceM: Geo.distanceM(p, h),
+                                                   p: params.budget)))
+        apply(.timeUp)
     }
 
     /// 帰路の実測を残す。予算模型の 2 係数を実測値と並べて記録し、
