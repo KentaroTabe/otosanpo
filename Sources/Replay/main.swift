@@ -35,6 +35,22 @@ func numberAfter(_ key: String, in s: String) -> Double? {
     return Double(digits)
 }
 
+/// 「yaw 生値 27°」を含む行(応答待ち中のモーション行と誤検出候補)から yaw を拾う
+func readYaw(_ path: String) -> [(time: Date, yawDeg: Double)] {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    var out: [(time: Date, yawDeg: Double)] = []
+    for line in text.split(separator: "\n") {
+        let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        guard cols.count >= 5, cols[4].contains("yaw 生値 ") else { continue }
+        guard let t = formatter.date(from: cols[0]),
+              let y = numberAfter("yaw 生値 ", in: cols[4]) else { continue }
+        out.append((t, y))
+    }
+    return out
+}
+
 func readFixes(_ path: String) -> [LoggedFix] {
     guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
         FileHandle.standardError.write(Data("ログを読めません: \(path)\n".utf8))
@@ -121,18 +137,16 @@ print("fix 行: \(all.count) 件")
 let returning = all.filter { $0.state == "returning" }
 print("うち帰路: \(returning.count) 件")
 
-guard let first = returning.first, let last = returning.last, returning.count > 2 else {
-    print("帰路の fix が足りません(迂回率は帰路でしか意味を持ちません)")
-    exit(0)
-}
-
+// 帰路が短い記録(机上テストなど)では迂回率の節を飛ばす。
+// **ここで exit しない**。以降のスナップ・yaw の節は帰路が無くても意味を持つ
+let b = params.budget
+if let first = returning.first, let last = returning.last, returning.count > 2 {
 // 自宅座標はログに無いため、到着地点(最後の fix)を自宅とみなす。
 // 到着判定は arrival_radius_m 以内で成立しているので、その誤差の範囲で近似できる
 let straight = Geo.distanceM(first.point, last.point)
 let elapsedMin = last.time.timeIntervalSince(first.time) / 60
 print(String(format: "帰路: 直線=%.0fm 所要=%.1f分 (自宅は到着地点で近似)", straight, elapsedMin))
 
-let b = params.budget
 print("\n== 実機の設定で再生 ==")
 describe("現行(精度\(Int(b.maxAccuracyForMetricsM))m/区間\(Int(b.pathSegmentMinM))m)",
          replay(returning, limits: GaitMetrics.Limits(
@@ -165,6 +179,9 @@ for acc in [10.0, 15.0, 20.0, 30.0, 50.0] {
 
 print("\n迂回率は「経路長 / 直線距離」。速度積分より経路長が大きく上回る条件は、"
       + "GPS の揺れを経路長として数えている疑いがある。")
+} else {
+    print("帰路の fix が \(returning.count) 件しかないため、迂回率の節は省略")
+}
 
 // MARK: - 経路データがあれば、道路スナップと提案を再生する
 
@@ -176,14 +193,11 @@ let clock: DateFormatter = {
 }()
 
 let mapPath = args.count >= 4 ? args[3] : "maps/otosanpo-map.json"
-guard let mapData = FileManager.default.contents(atPath: mapPath),
-      let walkMap = try? JSONDecoder().decode(WalkMap.self, from: mapData) else {
-    print("\n経路データが無いため、スナップの再生は省略(\(mapPath))")
-    print("scripts/build_map.sh で生成すると、この先も再生できます。")
-    exit(0)
-}
+let loadedMap = FileManager.default.contents(atPath: mapPath)
+    .flatMap { try? JSONDecoder().decode(WalkMap.self, from: $0) }
 
 let r = params.route
+if let walkMap = loadedMap {
 let graph = WalkGraph(map: walkMap, cellSizeM: r.mapIndexCellSizeM)
 print("\n== 道路スナップの再生 ==")
 print("地図: 中心=(\(walkMap.center.latitude), \(walkMap.center.longitude))"
@@ -263,3 +277,70 @@ for line in choices.prefix(30) { print(line) }
 if choices.count > 30 { print("  (以下 \(choices.count - 30) 件省略)") }
 print("\n自宅座標はログに無いため、帰宅バイアスは 0 として再生している"
       + "(交差点検出と分岐選択の確認が目的)。")
+} else {
+    print("\n経路データが無いため、スナップの再生は省略(\(mapPath))")
+    print("scripts/build_map.sh で生成すると、この先も再生できます。")
+}
+
+
+// MARK: - CoreMotion の yaw の符号を実測から決める
+
+/// 顔の向きの推定(HeadingFusion)は、CoreMotion の yaw と方位の**回転の向きが揃っている**
+/// ことを前提にしている。CoreMotion は反時計回りが正、方位は時計回りが正なので、
+/// 揃っていなければ首を右に向けたときに推定は左へ動く(2026-08-18 の実測で疑われた)。
+///
+/// 屋内で数字を読んで判断する代わりに、**歩行中の記録から自動で決める**。
+/// 角を曲がれば頭も体も同じ向きに回るので、Δyaw と Δcourse の符号が揃うかを数えればよい。
+print("\n== yaw の符号(HeadingFusion の前提)==")
+let yaws = readYaw(logPath)
+if yaws.count < 10 {
+    print("  yaw を含む行が足りません(\(yaws.count) 件)。")
+    print("  この判定には歩行中の記録が要る(机上のテストでは曲がらないので判定できない)。")
+} else {
+    /// ±180 を跨ぐ差を -180..180 に畳む
+    func delta(_ a: Double, _ b: Double) -> Double { Geo.angularDiffDeg(a, b) }
+
+    var agree = 0, disagree = 0, used = 0
+    var i = 1
+    while i < yaws.count {
+        let t0 = yaws[i - 1].time, t1 = yaws[i].time
+        let dt = t1.timeIntervalSince(t0)
+        // 間が空きすぎた対は、間に何が起きたか分からないので使わない
+        guard dt > 0, dt <= 3 else { i += 1; continue }
+        let dYaw = delta(yaws[i].yawDeg, yaws[i - 1].yawDeg)
+        // 小さすぎる変化は雑音。はっきり回った対だけ数える
+        guard abs(dYaw) >= 10 else { i += 1; continue }
+        // 同じ時刻に最も近い fix の course を引く
+        func course(near t: Date) -> Double? {
+            var best: (d: TimeInterval, c: Double)?
+            for f in all {
+                guard let c = f.courseDeg, c >= 0 else { continue }
+                let d = abs(f.time.timeIntervalSince(t))
+                if d <= 2, best == nil || d < best!.d { best = (d, c) }
+            }
+            return best?.c
+        }
+        guard let c0 = course(near: t0), let c1 = course(near: t1) else { i += 1; continue }
+        let dCourse = delta(c1, c0)
+        guard abs(dCourse) >= 10 else { i += 1; continue }
+        used += 1
+        if (dYaw > 0) == (dCourse > 0) { agree += 1 } else { disagree += 1 }
+        i += 1
+    }
+
+    if used < 5 {
+        print("  判定に使える対が \(used) 件しかありません。曲がる場面を含む散歩の記録が要ります。")
+    } else {
+        let rate = Double(agree) / Double(used) * 100
+        print(String(format: "  はっきり回った対 %d 件のうち、Δyaw と Δcourse の符号が一致: %d 件 (%.0f%%)",
+                     used, agree, rate))
+        if rate >= 70 {
+            print("  → 符号は揃っている。HeadingFusion の前提は正しい。")
+            print("     基準線の追従が遅すぎた可能性を疑う(baseline_alpha)。")
+        } else if rate <= 30 {
+            print("  → 符号が反転している。yaw を負にしてから basis に入れる必要がある。")
+        } else {
+            print("  → 判定できない。対の数を増やすか、別の指標が要る。")
+        }
+    }
+}
