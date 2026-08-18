@@ -67,6 +67,9 @@ public struct AppParameters: Codable, Equatable {
         public var crossCostWeight: Double
         /// 道の種別の序列 1 段あたりスコアから引く量(歩行者専用を好む強さ)
         public var wayClassWeight: Double
+        /// 分岐が直進より何倍新鮮なら鳴らすか。**絶対差ではなく比**で見る。
+        /// 新鮮さは馴染むほど 0 に圧縮されるので、絶対差では歩き込んだ地点ほど黙る
+        public var branchNoveltyRatio: Double
     }
 
     public struct Location: Codable, Equatable {
@@ -139,6 +142,9 @@ public struct AppParameters: Codable, Equatable {
         public var guidanceNearDistanceM: Double
         /// 角からこの距離以上離れたら誘導を終える [m](通過後は間隔が開いて自然に消える)
         public var guidanceEndDistanceM: Double
+        /// 最接近点からこれ以上遠ざかったら誘導を終える [m]。
+        /// 通り過ぎた角を指し続けると混乱するだけなので、離れ始めたら諦める
+        public var guidanceLeftBehindM: Double
         public var earconGain: Double
         public var tones: Tones
 

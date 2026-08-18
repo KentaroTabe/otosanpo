@@ -53,7 +53,8 @@ final class WalkSessionController: ObservableObject {
     private var lastBeacon: (relDeg: Double, at: Date)?
     /// 進行中の曲がり角誘導。1 つの曲がるイベントに対して、角へ近づくほど間隔の詰まる
     /// 連続音を出し、通り過ぎたら間隔が開いて自然に消える(2026-08-18 のユーザー要望)
-    private var turnGuidance: (point: GeoPoint, bearingDeg: Double, startedAt: Date)?
+    private var turnGuidance: (point: GeoPoint, bearingDeg: Double,
+                               startedAt: Date, closestM: Double)?
     private var guidanceTimer: Timer?
     /// 経路データ。Documents に置かれていれば読む。無ければグリッドのみで動く
     private var graph: WalkGraph?
@@ -251,10 +252,22 @@ final class WalkSessionController: ObservableObject {
 
         case .extendSession(let minutes):
             extensionsUsed += 1
-            sessionEnd = Date().addingTimeInterval(minutes * 60)
+            // **延長は「もう少し歩ける時間」でなければ意味がない。**
+            // 単に now + 延長分にすると、帰宅推定がそれを上回る場所では
+            // 直後にまた発火する。実測(2026-08-18): +3 分の延長に対し帰宅推定 4 分で、
+            // 1 秒後に再発火して 4 回連続で首を振る羽目になった。
+            // 帰宅ぶんと予備を先に確保したうえで、延長分だけ歩ける締切にする
+            let reserveMin: Double = {
+                guard let p = location.position, let h = home else { return 0 }
+                return ReturnBudget.estimatedReturnMin(distanceM: Geo.distanceM(p, h),
+                                                       p: params.budget)
+                    + params.budget.returnReserveMin
+            }()
+            sessionEnd = Date().addingTimeInterval((reserveMin + minutes) * 60)
             promptTimer?.invalidate()
             scheduleTimeUp()
-            log("延長 +\(Int(minutes)) 分(\(extensionsUsed)/\(params.session.maxExtensions) 回)")
+            log(String(format: "延長 +%.0f 分(帰宅ぶん %.0f 分を別に確保)(%d/%d 回)",
+                       minutes, reserveMin, extensionsUsed, params.session.maxExtensions))
 
         case .startReturnPhase:
             promptTimer?.invalidate()
@@ -700,7 +713,9 @@ final class WalkSessionController: ObservableObject {
     /// ビーコンと同じガイガーカウンター方式を「次の角」に適用したもの。
     /// 音は suggestion の 1 種だけを使い、リズムで距離を伝える(語彙 5 種の原則を守る)。
     private func startTurnGuidance(at point: GeoPoint, branchBearingDeg: Double) {
-        turnGuidance = (point: point, bearingDeg: branchBearingDeg, startedAt: Date())
+        let d = location.position.map { Geo.distanceM($0, point) } ?? .greatestFiniteMagnitude
+        turnGuidance = (point: point, bearingDeg: branchBearingDeg,
+                        startedAt: Date(), closestM: d)
         fireGuidanceTick()
     }
 
@@ -717,23 +732,42 @@ final class WalkSessionController: ObservableObject {
             return
         }
         let d = Geo.distanceM(p, g.point)
-        // 角から離れすぎたら終わり(曲がった後も、無視して直進した後も、ここに落ちる)
+        turnGuidance?.closestM = min(g.closestM, d)
+        let closest = min(g.closestM, d)
+
+        // 角から離れすぎたら終わり
         if d > params.audio.guidanceEndDistanceM {
             stopTurnGuidance(String(format: "角から %.0fm 離れた", d))
             return
         }
-        // 向き: 常に「いまの自分から見た角の先の方向」。曲がり終わると正面に来る
+        // **最接近点から遠ざかり始めたら終わり。**
+        // 実測(2026-08-18)では、角に近づかないまま 33m → 43m と離れる間ずっと鳴り続け、
+        // 相対方位が背後(±173°)を指していた。通り過ぎた角を指し続けても混乱するだけ
+        if d > closest + params.audio.guidanceLeftBehindM {
+            stopTurnGuidance(String(format: "最接近 %.0fm から %.0fm へ離れた", closest, d))
+            return
+        }
+
         let reference = latestFacingBearing ?? currentTravel(location.motionFix())?.deg
-        let rel = reference.map { Geo.angularDiffDeg(g.bearingDeg, $0) }
+        // **遠いうちは角そのものを指す。** どの角かが分からなければ誘導にならない
+        // (2026-08-18 の指摘)。角に着いたら曲がる先へ向きを移す
+        let toCorner = Geo.bearingDeg(from: p, to: g.point)
+        let near = params.audio.guidanceNearDistanceM
+        let span = params.route.intersectionLookaheadM - near
+        let t = span > 0 ? min(1, max(0, (d - near) / span)) : 0
+        // t=1(遠い)で角の方向、t=0(直前)で曲がる先の方向
+        let target = Geo.normalizeDeg(g.bearingDeg + Geo.angularDiffDeg(toCorner, g.bearingDeg) * t)
+        let rel = reference.map { Geo.angularDiffDeg(target, $0) }
         synth?.play(.suggestion, relativeBearingDeg: rel)
         // 間隔: 角までの距離で決める(近いほど密)
         let a = params.audio
-        let span = params.route.intersectionLookaheadM - a.guidanceNearDistanceM
-        let t = span > 0 ? min(1, max(0, (d - a.guidanceNearDistanceM) / span)) : 0
         let interval = a.guidanceIntervalNearSec
             + t * (a.guidanceIntervalFarSec - a.guidanceIntervalNearSec)
-        logToFile(String(format: "誘導 角まで=%.0fm 相対=%@ 間隔=%.1fs",
-                         d, rel.map { String(format: "%+.0f°", $0) } ?? "-", interval))
+        logToFile(String(format: "誘導 角まで=%.0fm 角の方向=%+.0f° 曲がる先=%+.0f° 鳴らす向き=%@ 間隔=%.1fs",
+                         d,
+                         reference.map { Geo.angularDiffDeg(toCorner, $0) } ?? 0,
+                         reference.map { Geo.angularDiffDeg(g.bearingDeg, $0) } ?? 0,
+                         rel.map { String(format: "%+.0f°", $0) } ?? "-", interval))
         guidanceTimer?.invalidate()
         guidanceTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.fireGuidanceTick() }

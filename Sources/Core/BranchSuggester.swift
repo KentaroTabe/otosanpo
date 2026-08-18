@@ -16,11 +16,14 @@ public enum BranchSuggester {
         /// 進行方向に対する相対角 [deg]。音の定位に使う
         public let relativeBearingDeg: Double
         public let score: Double
+        /// この分岐の新鮮さ(penalty を引く前)。直進との比較は score ではなくこちらで行う
+        public let novelty: Double
 
-        public init(branch: Branch, relativeBearingDeg: Double, score: Double) {
+        public init(branch: Branch, relativeBearingDeg: Double, score: Double, novelty: Double) {
             self.branch = branch
             self.relativeBearingDeg = relativeBearingDeg
             self.score = score
+            self.novelty = novelty
         }
     }
 
@@ -65,7 +68,7 @@ public enum BranchSuggester {
                               grid: VisitGrid, homewardBias: Double,
                               route: AppParameters.Route, now: Date) -> Decision {
         let homeBearing = Geo.bearingDeg(from: position, to: home)
-        var straightScore: Double?
+        var straightNovelty: Double?
         var best: Choice?
 
         for b in intersection.branches {
@@ -84,10 +87,10 @@ public enum BranchSuggester {
 
             // 直進に相当する分岐(進行方向にいちばん近い道)を基準にする
             if abs(rel) <= route.branchStraightDeg {
-                if straightScore == nil || score > straightScore! { straightScore = score }
+                if straightNovelty == nil || novelty > straightNovelty! { straightNovelty = novelty }
             }
             if best == nil || score > best!.score {
-                best = Choice(branch: b, relativeBearingDeg: rel, score: score)
+                best = Choice(branch: b, relativeBearingDeg: rel, score: score, novelty: novelty)
             }
         }
 
@@ -101,8 +104,11 @@ public enum BranchSuggester {
         // 絶対的な新鮮さの下限を課すと、歩き込んだ界隈では一切鳴らなくなる。
         // 実測(2026-08-18): 交差点接近 824 回に対し提案 0 件。最良スコアの中央値は
         // -0.17 で、閾値 0.15 に遠く届いていなかった(docs/04)
-        // 直進との差がはっきりしている時だけ鳴らす
-        if let s = straightScore, b.score - s < route.suggestionMarginOverStraight {
+        //
+        // 直進との比較は**絶対差ではなく比**で見る。新鮮さ 1/(1+馴染み度) は
+        // 馴染むほど 0 に圧縮されるので、絶対差では歩き込んだ地点ほど黙ってしまう。
+        // 比なら「直進より何割新鮮か」を尺度によらず判定できる
+        if let s = straightNovelty, s > 0, b.novelty < s * route.branchNoveltyRatio {
             return .silent(.marginTooSmall)
         }
         return .suggest(b)
