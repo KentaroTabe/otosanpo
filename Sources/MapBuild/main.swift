@@ -6,7 +6,7 @@ import Foundation
 /// jq などで組むと、鍵名や種別の数値がアプリ側と食い違っても気づけない。
 ///
 /// 使い方: scripts/build_map.sh から呼ばれる
-///   mapbuild <入力geojson> <出力json> <中心緯度> <中心経度> <半径m> <生成日>
+///   mapbuild <入力geojson か .gpkg> <出力json> <中心緯度> <中心経度> <半径m> <生成日>
 
 // MARK: - OSM の highway タグ → WayClass
 
@@ -14,12 +14,15 @@ import Foundation
 /// 幹線を含めるのは、実際に歩く経路に現れるため(横断コストで抑制する)
 func wayClass(for highway: String) -> WayClass? {
     switch highway {
-    case "footway", "path", "pedestrian", "steps", "track", "cycleway":
+    case "footway", "path", "pedestrian", "steps", "track", "cycleway", "bridleway":
         return .footway
-    case "residential", "living_street", "service", "unclassified", "road":
+    // Geofabrik の GeoPackage は未舗装路を track_grade1..5 に細分する
+    case let v where v.hasPrefix("track_grade"):
+        return .footway
+    case "residential", "living_street", "service", "unclassified", "road", "unknown":
         return .residential
-    case "primary", "secondary", "tertiary",
-         "primary_link", "secondary_link", "tertiary_link":
+    case "primary", "secondary", "tertiary", "trunk",
+         "primary_link", "secondary_link", "tertiary_link", "trunk_link":
         return .arterial
     default:
         return nil
@@ -58,10 +61,7 @@ let center = GeoPoint(latitude: centerLat, longitude: centerLon)
 
 // MARK: - 読み取り
 
-guard let data = FileManager.default.contents(atPath: inputPath) else {
-    FileHandle.standardError.write(Data("入力を読めません: \(inputPath)\n".utf8))
-    exit(1)
-}
+let isGeoPackage = inputPath.hasSuffix(".gpkg")
 
 /// osmium export の出力は FeatureCollection か GeoJSONSeq のどちらか。
 /// **GeoJSONSeq は RFC 8142 で各レコードの先頭に RS(0x1E)が入る**。
@@ -101,36 +101,79 @@ var ways: [WalkMap.Way] = []
 var skippedTag = 0
 var skippedOutside = 0
 
-for f in features(from: data) {
-    guard let props = f["properties"] as? [String: Any],
-          let highway = props["highway"] as? String,
-          let cls = wayClass(for: highway) else {
-        skippedTag += 1
-        continue
+if isGeoPackage {
+    // 円を覆う矩形を先に出し、GeoPackage 側は外接矩形でふるいにかける
+    let dLat = radiusM / Geo.metersPerDegreeLat
+    let dLon = radiusM / (Geo.metersPerDegreeLat * cos(centerLat * .pi / 180))
+    do {
+        let roads = try GeoPackage.roads(
+            at: inputPath, table: "gis_osm_roads_free",
+            minLat: centerLat - dLat, maxLat: centerLat + dLat,
+            minLon: centerLon - dLon, maxLon: centerLon + dLon,
+            onProgress: { scanned, kept in
+                FileHandle.standardError.write(
+                    Data("  走査 \(scanned) 行 / 範囲内 \(kept) 本\n".utf8))
+            })
+        for r in roads {
+            guard let cls = wayClass(for: r.fclass) else {
+                skippedTag += 1
+                continue
+            }
+            var indices: [Int] = []
+            for pt in r.points {
+                let p = GeoPoint(latitude: pt.lat, longitude: pt.lon)
+                guard Geo.distanceM(center, p) <= radiusM else { continue }
+                indices.append(nodeNumber(lat: pt.lat, lon: pt.lon))
+            }
+            guard indices.count >= 2 else {
+                skippedOutside += 1
+                continue
+            }
+            // free 版の GeoPackage に車線数は無い。最高速度を道の規模の代理にする
+            let lanesProxy = (r.maxspeed ?? 0) >= 60 ? 4 : nil
+            ways.append(WalkMap.Way(n: indices, cls: cls,
+                                    cross: crossCost(highway: r.fclass, lanes: lanesProxy,
+                                                     hasCrossingSignal: false)))
+        }
+    } catch {
+        FileHandle.standardError.write(Data("\(error)\n".utf8))
+        exit(1)
     }
-    guard let geom = f["geometry"] as? [String: Any],
-          let type = geom["type"] as? String, type == "LineString",
-          let coords = geom["coordinates"] as? [[Double]] else { continue }
+} else {
+    guard let data = FileManager.default.contents(atPath: inputPath) else {
+        FileHandle.standardError.write(Data("入力を読めません: \(inputPath)\n".utf8))
+        exit(1)
+    }
+    for f in features(from: data) {
+        guard let props = f["properties"] as? [String: Any],
+              let highway = props["highway"] as? String,
+              let cls = wayClass(for: highway) else {
+            skippedTag += 1
+            continue
+        }
+        guard let geom = f["geometry"] as? [String: Any],
+              let type = geom["type"] as? String, type == "LineString",
+              let coords = geom["coordinates"] as? [[Double]] else { continue }
 
-    let lanes = (props["lanes"] as? String).flatMap { Int($0) } ?? (props["lanes"] as? Int)
-    let signal = (props["crossing"] as? String) == "traffic_signals"
-        || (props["highway"] as? String) == "traffic_signals"
+        let lanes = (props["lanes"] as? String).flatMap { Int($0) } ?? (props["lanes"] as? Int)
+        let signal = (props["crossing"] as? String) == "traffic_signals"
 
-    // 円の外に完全に出ている way は落とす(osmium は矩形で切るため角が余る)
-    var indices: [Int] = []
-    for c in coords where c.count >= 2 {
-        // GeoJSON は [経度, 緯度] の順
-        let p = GeoPoint(latitude: c[1], longitude: c[0])
-        guard Geo.distanceM(center, p) <= radiusM else { continue }
-        indices.append(nodeNumber(lat: c[1], lon: c[0]))
+        // 円の外に完全に出ている way は落とす(osmium は矩形で切るため角が余る)
+        var indices: [Int] = []
+        for c in coords where c.count >= 2 {
+            // GeoJSON は [経度, 緯度] の順
+            let p = GeoPoint(latitude: c[1], longitude: c[0])
+            guard Geo.distanceM(center, p) <= radiusM else { continue }
+            indices.append(nodeNumber(lat: c[1], lon: c[0]))
+        }
+        guard indices.count >= 2 else {
+            skippedOutside += 1
+            continue
+        }
+        ways.append(WalkMap.Way(n: indices, cls: cls,
+                                cross: crossCost(highway: highway, lanes: lanes,
+                                                 hasCrossingSignal: signal)))
     }
-    guard indices.count >= 2 else {
-        skippedOutside += 1
-        continue
-    }
-    ways.append(WalkMap.Way(n: indices, cls: cls,
-                            cross: crossCost(highway: highway, lanes: lanes,
-                                             hasCrossingSignal: signal)))
 }
 
 let map = WalkMap(center: center, radiusM: radiusM, generated: generated,
