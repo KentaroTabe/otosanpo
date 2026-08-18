@@ -135,11 +135,19 @@ public struct AppParameters: Codable, Equatable {
         public var behindThresholdDeg: Double
         /// 真後ろ用の音色をどれだけ暗くするか [0..1]。周波数を下げ雑音成分を削る
         public var behindDarkness: Double
-        /// 曲がり角の誘導音の間隔 [sec]。遠いほど疎、近いほど密(ガイガーカウンター方式)
-        public var guidanceIntervalFarSec: Double
-        public var guidanceIntervalNearSec: Double
-        /// この距離以内を「角の直前」とみなし、間隔を最小にする [m]
-        public var guidanceNearDistanceM: Double
+        /// 曲がり角の誘導音の間隔 [sec]。**固定**。
+        /// 間隔の変化では距離が伝わらなかった(2026-08-18 実測)ため、距離は音量で表す。
+        /// 間隔は「連続音である」ことだけを担う
+        public var guidanceIntervalSec: Double
+        /// 最も遠いときと頂点の音量 [0..1]
+        public var guidanceGainFar: Double
+        public var guidanceGainNear: Double
+        /// 角のこの距離手前で音量が最大になり、向きも曲がる先を指し切る [m]。
+        /// 角そのものを頂点にすると、確定するのが曲がっている最中になる
+        public var guidancePeakBeforeM: Double
+        /// 曲がり終えた後、音量を落としながら鳴らす音の数。
+        /// 「イベントが終わりかけている」ことを音で伝える
+        public var guidanceClosingTones: Int
         /// 角からこの距離以上離れたら誘導を終える [m](通過後は間隔が開いて自然に消える)
         public var guidanceEndDistanceM: Double
         /// 最接近点からこれ以上遠ざかったら誘導を終える [m]。

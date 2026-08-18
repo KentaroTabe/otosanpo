@@ -182,7 +182,12 @@ final class BranchSuggesterTests: XCTestCase {
         let d = BranchSuggester.decide(intersection: x, travelBearingDeg: 180,
                                        position: p, home: home, grid: grid,
                                        homewardBias: 0, route: route, now: now)
-        XCTAssertEqual(d, .silent(.straightIsBest))
+        guard case .silent(let why, let best) = d else {
+            return XCTFail("直進が最良なのに提案した")
+        }
+        XCTAssertEqual(why, .straightIsBest)
+        // 黙った時も最良候補は残す(「惜しかったのか」が分からないと閾値を動かせない)
+        XCTAssertEqual(best?.relativeBearingDeg ?? .nan, 0, accuracy: 1)
     }
 
     /// 分岐が 2 方向しかない(道が続いているだけ)場所では交差点として扱わない

@@ -152,13 +152,17 @@ final class EarconSynth {
         return out
     }
 
-    func play(_ e: Earcon, relativeBearingDeg: Double? = nil) {
+    /// - Parameter gain: 相対音量 [0..1]。曲がり角の誘導が「角までの近さ」を音量で表すため
+    ///   (間隔の変化では距離が伝わらなかった。2026-08-18 実測)。
+    ///   バッファは焼き直さず、再生ノードの音量で変える
+    func play(_ e: Earcon, relativeBearingDeg: Double? = nil, gain: Double = 1.0) {
         // 鳴らす直前にも確かめる。通知を取りこぼしても無音のままにしない
         if !engine.isRunning { recover(reason: "再生前の点検") }
         let deg = relativeBearingDeg ?? 0
         // 前後は定位では伝わらない(2026-08-18 実測)。音色で分ける
         let useBehind = Self.isBehind(deg, thresholdDeg: behindThresholdDeg)
         guard let b = (useBehind ? behindBuffers[e] : nil) ?? buffers[e] else { return }
+        player.volume = Float(max(0, min(1, gain)))
         if isSpatial {
             let p = SoundPlacement.position(relativeBearingDeg: deg)
             player.position = AVAudio3DPoint(x: Float(p.x), y: Float(p.y), z: Float(p.z))
