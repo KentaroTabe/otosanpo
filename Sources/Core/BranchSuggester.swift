@@ -36,7 +36,18 @@ public enum BranchSuggester {
 
     public enum Decision: Equatable {
         case suggest(Choice)
-        case silent(Silence)
+        /// 黙った理由と、そのとき最良だった候補(候補なしの場合だけ nil)。
+        /// **「惜しかったのか、遠く及ばなかったのか」が分からないと閾値を動かせない。**
+        /// 実測(2026-08-18)では、最良スコアの分布を見て初めて絶対下限が高すぎると分かった
+        case silent(Silence, best: Choice?)
+
+        /// そのとき最良だった候補(鳴らした場合はそれ自身)
+        public var best: Choice? {
+            switch self {
+            case .suggest(let c): c
+            case .silent(_, let b): b
+            }
+        }
     }
 
     /// 交差点の分岐から 1 本選ぶ。鳴らす価値が無ければ理由つきで黙る。
@@ -94,10 +105,10 @@ public enum BranchSuggester {
             }
         }
 
-        guard let b = best else { return .silent(.noCandidates) }
+        guard let b = best else { return .silent(.noCandidates, best: nil) }
         // 直進が最良なら鳴らさない(直進に音は要らない)
         guard abs(b.relativeBearingDeg) > route.branchStraightDeg else {
-            return .silent(.straightIsBest)
+            return .silent(.straightIsBest, best: b)
         }
         // **絶対値の下限は課さない**(`suggestion_min_score` はグリッドのみの経路で使う)。
         // 分岐選択は「ここにある道のうちどれが良いか」という相対比較であり、
@@ -109,7 +120,7 @@ public enum BranchSuggester {
         // 馴染むほど 0 に圧縮されるので、絶対差では歩き込んだ地点ほど黙ってしまう。
         // 比なら「直進より何割新鮮か」を尺度によらず判定できる
         if let s = straightNovelty, s > 0, b.novelty < s * route.branchNoveltyRatio {
-            return .silent(.marginTooSmall)
+            return .silent(.marginTooSmall, best: b)
         }
         return .suggest(b)
     }

@@ -35,22 +35,6 @@ func numberAfter(_ key: String, in s: String) -> Double? {
     return Double(digits)
 }
 
-/// 「yaw 生値 27°」を含む行(応答待ち中のモーション行と誤検出候補)から yaw を拾う
-func readYaw(_ path: String) -> [(time: Date, yawDeg: Double)] {
-    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    var out: [(time: Date, yawDeg: Double)] = []
-    for line in text.split(separator: "\n") {
-        let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-        guard cols.count >= 5, cols[4].contains("yaw 生値 ") else { continue }
-        guard let t = formatter.date(from: cols[0]),
-              let y = numberAfter("yaw 生値 ", in: cols[4]) else { continue }
-        out.append((t, y))
-    }
-    return out
-}
-
 func readFixes(_ path: String) -> [LoggedFix] {
     guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
         FileHandle.standardError.write(Data("ログを読めません: \(path)\n".utf8))
@@ -79,6 +63,13 @@ func readFixes(_ path: String) -> [LoggedFix] {
 }
 
 // MARK: - 再生
+
+/// ログの時刻表示に合わせる(HH:mm:ss)
+let clock: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss"
+    return f
+}()
 
 /// 与えた条件で GaitMetrics を回し直す。実機と同じ Core のコードを使う
 func replay(_ fixes: [LoggedFix], limits: GaitMetrics.Limits) -> GaitMetrics {
@@ -134,26 +125,70 @@ do {
 print("ログ: \(logPath)")
 print("fix 行: \(all.count) 件")
 
-let returning = all.filter { $0.state == "returning" }
-print("うち帰路: \(returning.count) 件")
+/// ログには複数回の散歩が混ざりうる(アプリ内の「ログを消去」を押し忘れた場合)。
+/// **まとめて 1 本の帰路として計算すると無意味な値になる**
+/// (2026-08-18 の 2 回分混在ログで迂回率 4.63 が出た)。
+/// 区切りは「帰路 → 散策に戻った」か「記録が大きく途切れた」で判定する。
+func splitSessions(_ fixes: [LoggedFix]) -> [[LoggedFix]] {
+    var out: [[LoggedFix]] = []
+    var current: [LoggedFix] = []
+    for f in fixes {
+        if let prev = current.last {
+            let gap = f.time.timeIntervalSince(prev.time)
+            let restarted = (prev.state == "returning" && f.state == "wandering")
+            if restarted || gap > 120 {
+                out.append(current)
+                current = []
+            }
+        }
+        current.append(f)
+    }
+    if !current.isEmpty { out.append(current) }
+    return out
+}
 
-// 帰路が短い記録(机上テストなど)では迂回率の節を飛ばす。
-// **ここで exit しない**。以降のスナップ・yaw の節は帰路が無くても意味を持つ
+/// 1 回の散歩の帰路。直線距離は「自宅 = 到着地点(最後の fix)」で近似する
+/// (到着判定は arrival_radius_m 以内で成立しているので、その誤差に収まる)
+struct ReturnLeg {
+    let fixes: [LoggedFix]
+    let straightM: Double
+    let elapsedMin: Double
+}
+
+func returnLeg(of session: [LoggedFix]) -> ReturnLeg? {
+    let r = session.filter { $0.state == "returning" }
+    guard let first = r.first, let last = r.last, r.count > 2 else { return nil }
+    return ReturnLeg(fixes: r,
+                     straightM: Geo.distanceM(first.point, last.point),
+                     elapsedMin: last.time.timeIntervalSince(first.time) / 60)
+}
+
+let sessions = splitSessions(all)
+let legs = sessions.compactMap(returnLeg(of:))
+print("含まれる散歩: \(sessions.count) 回 / 帰路の取れた回: \(legs.count)")
+
 let b = params.budget
-if let first = returning.first, let last = returning.last, returning.count > 2 {
-// 自宅座標はログに無いため、到着地点(最後の fix)を自宅とみなす。
-// 到着判定は arrival_radius_m 以内で成立しているので、その誤差の範囲で近似できる
-let straight = Geo.distanceM(first.point, last.point)
-let elapsedMin = last.time.timeIntervalSince(first.time) / 60
-print(String(format: "帰路: 直線=%.0fm 所要=%.1f分 (自宅は到着地点で近似)", straight, elapsedMin))
+let currentLimits = GaitMetrics.Limits(minMovingSpeedMps: b.minMovingSpeedMPerS,
+                                       minSegmentM: b.pathSegmentMinM,
+                                       maxAccuracyM: b.maxAccuracyForMetricsM)
 
-print("\n== 実機の設定で再生 ==")
-describe("現行(精度\(Int(b.maxAccuracyForMetricsM))m/区間\(Int(b.pathSegmentMinM))m)",
-         replay(returning, limits: GaitMetrics.Limits(
-            minMovingSpeedMps: b.minMovingSpeedMPerS,
-            minSegmentM: b.pathSegmentMinM,
-            maxAccuracyM: b.maxAccuracyForMetricsM)),
-         straightLineM: straight, elapsedMin: elapsedMin)
+if !legs.isEmpty {
+print("\n== 実機の設定で再生(帰路ごと)==")
+for (i, leg) in legs.enumerated() {
+    print(String(format: "帰路 %d: 直線=%.0fm 所要=%.1f分 (%@ 〜)",
+                 i + 1, leg.straightM, leg.elapsedMin,
+                 clock.string(from: leg.fixes[0].time)))
+    describe("  現行(精度\(Int(b.maxAccuracyForMetricsM))m/区間\(Int(b.pathSegmentMinM))m)",
+             replay(leg.fixes, limits: currentLimits),
+             straightLineM: leg.straightM, elapsedMin: leg.elapsedMin)
+}
+
+// パラメータの振り直しは最後の帰路だけで行う(全帰路ぶん出すと読めない)
+let leg = legs[legs.count - 1]
+let straight = leg.straightM
+let elapsedMin = leg.elapsedMin
+let returning = leg.fixes
+print("\n以下の振り直しは最後の帰路(直線 \(Int(straight))m)を対象にする。")
 
 print("\n== フィルタの寄与を切り分け ==")
 let variants: [(String, Double, Double)] = [
@@ -180,17 +215,10 @@ for acc in [10.0, 15.0, 20.0, 30.0, 50.0] {
 print("\n迂回率は「経路長 / 直線距離」。速度積分より経路長が大きく上回る条件は、"
       + "GPS の揺れを経路長として数えている疑いがある。")
 } else {
-    print("帰路の fix が \(returning.count) 件しかないため、迂回率の節は省略")
+    print("帰路として使える区間が無いため、迂回率の節は省略")
 }
 
 // MARK: - 経路データがあれば、道路スナップと提案を再生する
-
-/// ログの時刻表示に合わせる(HH:mm:ss)
-let clock: DateFormatter = {
-    let f = DateFormatter()
-    f.dateFormat = "HH:mm:ss"
-    return f
-}()
 
 let mapPath = args.count >= 4 ? args[3] : "maps/otosanpo-map.json"
 let loadedMap = FileManager.default.contents(atPath: mapPath)
@@ -282,43 +310,25 @@ for f in inMap where f.state == "wandering" {
     // 直前に提案した地点から離れていなければ鳴らさない(実機と同じ間引き)
     if let last = lastChoiceAt, Geo.distanceM(last, f.point) < r.suggestionMinTravelM { continue }
 
-    // 却下の内訳を出す。BranchSuggester と同じ計算を並べて、どの門で落ちたかを見る
-    let homeBearing = Geo.bearingDeg(from: f.point, to: walkMap.center)
-    var localBest: (rel: Double, score: Double)?
-    var straight: Double?
-    for b in x.branches {
-        let rel = Geo.angularDiffDeg(b.bearingDeg, course)
-        if abs(rel) >= r.branchBackwardDeg { continue }
-        let fam = grid.sectorFamiliarity(from: x.point, bearingDeg: b.bearingDeg,
-                                         params: r, now: f.time)
-        let score = 1.0 / (1.0 + fam)
-            - 0 * abs(Geo.angularDiffDeg(b.bearingDeg, homeBearing)) / 180.0
-            - Double(b.crossCost) * r.crossCostWeight
-            - Double(b.cls.preferenceRank) * r.wayClassWeight
-        if abs(rel) <= r.branchStraightDeg {
-            if straight == nil || score > straight! { straight = score }
-        }
-        if localBest == nil || score > localBest!.score { localBest = (rel, score) }
+    // 却下の内訳は **BranchSuggester 自身に答えさせる**。
+    // ここで同じ式を書き写すと、本体のゲートを変えたときに内訳だけが古い判定を報告する
+    // (実測: 比ゲートへ変えた後も「スコア不足(< 0.15)」と出ていた)
+    let decision = BranchSuggester.decide(intersection: x, travelBearingDeg: course,
+                                          position: f.point, home: walkMap.center,
+                                          grid: grid, homewardBias: 0,
+                                          route: r, now: f.time)
+    if let best = decision.best { bestScores.append(best.score) }
+    switch decision {
+    case .silent(let why, _):
+        rejected[why.rawValue, default: 0] += 1
+        continue
+    case .suggest(let c):
+        bestScores.append(c.score)
+        lastChoiceAt = f.point
+        choices.append(String(format: "  %@ 交差点まで %.0fm / 分岐 %d 本 → 相対 %+.0f° (%@, 横断 %d) score=%.2f",
+                              clock.string(from: f.time), x.distanceM, x.branches.count,
+                              c.relativeBearingDeg, "\(c.branch.cls)", c.branch.crossCost, c.score))
     }
-    if let lb = localBest {
-        bestScores.append(lb.score)
-        if abs(lb.rel) <= r.branchStraightDeg {
-            rejected["直進が最良", default: 0] += 1
-        } else if lb.score < r.suggestionMinScore {
-            rejected["スコア不足(< \(r.suggestionMinScore))", default: 0] += 1
-        } else if let st = straight, lb.score - st < r.suggestionMarginOverStraight {
-            rejected["直進との差が小さい", default: 0] += 1
-        }
-    }
-
-    guard let c = BranchSuggester.choose(intersection: x, travelBearingDeg: course,
-                                         position: f.point, home: walkMap.center,
-                                         grid: grid, homewardBias: 0,
-                                         route: r, now: f.time) else { continue }
-    lastChoiceAt = f.point
-    choices.append(String(format: "  %@ 交差点まで %.0fm / 分岐 %d 本 → 相対 %+.0f° (%@, 横断 %d) score=%.2f",
-                          clock.string(from: f.time), x.distanceM, x.branches.count,
-                          c.relativeBearingDeg, "\(c.branch.cls)", c.branch.crossCost, c.score))
 }
 
 print("交差点に接近した回数: \(intersectionsSeen)")
@@ -329,8 +339,10 @@ if !rejected.isEmpty {
 }
 if !bestScores.isEmpty {
     let sorted = bestScores.sorted()
-    print(String(format: "最良スコアの分布: 最小 %.2f / 中央 %.2f / 最大 %.2f (閾値 %.2f)",
-                 sorted.first!, sorted[sorted.count / 2], sorted.last!, r.suggestionMinScore))
+    // 分岐選択に絶対下限は無い(相対比で判定する)。分布は「どのくらいの新鮮さの
+    // 土地を歩いているか」を見るための材料として出す
+    print(String(format: "接近した交差点での最良スコアの分布: 最小 %.2f / 中央 %.2f / 最大 %.2f",
+                 sorted.first!, sorted[sorted.count / 2], sorted.last!))
 }
 for line in choices.prefix(30) { print(line) }
 if choices.count > 30 { print("  (以下 \(choices.count - 30) 件省略)") }
@@ -368,83 +380,66 @@ func readHeadingPairs(_ path: String) -> [(time: Date, yawDeg: Double, courseDeg
     return out
 }
 
-let pairs = readHeadingPairs(logPath)
-if pairs.count >= 10 {
+/// 1 ファイルぶんの対を数える。**曲がった対だけを数える**のが要点。
+/// 直進中の対は Δcourse が雑音なので符号情報を持たず、一致率を 50% へ薄めてしまう
+/// (2026-08-18 のログで、閾値 10° では 45%・30° では 29% と判定が変わった)。
+func countSignAgreement(_ pairs: [(time: Date, yawDeg: Double, courseDeg: Double)],
+                        turnThresholdDeg: Double) -> (agree: Int, used: Int) {
     var agree = 0, used = 0
-    for i in 1..<pairs.count {
+    for i in 1..<max(1, pairs.count) {
         let dt = pairs[i].time.timeIntervalSince(pairs[i - 1].time)
+        // 間が空きすぎた対は、間に何が起きたか分からないので使わない
         guard dt > 0, dt <= 6 else { continue }
         let dYaw = Geo.angularDiffDeg(pairs[i].yawDeg, pairs[i - 1].yawDeg)
         let dCourse = Geo.angularDiffDeg(pairs[i].courseDeg, pairs[i - 1].courseDeg)
-        // はっきり回った対だけ数える。小さい変化は雑音
-        guard abs(dYaw) >= 10, abs(dCourse) >= 10 else { continue }
+        guard abs(dYaw) >= 10, abs(dCourse) >= turnThresholdDeg else { continue }
         used += 1
         if (dYaw > 0) == (dCourse > 0) { agree += 1 }
     }
-    if used >= 5 {
-        let rate = Double(agree) / Double(used) * 100
-        print(String(format: "  「頭向き」の対 %d 件のうち符号が一致: %d 件 (%.0f%%)", used, agree, rate))
-        if rate >= 70 {
-            print("  → 符号は揃っている。baseline_alpha の追従が遅すぎた側を疑う。")
-        } else if rate <= 30 {
-            print("  → 符号が反転している。yaw を負にしてから使う必要がある。")
-        } else {
-            print("  → 判定できない。")
-        }
-        exit(0)
-    }
-    print("  「頭向き」の対が \(used) 件しか使えないため、古い方式で判定する")
+    return (agree, used)
 }
 
-let yaws = readYaw(logPath)
-if yaws.count < 10 {
-    print("  yaw を含む行が足りません(\(yaws.count) 件)。")
-    print("  この判定には歩行中の記録が要る(机上のテストでは曲がらないので判定できない)。")
-} else {
-    /// ±180 を跨ぐ差を -180..180 に畳む
-    func delta(_ a: Double, _ b: Double) -> Double { Geo.angularDiffDeg(a, b) }
-
-    var agree = 0, disagree = 0, used = 0
-    var i = 1
-    while i < yaws.count {
-        let t0 = yaws[i - 1].time, t1 = yaws[i].time
-        let dt = t1.timeIntervalSince(t0)
-        // 間が空きすぎた対は、間に何が起きたか分からないので使わない
-        guard dt > 0, dt <= 3 else { i += 1; continue }
-        let dYaw = delta(yaws[i].yawDeg, yaws[i - 1].yawDeg)
-        // 小さすぎる変化は雑音。はっきり回った対だけ数える
-        guard abs(dYaw) >= 10 else { i += 1; continue }
-        // 同じ時刻に最も近い fix の course を引く
-        func course(near t: Date) -> Double? {
-            var best: (d: TimeInterval, c: Double)?
-            for f in all {
-                guard let c = f.courseDeg, c >= 0 else { continue }
-                let d = abs(f.time.timeIntervalSince(t))
-                if d <= 2, best == nil || d < best!.d { best = (d, c) }
-            }
-            return best?.c
-        }
-        guard let c0 = course(near: t0), let c1 = course(near: t1) else { i += 1; continue }
-        let dCourse = delta(c1, c0)
-        guard abs(dCourse) >= 10 else { i += 1; continue }
-        used += 1
-        if (dYaw > 0) == (dCourse > 0) { agree += 1 } else { disagree += 1 }
-        i += 1
+// **手元の全ログを合わせて判定する。** 1 回の散歩では曲がる対が数十件しか取れず、
+// 判定が宙ぶらりんになる(前回は 45% で結論が出なかった)
+var allPairs: [(time: Date, yawDeg: Double, courseDeg: Double)] = []
+var pairFiles = 0
+if let files = try? FileManager.default.contentsOfDirectory(atPath: "field-logs") {
+    for name in files.filter({ $0.hasSuffix(".tsv") }).sorted() {
+        let p = readHeadingPairs("field-logs/" + name)
+        guard !p.isEmpty else { continue }
+        pairFiles += 1
+        // ファイルを跨ぐ対を作らないよう、境界に大きな時間差を挟む
+        // (countSignAgreement の dt <= 6 秒の条件で自然に落ちる)
+        allPairs.append(contentsOf: p)
+        allPairs.append((time: p[p.count - 1].time.addingTimeInterval(3600),
+                         yawDeg: 0, courseDeg: 0))
     }
+}
+if allPairs.isEmpty { allPairs = readHeadingPairs(logPath) }
 
-    if used < 5 {
-        print("  判定に使える対が \(used) 件しかありません。曲がる場面を含む散歩の記録が要ります。")
+print("  対象: field-logs/ の \(pairFiles) ファイル(「頭向き」行 \(allPairs.count) 件)")
+print("  Δcourse の下限を振る(曲がった対だけが符号の情報を持つ):")
+for threshold in [10.0, 20.0, 30.0, 45.0] {
+    let (agree, used) = countSignAgreement(allPairs, turnThresholdDeg: threshold)
+    guard used > 0 else {
+        print(String(format: "    ≥%3.0f°:  対 0 件", threshold))
+        continue
+    }
+    print(String(format: "    ≥%3.0f°:  対 %4d 件 / 一致 %4d 件 (%.0f%%)",
+                 threshold, used, agree, Double(agree) / Double(used) * 100))
+}
+
+let verdict = countSignAgreement(allPairs, turnThresholdDeg: 30)
+if verdict.used < 20 {
+    print("  判定に使える対が \(verdict.used) 件しかありません。曲がる場面を含む散歩の記録が要ります。")
+} else {
+    let rate = Double(verdict.agree) / Double(verdict.used) * 100
+    print(String(format: "  判定(≥30°・%d 件): 一致 %.0f%%", verdict.used, rate))
+    if rate >= 70 {
+        print("  → 符号は揃っている。yaw_sign は +1 のままでよい。")
+    } else if rate <= 30 {
+        print("  → 符号が反転している。yaw_sign を -1 にする。")
     } else {
-        let rate = Double(agree) / Double(used) * 100
-        print(String(format: "  はっきり回った対 %d 件のうち、Δyaw と Δcourse の符号が一致: %d 件 (%.0f%%)",
-                     used, agree, rate))
-        if rate >= 70 {
-            print("  → 符号は揃っている。HeadingFusion の前提は正しい。")
-            print("     基準線の追従が遅すぎた可能性を疑う(baseline_alpha)。")
-        } else if rate <= 30 {
-            print("  → 符号が反転している。yaw を負にしてから basis に入れる必要がある。")
-        } else {
-            print("  → 判定できない。対の数を増やすか、別の指標が要る。")
-        }
+        print("  → 判定できない。対の数を増やすか、別の指標が要る。")
     }
 }

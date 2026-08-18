@@ -356,9 +356,16 @@ final class WalkSessionController: ObservableObject {
                                                   homewardBias: bias,
                                                   route: params.route, now: Date())
             guard case .suggest(let c) = decision else {
-                if case .silent(let why) = decision {
-                    logToFile(String(format: "提案なし(%@・分岐 %d 本・交差点まで %.0fm) [%@]",
-                                     why.rawValue, x.branches.count, x.distanceM, context))
+                if case .silent(let why, let best) = decision {
+                    // 最良候補も残す。「惜しかったのか、遠く及ばなかったのか」が
+                    // 分からないと閾値を動かせない
+                    let bestLabel = best.map {
+                        String(format: "最良 %+.0f° score=%.2f 新鮮さ=%.2f",
+                               $0.relativeBearingDeg, $0.score, $0.novelty)
+                    } ?? "候補なし"
+                    logToFile(String(format: "提案なし(%@・分岐 %d 本・交差点まで %.0fm・%@) [%@]",
+                                     why.rawValue, x.branches.count, x.distanceM,
+                                     bestLabel, context))
                 }
                 return
             }
