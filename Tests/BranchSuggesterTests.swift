@@ -13,7 +13,8 @@ final class BranchSuggesterTests: XCTestCase {
         intersectionLookaheadM: 35, branchStraightDeg: 25, branchBackwardDeg: 135,
         crossCostWeight: 0.12, wayClassWeight: 0.08, branchNoveltyRatio: 1.3,
         zoneSizeM: 300, zoneMinRoadM: 400, zoneSampleGrid: 3,
-        targetMinDistanceM: 300, targetReachedM: 150, targetBiasWeight: 0.3)
+        targetMinDistanceM: 300, targetMinDistanceRatio: 0.4,
+        targetReachedM: 150, targetBiasWeight: 0.3)
 
     /// 十字路。北から来て、東西南へ分かれる
     /// 節点 0 = 交差点、1 = 北(来た道)、2 = 東、3 = 南(直進)、4 = 西

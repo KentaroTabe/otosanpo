@@ -831,7 +831,11 @@ final class WalkSessionController: ObservableObject {
             reason = "予算の外に出た"
         }
         guard let reason else { return }
-        guard let next = zones.chooseTarget(from: p, home: h, allowedRadiusM: allowedRadiusM,
+        // **選ぶ半径は捨てる半径より内側にする。** 許容半径は時間とともに縮むので、
+        // 予算いっぱいの地帯を選ぶと数秒で「予算の外」になって消える
+        // (2026-08-19 実測: 許容 369m のとき 363m 先を選び、9 秒で失効した)
+        let pickRadius = allowedRadiusM * params.budget.softZoneRatio
+        guard let next = zones.chooseTarget(from: p, home: h, allowedRadiusM: pickRadius,
                                             grid: grid, now: Date(),
                                             p: params.route.zoneParams) else {
             if target != nil { logToFile("行き先を選べません(\(reason))") }
@@ -839,9 +843,9 @@ final class WalkSessionController: ObservableObject {
             return
         }
         target = next
-        log(String(format: "行き先: %.0fm 先 方位 %.0f°(新鮮さ %.2f・道 %.0fm・%@)",
+        log(String(format: "行き先: %.0fm 先 方位 %.0f°(新鮮さ %.2f・道 %.0fm・%@・選定半径 %.0fm)",
                    next.distanceM, Geo.bearingDeg(from: p, to: next.zone.center),
-                   next.novelty, next.zone.roadLengthM, reason))
+                   next.novelty, next.zone.roadLengthM, reason, pickRadius))
     }
 
     /// 帰路でも、経路上の次の角へ誘導音を張る。

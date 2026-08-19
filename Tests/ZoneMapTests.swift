@@ -5,7 +5,8 @@ import XCTest
 /// 先に広域で向かう先を決める(docs/06 柱 4)。
 final class ZoneMapTests: XCTestCase {
     private let p = ZoneMap.Params(zoneSizeM: 300, minRoadM: 400, sampleGrid: 3,
-                                   minDistanceM: 300, excludedFamiliarity: 8)
+                                   minDistanceM: 300, minDistanceRatio: 0.4,
+                                   excludedFamiliarity: 8)
 
     private func lat(_ m: Double) -> Double { 35.0 + m / Geo.metersPerDegreeLat }
     private func lon(_ m: Double) -> Double {
@@ -90,9 +91,39 @@ final class ZoneMapTests: XCTestCase {
         let z = ZoneMap(map: twoAreas(), zoneSizeM: 300)
         let grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
         let near = ZoneMap.Params(zoneSizeM: 300, minRoadM: 400, sampleGrid: 3,
-                                  minDistanceM: 1500, excludedFamiliarity: 8)
+                                  minDistanceM: 1500, minDistanceRatio: 1.0,
+                                  excludedFamiliarity: 8)
         XCTAssertNil(z.chooseTarget(from: at(0, 0), home: at(0, 0), allowedRadiusM: 3000,
                                     grid: grid, now: Date(timeIntervalSince1970: 0), p: near))
+    }
+
+    /// **短い散歩でも行き先を選べる。**
+    /// 最短距離が固定 300m だけだと、10 分の散歩(許容半径 377m → 数分で 300m を割る)では
+    /// 行き先を 1 つも選べなくなる。実測(2026-08-19)では 9 秒しか保たなかった
+    func testShortBudgetStillFindsATarget() {
+        // 400m 先に地帯を置く。許容半径 500m・最短距離は min(300, 500×0.4)=200m
+        var nodes: [[Double]] = []
+        var indices: [Int] = []
+        for i in 0...20 {
+            nodes.append([lat(Double(i / 4) * 10), lon(400 + Double(i % 4) * 50 - 75)])
+            indices.append(nodes.count - 1)
+        }
+        let map = WalkMap(center: at(0, 0), radiusM: 5000, generated: "2026-08-19",
+                          nodes: nodes,
+                          ways: [WalkMap.Way(n: indices, cls: .residential, cross: 0)])
+        let z = ZoneMap(map: map, zoneSizeM: 300)
+        let grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        let t = z.chooseTarget(from: at(0, 0), home: at(0, 0), allowedRadiusM: 500,
+                               grid: grid, now: Date(timeIntervalSince1970: 0), p: p)
+        XCTAssertNotNil(t, "予算が小さくても、その範囲で行ける地帯は行き先になる")
+    }
+
+    func testEffectiveMinDistanceScalesWithTheBudget() {
+        // 大きい予算では固定値のまま
+        XCTAssertEqual(p.effectiveMinDistanceM(allowedRadiusM: 2000), 300, accuracy: 0.01)
+        // 小さい予算では行ける範囲に合わせて縮む
+        XCTAssertEqual(p.effectiveMinDistanceM(allowedRadiusM: 500), 200, accuracy: 0.01)
+        XCTAssertEqual(p.effectiveMinDistanceM(allowedRadiusM: 250), 100, accuracy: 0.01)
     }
 
     /// 同じ条件の地帯が並んだら**近いほうを選び、毎回同じ答えになる**。

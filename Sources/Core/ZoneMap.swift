@@ -40,15 +40,26 @@ public struct ZoneMap {
         public let sampleGrid: Int
         /// 行き先として認める現在地からの最短距離 [m]。すぐ隣は行き先にならない
         public let minDistanceM: Double
+        /// 上の距離を、**行ける範囲に対する比でも抑える**。
+        /// 固定値だけだと短い散歩で「行ける範囲より遠い場所しか行き先にできない」状態になり、
+        /// 仕組みが丸ごと止まる(2026-08-19 実測: 10 分の散歩で行き先は 9 秒しか保たなかった)
+        public let minDistanceRatio: Double
         public let excludedFamiliarity: Double
 
         public init(zoneSizeM: Double, minRoadM: Double, sampleGrid: Int,
-                    minDistanceM: Double, excludedFamiliarity: Double) {
+                    minDistanceM: Double, minDistanceRatio: Double,
+                    excludedFamiliarity: Double) {
             self.zoneSizeM = zoneSizeM
             self.minRoadM = minRoadM
             self.sampleGrid = sampleGrid
             self.minDistanceM = minDistanceM
+            self.minDistanceRatio = minDistanceRatio
             self.excludedFamiliarity = excludedFamiliarity
+        }
+
+        /// その予算で実際に使う最短距離 [m]
+        public func effectiveMinDistanceM(allowedRadiusM: Double) -> Double {
+            min(minDistanceM, allowedRadiusM * minDistanceRatio)
         }
     }
 
@@ -97,16 +108,19 @@ public struct ZoneMap {
     /// - Parameters:
     ///   - position: 現在地
     ///   - home: 自宅(予算の中心)
-    ///   - allowedRadiusM: 自宅からこの距離までなら帰ってこられる(ReturnBudget)
+    ///   - allowedRadiusM: 自宅からこの距離までなら帰ってこられる(ReturnBudget)。
+    ///     **選ぶときは予算いっぱいではなく余裕を持たせた値を渡す**。
+    ///     許容半径は時間とともに縮むので、縁ぎりぎりの地帯を選ぶと数秒で無効になる
     public func chooseTarget(from position: GeoPoint, home: GeoPoint,
                              allowedRadiusM: Double, grid: VisitGrid, now: Date,
                              p: Params) -> Target? {
         var best: Target?
+        let minDistanceM = p.effectiveMinDistanceM(allowedRadiusM: allowedRadiusM)
         for zone in zones {
             // 帰ってこられない地帯は行き先にしない(「約束を守る」docs/01)
             guard Geo.distanceM(zone.center, home) <= allowedRadiusM else { continue }
             let d = Geo.distanceM(position, zone.center)
-            guard d >= p.minDistanceM else { continue }
+            guard d >= minDistanceM else { continue }
             guard zone.roadLengthM >= p.minRoadM else { continue }
 
             let novelty = 1.0 / (1.0 + familiarity(of: zone, grid: grid, now: now, p: p))

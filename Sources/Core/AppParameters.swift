@@ -95,6 +95,9 @@ public struct AppParameters: Codable, Equatable {
         public var zoneSampleGrid: Int
         /// 行き先として認める現在地からの最短距離 [m]。すぐ隣は行き先にならない
         public var targetMinDistanceM: Double
+        /// 上の距離を、行ける範囲に対する比でも抑える。
+        /// 固定値だけだと短い散歩で行き先を 1 つも選べなくなる(2026-08-19 実測)
+        public var targetMinDistanceRatio: Double
         /// 行き先にこの距離まで近づいたら、次の行き先を選び直す [m]
         public var targetReachedM: Double
         /// 分岐スコアで行き先の向きをどれだけ重んじるか。
@@ -105,6 +108,7 @@ public struct AppParameters: Codable, Equatable {
         public var zoneParams: ZoneMap.Params {
             ZoneMap.Params(zoneSizeM: zoneSizeM, minRoadM: zoneMinRoadM,
                            sampleGrid: zoneSampleGrid, minDistanceM: targetMinDistanceM,
+                           minDistanceRatio: targetMinDistanceRatio,
                            excludedFamiliarity: excludedFamiliarity)
         }
     }

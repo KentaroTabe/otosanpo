@@ -424,16 +424,23 @@ if guidanceReports.isEmpty {
     }
     // 馴染み度は上で再構成した grid をそのまま使う(過去の散歩ぶんが入っている)
     let home = walkMap.center
-    for allowed in [500.0, 1000.0, 2000.0] {
-        let t = zoneMap.chooseTarget(from: home, home: home, allowedRadiusM: allowed,
+    // 実機と同じく、選定は許容半径の内側(soft zone)で行う。
+    // 縁ぎりぎりの地帯を選ぶと、許容半径が縮んだ数秒後に失効する
+    print("  10 分の散歩は許容 377m、30 分なら 1450m 程度。選定は許容 × "
+          + String(format: "%.1f", b.softZoneRatio) + " の内側で行う")
+    for allowed in [377.0, 700.0, 1450.0] {
+        let pick = allowed * b.softZoneRatio
+        let t = zoneMap.chooseTarget(from: home, home: home, allowedRadiusM: pick,
                                      grid: grid, now: Date(timeIntervalSince1970: 1_786_000_000),
                                      p: r.zoneParams)
         guard let t else {
-            print(String(format: "  許容 %.0fm: 選べる地帯なし", allowed))
+            print(String(format: "  許容 %4.0fm(選定 %3.0fm): 選べる地帯なし", allowed, pick))
             continue
         }
-        print(String(format: "  許容 %4.0fm → %4.0fm 先 方位 %3.0f°(新鮮さ %.2f・道 %.0fm)",
-                     allowed, t.distanceM, Geo.bearingDeg(from: home, to: t.zone.center),
+        print(String(format: "  許容 %4.0fm(選定 %3.0fm・最短 %3.0fm)→ %4.0fm 先 方位 %3.0f°"
+                     + "(新鮮さ %.2f・道 %.0fm)",
+                     allowed, pick, r.zoneParams.effectiveMinDistanceM(allowedRadiusM: pick),
+                     t.distanceM, Geo.bearingDeg(from: home, to: t.zone.center),
                      t.novelty, t.zone.roadLengthM))
     }
     print("  ※ 現在地を自宅としたときの選定。新鮮さは過去のログから再構成した馴染み度による")
