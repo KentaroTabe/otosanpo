@@ -121,3 +121,27 @@ final class WalkMachineTests: XCTestCase {
         }
     }
 }
+
+/// 帰路の確認音をいつまで繰り返すか。
+/// 実測(2026-08-19)では確認音が誘導とビーコンを 60 秒せき止め、
+/// **帰路の最初の 64 秒間、方向の手がかりが 1 つも鳴っていなかった**
+final class ReturnAckTests: XCTestCase {
+    func testStopsAsSoonAsGuidanceStarts() {
+        // 案内が始まれば「同意が伝わった」ことは伝わっている。上限を待たない
+        XCTAssertFalse(ReturnAck.shouldRepeat(directionStarted: true, elapsedSec: 1,
+                                              durationSec: 60))
+    }
+
+    func testKeepsGoingWhileNoDirectionIsAvailable() {
+        // 進行方向が取れない・地図が無いなど、案内を出せない状況では確認音だけが頼り
+        XCTAssertTrue(ReturnAck.shouldRepeat(directionStarted: false, elapsedSec: 1,
+                                             durationSec: 60))
+        XCTAssertTrue(ReturnAck.shouldRepeat(directionStarted: false, elapsedSec: 59,
+                                             durationSec: 60))
+    }
+
+    func testStopsAtTheUpperBound() {
+        XCTAssertFalse(ReturnAck.shouldRepeat(directionStarted: false, elapsedSec: 60,
+                                              durationSec: 60))
+    }
+}

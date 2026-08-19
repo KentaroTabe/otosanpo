@@ -41,7 +41,10 @@ final class WalkSessionController: ObservableObject {
     /// 提案を出してよい状態か(WalkMachine の効果で切り替える)
     private var suggestionsEnabled = false
     private var sessionEnd: Date?
-    private var ackEnd: Date?
+    /// 帰路に同意した時刻(確認音の上限を測る基準)
+    private var returnAckStart: Date?
+    /// 帰路で「方向のある音」を鳴らせたか。確認音を止める合図(ReturnAck)
+    private var returnDirectionStarted = false
     /// 散歩全体と帰路それぞれの歩行実測。予算模型の係数を実測から決めるための計測
     private var walkMetrics = GaitMetrics()
     private var returnMetrics: GaitMetrics?
@@ -54,6 +57,8 @@ final class WalkSessionController: ObservableObject {
     /// 進行中の曲がり角誘導。1 つの曲がるイベントに対して、角へ近づくほど音量が上がる
     /// 連続音を出し、曲がり終えたら数音かけて閉じる。判断は Core(TurnGuidance)が持つ
     private var turnGuidance: TurnGuidance?
+    /// 誘導に使う音。散策は suggestion、帰路は homeBeacon(音だけを変える)
+    private var turnGuidanceEarcon: Earcon = .suggestion
     private var guidanceTimer: Timer?
     /// 経路データ。Documents に置かれていれば読む。無ければグリッドのみで動く
     private var graph: WalkGraph?
@@ -76,6 +81,8 @@ final class WalkSessionController: ObservableObject {
     private var lastHeadingLogAt: Date?
     private var suggestionTimer: Timer?
     private var beaconTimer: Timer?
+    /// 確認音は誘導・ビーコンと**別の系統**で回す。同じタイマーに乗せると互いをせき止める
+    private var ackTimer: Timer?
     private var promptTimer: Timer?
     private var timeUpTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
@@ -141,7 +148,9 @@ final class WalkSessionController: ObservableObject {
         if synth == nil { log("音声エンジンの初期化に失敗(未確認要素)") }
         extensionsUsed = 0
         plannedDurationMin = durationMin
-        ackEnd = nil
+        returnAckStart = nil
+        returnDirectionStarted = false
+        ackTimer?.invalidate()
         lastSuggestionPoint = nil
         // 前回の散歩の向き・影検出の窓・実測値を持ち越さない
         lastGoodCourse = nil
@@ -283,13 +292,20 @@ final class WalkSessionController: ObservableObject {
 
         case .startReturnPhase:
             promptTimer?.invalidate()
-            ackEnd = Date().addingTimeInterval(params.audio.returnAckDurationSec)
+            returnAckStart = Date()
+            returnDirectionStarted = false
             // 帰路は目的地が決まっている唯一の区間。迂回率の実測はここでしか取れない
             returnMetrics = GaitMetrics()
             if let p = location.position, let h = home {
                 returnStart = (distanceM: Geo.distanceM(p, h), at: Date())
             }
-            log("帰路開始に同意。確認音をしばらく繰り返します")
+            log("帰路開始に同意")
+            // **同意した瞬間から案内を始める。** 確認音が終わるのを待たない。
+            // 実測(2026-08-19)では確認音が 60 秒せき止め、その間ずっと
+            // 方向の手がかりが無かった(docs/03「確認音は案内が始まるまで」)
+            synth?.play(.returnAck)
+            fireAckTick()
+            if let p = location.position { checkReturnGuidance(at: p) }
             fireReturnTick()
 
         case .stopLoops:
@@ -297,6 +313,7 @@ final class WalkSessionController: ObservableObject {
             guidanceTimer?.invalidate()
             turnGuidance = nil
             beaconTimer?.invalidate()
+            ackTimer?.invalidate()
             promptTimer?.invalidate()
             timeUpTimer?.invalidate()
 
@@ -418,36 +435,51 @@ final class WalkSessionController: ObservableObject {
         }
     }
 
-    /// 帰路の音:同意直後は returnAck を一定間隔で繰り返し、
-    /// ack 期間終了後は距離に応じた間隔の方向ビーコンへ移行する。
+    /// 帰路のビーコン。**同意した瞬間から回る**(確認音の終了を待たない)。
+    ///
+    /// **音の裁定: プロンプト > 誘導 > 提案 > ビーコン。**
+    /// 誘導が鳴っている間はビーコンを休む。曲がる場所を指す音と自宅の在り処を指す音が
+    /// 交互に鳴ると、どちらの方向を聞いているのか分からなくなる(docs/06 柱 1)。
     private func fireReturnTick() {
         guard state == .returning else { return }
-        let interval: TimeInterval
-        // **音の裁定: プロンプト > 誘導 > 提案 > ビーコン。**
-        // 誘導が鳴っている間はビーコンを休む。曲がる場所を指す音と自宅の在り処を指す音が
-        // 交互に鳴ると、どちらの方向を聞いているのか分からなくなる
-        // (帰路にも誘導を張る段階で効いてくる。docs/06 柱 1)
-        if turnGuidance != nil {
-            beaconTimer?.invalidate()
-            beaconTimer = Timer.scheduledTimer(withTimeInterval: beaconInterval(),
-                                               repeats: false) { [weak self] _ in
-                Task { @MainActor in self?.fireReturnTick() }
-            }
+        if turnGuidance == nil { playBeacon() }
+        beaconTimer?.invalidate()
+        beaconTimer = Timer.scheduledTimer(withTimeInterval: beaconInterval(),
+                                           repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.fireReturnTick() }
+        }
+    }
+
+    /// 同意の確認音。**方向のある音が鳴り始めたら止める**(ReturnAck)。
+    /// 役目は「同意が伝わったか」の不安を消すことで、案内が始まればそれが答えになる。
+    /// 上限は残す — 進行方向が取れない・地図が無いなど、案内を出せない状況では
+    /// この音だけが頼りになる。
+    private func fireAckTick() {
+        ackTimer?.invalidate()
+        guard state == .returning, let start = returnAckStart else { return }
+        let elapsed = Date().timeIntervalSince(start)
+        guard ReturnAck.shouldRepeat(directionStarted: returnDirectionStarted,
+                                     elapsedSec: elapsed,
+                                     durationSec: params.audio.returnAckDurationSec) else {
+            logToFile(String(format: "帰路確認音を終了(%@・経過 %.0fs)",
+                             returnDirectionStarted ? "案内が始まった" : "上限", elapsed))
             return
         }
-        if let ack = ackEnd, Date() < ack {
-            synth?.play(.returnAck)
-            interval = params.audio.returnAckRepeatIntervalSec
-            // 8 秒毎に 60 秒間という周期を後から検証できるようにする
-            logToFile(String(format: "帰路確認音 残り=%.0fs 間隔=%.1fs",
-                             ack.timeIntervalSinceNow, interval))
-        } else {
-            playBeacon()
-            interval = beaconInterval()
-        }
-        beaconTimer?.invalidate()
-        beaconTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.fireReturnTick() }
+        ackTimer = Timer.scheduledTimer(withTimeInterval: params.audio.returnAckRepeatIntervalSec,
+                                        repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.state == .returning else { return }
+                guard ReturnAck.shouldRepeat(
+                    directionStarted: self.returnDirectionStarted,
+                    elapsedSec: Date().timeIntervalSince(self.returnAckStart ?? Date()),
+                    durationSec: self.params.audio.returnAckDurationSec) else {
+                    self.fireAckTick()
+                    return
+                }
+                self.synth?.play(.returnAck)
+                self.logToFile("帰路確認音(案内がまだ出せていない)")
+                self.fireAckTick()
+            }
         }
     }
 
@@ -472,6 +504,7 @@ final class WalkSessionController: ObservableObject {
         let pan = SoundPlacement.pan(relativeBearingDeg: rel)
         synth?.play(.homeBeacon, relativeBearingDeg: rel)
         lastBeacon = (relDeg: rel, at: Date())
+        noteReturnDirectionStarted()
         // 顔基準に切り替えた影響を後から評価できるよう、顔の向きと進行方位の両方を残す
         let facingLabel = latestFacingBearing.map { String(format: "%.0f°", $0) } ?? "-"
         let baselineLabel = headingFusion.baselineDeg.map { String(format: "%.0f°", $0) } ?? "-"
@@ -735,8 +768,8 @@ final class WalkSessionController: ObservableObject {
     /// 遠距離では間隔が最大 5 秒あり、曲がってから 1〜2 音ぶん古い方向を聞かされるため
     /// (docs/03「ビーコンの距離・方向キュー」の実測課題)。
     private func advanceBeaconIfDirectionChanged(at p: GeoPoint, now: Date) {
-        // 同意直後の確認音の最中は割り込まない
-        guard let ack = ackEnd, now >= ack else { return }
+        // 誘導が鳴っている間はビーコンを休んでいるので、繰り上げも行わない(音の裁定)
+        guard turnGuidance == nil else { return }
         guard let h = home, let last = lastBeacon else { return }
         guard now.timeIntervalSince(last.at) >= params.audio.beaconMinGapSec else { return }
         let fix = location.motionFix(now: now)
@@ -803,13 +836,21 @@ final class WalkSessionController: ObservableObject {
     /// ビーコンとの重なりは音の裁定(誘導 > ビーコン)で解決している
     private func checkReturnGuidance(at p: GeoPoint) {
         guard turnGuidance == nil, let f = routeField, let graph else { return }
-        // 確認音の最中は割り込まない(同意が伝わったことを先に伝える)
-        if let ack = ackEnd, Date() < ack { return }
         guard let turn = f.nextTurn(from: p, graph: graph,
                                     straightWithinDeg: params.route.branchStraightDeg,
                                     maxLookM: params.route.intersectionLookaheadM) else { return }
         logToFile(String(format: "帰路の誘導を開始(角まで %.0fm)", turn.distanceM))
-        startTurnGuidance(at: turn.corner, branchBearingDeg: turn.branchBearingDeg)
+        // **帰路の誘導は音だけを変える。** 間隔・頂点・終端は散策時とまったく同じ
+        // (2026-08-19 の利用者判断)。ビーコンと同じ音色なので「帰っている」感は保たれる
+        startTurnGuidance(at: turn.corner, branchBearingDeg: turn.branchBearingDeg,
+                          earcon: .homeBeacon)
+    }
+
+    /// 帰路で方向のある音を鳴らせたことを記録する。確認音を止める合図(ReturnAck)
+    private func noteReturnDirectionStarted() {
+        guard state == .returning, !returnDirectionStarted else { return }
+        returnDirectionStarted = true
+        fireAckTick()
     }
 
     /// 誘導の設定値。Core は数値を持たないので、ここで束ねて渡す
@@ -829,11 +870,15 @@ final class WalkSessionController: ObservableObject {
 
     /// 角へ近づくほど音量が上がる連続音。遠いうちは角そのものを指し、
     /// 手前で曲がる先を指し切り、曲がり終えたら数音かけて閉じる(判断は TurnGuidance)。
-    /// 音は suggestion の 1 種だけを使う(語彙 5 種の原則を守る)。
-    private func startTurnGuidance(at point: GeoPoint, branchBearingDeg: Double) {
+    ///
+    /// 散策と帰路で**変えるのは音だけ**(散策 = suggestion / 帰路 = homeBeacon)。
+    /// 間隔・頂点・終端の作りは共通で、語彙も 5 種のまま。
+    private func startTurnGuidance(at point: GeoPoint, branchBearingDeg: Double,
+                                   earcon: Earcon = .suggestion) {
         let d = location.position.map { Geo.distanceM($0, point) } ?? .greatestFiniteMagnitude
         turnGuidance = TurnGuidance(corner: point, branchBearingDeg: branchBearingDeg,
                                     distanceM: d)
+        turnGuidanceEarcon = earcon
         fireGuidanceTick()
     }
 
@@ -864,12 +909,15 @@ final class WalkSessionController: ObservableObject {
         // 定位の基準は顔の向き。取れないうちは進行方位で代用する
         let reference = latestFacingBearing ?? travel
         let rel = reference.map { Geo.angularDiffDeg(step.targetBearingDeg, $0) }
-        synth?.play(.suggestion, relativeBearingDeg: rel, gain: step.gain)
-        logToFile(String(format: "誘導 角まで=%.0fm 鳴らす向き=%@ 音量=%.2f%@",
+        synth?.play(turnGuidanceEarcon, relativeBearingDeg: rel, gain: step.gain)
+        // 誘導が鳴った時点で「方向のある音」は出せている。確認音はここで終わる
+        noteReturnDirectionStarted()
+        logToFile(String(format: "誘導 角まで=%.0fm 鳴らす向き=%@ 音量=%.2f%@%@",
                          step.distanceM,
                          rel.map { String(format: "%+.0f°", $0) } ?? "-",
                          step.gain,
-                         step.isClosing ? " 終端" : ""))
+                         step.isClosing ? " 終端" : "",
+                         state == .returning ? " 帰路" : ""))
         guidanceTimer?.invalidate()
         guidanceTimer = Timer.scheduledTimer(withTimeInterval: step.intervalSec,
                                              repeats: false) { [weak self] _ in
