@@ -160,10 +160,32 @@ public struct AppParameters: Codable, Equatable {
         public var suggestionMinIntervalSec: Double
         public var returnAckRepeatIntervalSec: Double
         public var returnAckDurationSec: Double
-        public var beaconIntervalNearSec: Double
-        public var beaconIntervalFarSec: Double
+        /// 何歩に 1 回ビーコンを鳴らすか。**間隔は歩調に同期させる**
+        /// (2026-08-16 の要望「歩くペースに合わせた頻度でなる」)
+        public var beaconStepsPerTone: Double
+        /// 間隔の下限・上限 [sec]。歩調が極端なときに暴れないよう挟む
+        public var beaconIntervalMinSec: Double
+        public var beaconIntervalMaxSec: Double
+        /// 歩調が取れないときの間隔 [sec]
+        public var beaconIntervalFallbackSec: Double
+        /// 歩調をこの秒数まで有効とみなす。立ち止まると更新が来なくなるため
+        public var beaconCadenceMaxAgeSec: Double
+        /// ビーコンの音量 [0..1]。**距離は音量で表す**(間隔は歩調に取られるため)
+        public var beaconGainFar: Double
+        public var beaconGainNear: Double
+        /// 音量が最大・最小になる自宅までの距離 [m]
         public var beaconNearDistanceM: Double
         public var beaconFarDistanceM: Double
+
+        /// BeaconRhythm に渡す設定値
+        public var beaconRhythm: BeaconRhythm.Params {
+            BeaconRhythm.Params(
+                stepsPerTone: beaconStepsPerTone, minIntervalSec: beaconIntervalMinSec,
+                maxIntervalSec: beaconIntervalMaxSec,
+                fallbackIntervalSec: beaconIntervalFallbackSec,
+                gainFar: beaconGainFar, gainNear: beaconGainNear,
+                nearDistanceM: beaconNearDistanceM, farDistanceM: beaconFarDistanceM)
+        }
         /// 相対方位がこれ以上変わったら、次のビーコンを待たずに繰り上げて鳴らす [deg]。
         /// 角を曲がってから最大 5 秒待たせないため
         public var beaconDirectionChangeDeg: Double

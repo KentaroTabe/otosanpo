@@ -22,6 +22,8 @@ final class WalkSessionController: ObservableObject {
 
     private let location = LocationService()
     private let motion = HeadphoneMotionService()
+    /// 歩調。ビーコンを歩みに同期させるためだけに使う(AirPods を外していても取れる)
+    private let pedometer = PedometerService()
     private let fieldLog = FieldLog()
     private var synth: EarconSynth?
     private var grid: VisitGrid
@@ -57,8 +59,6 @@ final class WalkSessionController: ObservableObject {
     /// 進行中の曲がり角誘導。1 つの曲がるイベントに対して、角へ近づくほど音量が上がる
     /// 連続音を出し、曲がり終えたら数音かけて閉じる。判断は Core(TurnGuidance)が持つ
     private var turnGuidance: TurnGuidance?
-    /// 誘導に使う音。散策は suggestion、帰路は homeBeacon(音だけを変える)
-    private var turnGuidanceEarcon: Earcon = .suggestion
     private var guidanceTimer: Timer?
     /// 経路データ。Documents に置かれていれば読む。無ければグリッドのみで動く
     private var graph: WalkGraph?
@@ -173,6 +173,9 @@ final class WalkSessionController: ObservableObject {
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
         motion.start()
+        pedometer.start()
+        log("歩調: 利用可能=\(PedometerService.isAvailable ? "はい" : "いいえ")"
+            + " 許可=\(pedometer.authorizationLabel)")
         log("ヘッドフォンモーション: 利用可能=\(motion.isAvailable ? "はい" : "いいえ")"
             + " 許可=\(motion.authorizationLabel) 更新中=\(motion.isActive ? "はい" : "いいえ")")
         apply(.start)
@@ -320,6 +323,7 @@ final class WalkSessionController: ObservableObject {
         case .endSession:
             if !commuteLearning { location.stop() }
             motion.stop()
+            pedometer.stop()
             GridStore.save(grid)
             sessionEnd = nil
         }
@@ -491,9 +495,9 @@ final class WalkSessionController: ObservableObject {
             // 進行方向が不明なときは左右を付けない(誤った定位を出すより中央で鳴らす)。
             // 中央で鳴った回数を数えられないと「左右が付かなすぎる」を測れないため記録する
             noteDirectionUnavailable(fix)
-            synth?.play(.homeBeacon)
-            logToFile(String(format: "ビーコン(中央) 距離=%.0fm [%@]",
-                             Geo.distanceM(p, h), summary(of: fix)))
+            synth?.play(.homeBeacon, gain: beaconGain())
+            logToFile(String(format: "ビーコン(中央) 距離=%.0fm 音量=%.2f [%@]",
+                             Geo.distanceM(p, h), beaconGain(), summary(of: fix)))
             return
         }
         noteDirectionAvailable()
@@ -502,27 +506,37 @@ final class WalkSessionController: ObservableObject {
         let reference = latestFacingBearing ?? travel.deg
         let rel = Geo.angularDiffDeg(bearingHome, reference)
         let pan = SoundPlacement.pan(relativeBearingDeg: rel)
-        synth?.play(.homeBeacon, relativeBearingDeg: rel)
+        let gain = beaconGain()
+        synth?.play(.homeBeacon, relativeBearingDeg: rel, gain: gain)
         lastBeacon = (relDeg: rel, at: Date())
         noteReturnDirectionStarted()
         // 顔基準に切り替えた影響を後から評価できるよう、顔の向きと進行方位の両方を残す
         let facingLabel = latestFacingBearing.map { String(format: "%.0f°", $0) } ?? "-"
         let baselineLabel = headingFusion.baselineDeg.map { String(format: "%.0f°", $0) } ?? "-"
         let travelPan = sin(Geo.angularDiffDeg(bearingHome, travel.deg) * .pi / 180)
+        // 歩調も残す。間隔が歩みに乗っているかを後から確かめられるようにする
+        let cadenceLabel = currentCadence.map { String(format: "%.2f歩/s", $0) } ?? "-"
         logToFile(String(format: "ビーコン 距離=%.0fm 自宅方位=%.0f° 進行=%.0f°(%@) 顔=%@ 基準線=%@ pan=%.2f"
-                         + "(進行基準なら %.2f) 間隔=%.1fs [%@]",
+                         + "(進行基準なら %.2f) 間隔=%.1fs 歩調=%@ 音量=%.2f [%@]",
                          Geo.distanceM(p, h), bearingHome, travel.deg,
                          label(for: travel.source), facingLabel, baselineLabel, pan, travelPan,
-                         beaconInterval(), summary(of: fix)))
+                         beaconInterval(), cadenceLabel, gain, summary(of: fix)))
     }
 
+    /// いま使える歩調 [歩/秒]。立ち止まると更新が来なくなるので鮮度で切る
+    private var currentCadence: Double? {
+        pedometer.cadence(maxAgeSec: params.audio.beaconCadenceMaxAgeSec)
+    }
+
+    /// ビーコンの間隔。**歩調に同期する**(距離ではなく)
     private func beaconInterval() -> TimeInterval {
-        let a = params.audio
-        guard let p = location.position, let h = home else { return a.beaconIntervalFarSec }
-        let d = Geo.distanceM(p, h)
-        let span = a.beaconFarDistanceM - a.beaconNearDistanceM
-        let t = span > 0 ? min(1, max(0, (d - a.beaconNearDistanceM) / span)) : 0
-        return a.beaconIntervalNearSec + t * (a.beaconIntervalFarSec - a.beaconIntervalNearSec)
+        BeaconRhythm.intervalSec(cadenceStepsPerSec: currentCadence, p: params.audio.beaconRhythm)
+    }
+
+    /// ビーコンの音量。**距離はここで表す**(間隔は歩調に取られるため)
+    private func beaconGain() -> Double {
+        guard let p = location.position, let h = home else { return params.audio.beaconGainFar }
+        return BeaconRhythm.gain(distanceM: Geo.distanceM(p, h), p: params.audio.beaconRhythm)
     }
 
     // MARK: - 入力ハンドラ
@@ -840,10 +854,10 @@ final class WalkSessionController: ObservableObject {
                                     straightWithinDeg: params.route.branchStraightDeg,
                                     maxLookM: params.route.intersectionLookaheadM) else { return }
         logToFile(String(format: "帰路の誘導を開始(角まで %.0fm)", turn.distanceM))
-        // **帰路の誘導は音だけを変える。** 間隔・頂点・終端は散策時とまったく同じ
-        // (2026-08-19 の利用者判断)。ビーコンと同じ音色なので「帰っている」感は保たれる
-        startTurnGuidance(at: turn.corner, branchBearingDeg: turn.branchBearingDeg,
-                          earcon: .homeBeacon)
+        // 散策と同じ音を使う。**聞き分けられる必要は無い**(2026-08-19 の利用者判断)。
+        // 音の意味を揃えるほうが分かりやすい:
+        // suggestion =「こちらへ曲がれ」/ homeBeacon =「自宅はあちら」
+        startTurnGuidance(at: turn.corner, branchBearingDeg: turn.branchBearingDeg)
     }
 
     /// 帰路で方向のある音を鳴らせたことを記録する。確認音を止める合図(ReturnAck)
@@ -871,14 +885,12 @@ final class WalkSessionController: ObservableObject {
     /// 角へ近づくほど音量が上がる連続音。遠いうちは角そのものを指し、
     /// 手前で曲がる先を指し切り、曲がり終えたら数音かけて閉じる(判断は TurnGuidance)。
     ///
-    /// 散策と帰路で**変えるのは音だけ**(散策 = suggestion / 帰路 = homeBeacon)。
-    /// 間隔・頂点・終端の作りは共通で、語彙も 5 種のまま。
-    private func startTurnGuidance(at point: GeoPoint, branchBearingDeg: Double,
-                                   earcon: Earcon = .suggestion) {
+    /// 散策でも帰路でも `suggestion` を使う。音の意味を「こちらへ曲がれ」に揃え、
+    /// 「自宅はあちら」の `homeBeacon` と区別する(語彙は 5 種のまま)。
+    private func startTurnGuidance(at point: GeoPoint, branchBearingDeg: Double) {
         let d = location.position.map { Geo.distanceM($0, point) } ?? .greatestFiniteMagnitude
         turnGuidance = TurnGuidance(corner: point, branchBearingDeg: branchBearingDeg,
                                     distanceM: d)
-        turnGuidanceEarcon = earcon
         fireGuidanceTick()
     }
 
@@ -909,7 +921,7 @@ final class WalkSessionController: ObservableObject {
         // 定位の基準は顔の向き。取れないうちは進行方位で代用する
         let reference = latestFacingBearing ?? travel
         let rel = reference.map { Geo.angularDiffDeg(step.targetBearingDeg, $0) }
-        synth?.play(turnGuidanceEarcon, relativeBearingDeg: rel, gain: step.gain)
+        synth?.play(.suggestion, relativeBearingDeg: rel, gain: step.gain)
         // 誘導が鳴った時点で「方向のある音」は出せている。確認音はここで終わる
         noteReturnDirectionStarted()
         logToFile(String(format: "誘導 角まで=%.0fm 鳴らす向き=%@ 音量=%.2f%@%@",
