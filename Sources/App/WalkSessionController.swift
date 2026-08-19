@@ -388,7 +388,8 @@ final class WalkSessionController: ObservableObject {
         if let graph, graph.map.covers(p) {
             guard let x = graph.upcomingIntersection(
                 from: p, bearingDeg: heading,
-                withinM: params.route.intersectionLookaheadM) else {
+                withinM: params.route.intersectionLookaheadM,
+                snapMaxDistanceM: params.route.snapMaxDistanceM) else {
                 logToFile("提案なし(前方に交差点なし) [\(context)]")
                 return
             }
@@ -489,7 +490,13 @@ final class WalkSessionController: ObservableObject {
 
     private func playBeacon() {
         guard let p = location.position, let h = home else { return }
-        let bearingHome = Geo.bearingDeg(from: p, to: h)
+        // **経路が分かるなら、そちらを指す。** 自宅を直線で指すと川や街区の向こうを指しうる
+        // (2026-08-19 実測)。道の上を指していれば「音の鳴る方に歩く」が成り立つ。
+        // 経路が無い(地図なし・圏外)ときだけ直線に落ちる
+        let routeBearing = routeField.flatMap { f in
+            graph.flatMap { f.nextBearingDeg(from: p, graph: $0) }
+        }
+        let bearingHome = routeBearing ?? Geo.bearingDeg(from: p, to: h)
         let fix = location.motionFix()
         guard let travel = currentTravel(fix) else {
             // 進行方向が不明なときは左右を付けない(誤った定位を出すより中央で鳴らす)。
@@ -516,9 +523,10 @@ final class WalkSessionController: ObservableObject {
         let travelPan = sin(Geo.angularDiffDeg(bearingHome, travel.deg) * .pi / 180)
         // 歩調も残す。間隔が歩みに乗っているかを後から確かめられるようにする
         let cadenceLabel = currentCadence.map { String(format: "%.2f歩/s", $0) } ?? "-"
-        logToFile(String(format: "ビーコン 距離=%.0fm 自宅方位=%.0f° 進行=%.0f°(%@) 顔=%@ 基準線=%@ pan=%.2f"
-                         + "(進行基準なら %.2f) 間隔=%.1fs 歩調=%@ 音量=%.2f [%@]",
-                         Geo.distanceM(p, h), bearingHome, travel.deg,
+        logToFile(String(format: "ビーコン 距離=%.0fm 指す方位=%.0f°(%@) 進行=%.0f°(%@) 顔=%@ 基準線=%@"
+                         + " pan=%.2f(進行基準なら %.2f) 間隔=%.1fs 歩調=%@ 音量=%.2f [%@]",
+                         Geo.distanceM(p, h), bearingHome,
+                         routeBearing == nil ? "自宅を直線" : "経路", travel.deg,
                          label(for: travel.source), facingLabel, baselineLabel, pan, travelPan,
                          beaconInterval(), cadenceLabel, gain, summary(of: fix)))
     }

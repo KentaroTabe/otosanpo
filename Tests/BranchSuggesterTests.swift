@@ -56,6 +56,66 @@ final class BranchSuggesterTests: XCTestCase {
         XCTAssertNil(g.upcomingIntersection(from: p, bearingDeg: 0, withinM: 35))
     }
 
+    /// **隣の通りの交差点を拾わない。**
+    /// 空間的に走査していた頃は、街区(30〜50m)を挟んだ別の通りの交差点が
+    /// 「前方 35m」に入り、そこを指して街区を突っ切る向きを案内していた
+    /// (2026-08-19 実測で 3 回。利用者の報告「私有地と思われる場所に向かおうとする」)
+    func testDoesNotPickAnIntersectionOnAParallelStreet() {
+        // 南北の通りが 2 本、東西 40m 離れて平行に走る。**互いに繋がっていない**
+        // 西の通り(x=0)には交差点が無く、東の通り(x=40)には交差点がある
+        let map = WalkMap(
+            center: GeoPoint(latitude: lat(0), longitude: lon(20)),
+            radiusM: 5000, generated: "2026-08-20",
+            nodes: [
+                [lat(100), lon(0)], [lat(0), lon(0)], [lat(-100), lon(0)],      // 0,1,2 西の通り
+                [lat(100), lon(40)], [lat(0), lon(40)], [lat(-100), lon(40)],   // 3,4,5 東の通り
+                [lat(0), lon(140)],                                             // 6 東の通りから東へ伸びる枝
+            ],
+            ways: [
+                WalkMap.Way(n: [0, 1, 2], cls: .residential, cross: 0),
+                WalkMap.Way(n: [3, 4, 5], cls: .residential, cross: 0),
+                WalkMap.Way(n: [4, 6], cls: .residential, cross: 0),
+            ])
+        let g = WalkGraph(map: map, cellSizeM: 50)
+        // 節点 4 は交差点(3 方向)
+        XCTAssertTrue(g.isIntersection(4))
+
+        // 西の通りを南へ歩く。東の交差点は 40m 東にあり、前方の扇形には入るが**別の通り**
+        let p = GeoPoint(latitude: lat(25), longitude: lon(0))
+        XCTAssertNil(g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 50),
+                     "繋がっていない通りの交差点は拾わない")
+
+        // 東の通りを南へ歩けば、同じ交差点が拾える
+        let q = GeoPoint(latitude: lat(25), longitude: lon(40))
+        let x = g.upcomingIntersection(from: q, bearingDeg: 180, withinM: 50)
+        XCTAssertEqual(x?.nodeIndex, 4)
+        XCTAssertEqual(x?.distanceM ?? 0, 25, accuracy: 3)
+    }
+
+    /// 道なりに進んだ先の交差点は、途中に節点があっても見つかる
+    func testFollowsTheRoadThroughIntermediateNodes() {
+        let map = WalkMap(
+            center: GeoPoint(latitude: lat(0), longitude: lon(0)),
+            radiusM: 5000, generated: "2026-08-20",
+            nodes: [
+                [lat(60), lon(0)],    // 0 出発側
+                [lat(40), lon(0)],    // 1 途中(2 方向)
+                [lat(20), lon(0)],    // 2 途中(2 方向)
+                [lat(0), lon(0)],     // 3 交差点
+                [lat(-20), lon(0)],   // 4
+                [lat(0), lon(50)],    // 5 交差点から東へ
+            ],
+            ways: [
+                WalkMap.Way(n: [0, 1, 2, 3, 4], cls: .residential, cross: 0),
+                WalkMap.Way(n: [3, 5], cls: .residential, cross: 0),
+            ])
+        let g = WalkGraph(map: map, cellSizeM: 50)
+        let p = GeoPoint(latitude: lat(55), longitude: lon(0))
+        let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 60)
+        XCTAssertEqual(x?.nodeIndex, 3, "途中の 2 方向節点を通り抜けて交差点に着く")
+        XCTAssertEqual(x?.distanceM ?? 0, 55, accuracy: 3)
+    }
+
     /// 届かない距離の交差点は拾わない
     func testUpcomingIntersectionRespectsRange() {
         let g = crossroads()

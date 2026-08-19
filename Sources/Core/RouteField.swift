@@ -123,6 +123,29 @@ public struct RouteField: Sendable {
         return Geo.distanceM(p, np) + metres[node]
     }
 
+    /// **いま進むべき向き**(経路の次の一歩の方位)。
+    ///
+    /// ビーコンはこれを指す。自宅を直線で指すと、川や街区や私有地の向こうを指しうる
+    /// (2026-08-19 実測で帰路に 1 回)。**道の上を指していれば「音の鳴る方に歩く」が成り立つ。**
+    /// 曲がり角の誘導が受け持つのは角の手前だけなので、その間を埋めるのはこちら。
+    public func nextBearingDeg(from p: GeoPoint, graph: WalkGraph) -> Double? {
+        guard let node = graph.nearestNode(to: p, maxDistanceM: snapMaxDistanceM),
+              next.indices.contains(node), let here = graph.map.point(node) else { return nil }
+        // 最寄り節点をまだ通り過ぎていなければ、まずそこへ向かう。
+        // 目の前の節点を飛ばして次を指すと、曲がる前に曲がった先を指すことになる
+        if Geo.distanceM(p, here) > arrivalToleranceM {
+            return Geo.bearingDeg(from: p, to: here)
+        }
+        guard next[node] >= 0, let np = graph.map.point(next[node]) else {
+            // 自宅そのもの(次が無い)。自宅を直接指す
+            return Geo.bearingDeg(from: p, to: goal)
+        }
+        return Geo.bearingDeg(from: here, to: np)
+    }
+
+    /// 「その節点に着いた」とみなす距離 [m]。水平精度(実測 3〜5 m)より大きく取る
+    private var arrivalToleranceM: Double { 8 }
+
     /// 経路上で**次に曲がる地点**と、そこで踏み出す向き。
     /// 曲がり角の誘導(TurnGuidance)にそのまま渡せる形で返す。
     ///

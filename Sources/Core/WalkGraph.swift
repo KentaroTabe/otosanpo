@@ -182,39 +182,78 @@ public struct WalkGraph: @unchecked Sendable {
         branches(at: node).count >= 3
     }
 
-    /// 進行方向の前方 `withinM` 以内にある、最も近い交差点。
-    /// 「曲がれる地点」でだけ提案するために使う(タイマー駆動をやめる)。
-    /// 前方の判定は `forwardHalfAngleDeg` の扇形で行う。
+    /// いま乗っている道を前方へ辿って、最初に出会う交差点。
+    ///
+    /// **空間的に近いだけの節点は拾わない。** 以前は周囲を走査して
+    /// 「前方 35 m・±60° にある交差点」を選んでいたが、それだと
+    /// **隣の通りの交差点**が選ばれる。街区の幅は 30〜50 m しかないので、
+    /// 前方の扇形には日常的に別の通りが入る。そこを指せば街区を突っ切る向き —
+    /// 利用者の報告「私有地と思われる場所に向かおうとする」がこれ
+    /// (2026-08-19 実測で 3 回)。
+    ///
+    /// 道を辿って探せば、返る交差点は**必ずいまの道の延長上にある**。
     public func upcomingIntersection(from p: GeoPoint, bearingDeg: Double, withinM: Double,
-                                     forwardHalfAngleDeg: Double = 60) -> UpcomingIntersection? {
-        var best: UpcomingIntersection?
-        // 前方 withinM を覆うセル範囲だけ見る
-        let c = cell(p)
-        let reach = max(1, Int((withinM / cellSizeM).rounded(.up)))
-        var seen = Set<Int>()
-        for dx in -reach...reach {
-            for dy in -reach...reach {
-                for entry in buckets[key(c.x + dx, c.y + dy)] ?? [] {
-                    let way = map.ways[entry.way]
-                    for node in [way.n[entry.seg], way.n[entry.seg + 1]] {
-                        guard seen.insert(node).inserted else { continue }
-                        guard let q = map.point(node) else { continue }
-                        let d = Geo.distanceM(p, q)
-                        guard d <= withinM else { continue }
-                        // 真横や後ろの交差点は「これから曲がる場所」ではない
-                        guard abs(Geo.angularDiffDeg(Geo.bearingDeg(from: p, to: q), bearingDeg))
-                                <= forwardHalfAngleDeg else { continue }
-                        let br = branches(at: node)
-                        guard br.count >= 3 else { continue }
-                        if best == nil || d < best!.distanceM {
-                            best = UpcomingIntersection(nodeIndex: node, point: q,
-                                                        distanceM: d, branches: br)
-                        }
-                    }
-                }
+                                     snapMaxDistanceM: Double = 25) -> UpcomingIntersection? {
+        guard let s = snap(p, maxDistanceM: snapMaxDistanceM) else { return nil }
+        let way = map.ways[s.wayIndex]
+        let a = way.n[s.segmentIndex], b = way.n[s.segmentIndex + 1]
+        guard let pa = map.point(a), let pb = map.point(b) else { return nil }
+        // 進行方向に合う側へ歩き出す
+        let forward = abs(Geo.angularDiffDeg(Geo.bearingDeg(from: pa, to: pb), bearingDeg)) <= 90
+        var previous = forward ? a : b
+        var current = forward ? b : a
+        guard var here = map.point(current) else { return nil }
+        var travelled = Geo.distanceM(s.point, here)
+        // 同じ節点を二度踏まない(環状の道で回り続けないため)
+        var visited: Set<Int> = [previous]
+
+        while travelled <= withinM {
+            guard visited.insert(current).inserted else { return nil }
+            let br = branches(at: current)
+            if br.count >= 3 {
+                return UpcomingIntersection(nodeIndex: current, point: here,
+                                            distanceM: travelled, branches: br)
+            }
+            // 道が続いているだけの節点。来た方でないほうへ進む
+            guard let next = continuation(at: current, from: previous, heading: here) else {
+                return nil
+            }
+            guard let np = map.point(next) else { return nil }
+            travelled += Geo.distanceM(here, np)
+            previous = current
+            current = next
+            here = np
+        }
+        return nil
+    }
+
+    /// 節点 `node` を、`from` から来て通り抜ける先。行き止まりなら nil。
+    /// 候補が複数あるときは**最も真っ直ぐ**なものを選ぶ
+    /// (向きで畳まれて交差点扱いされなかった節点でも、道なりに進めるようにする)。
+    private func continuation(at node: Int, from previous: Int, heading: GeoPoint) -> Int? {
+        guard let pp = map.point(previous) else { return nil }
+        let incoming = Geo.bearingDeg(from: pp, to: heading)
+        var best: (node: Int, turn: Double)?
+        for n in adjacentNodes(of: node) where n != previous {
+            guard let q = map.point(n) else { continue }
+            let turn = abs(Geo.angularDiffDeg(Geo.bearingDeg(from: heading, to: q), incoming))
+            if best == nil || turn < best!.turn { best = (n, turn) }
+        }
+        return best?.node
+    }
+
+    /// その節点に隣接する節点。`branches` と違い**向きで畳まない**
+    public func adjacentNodes(of node: Int) -> [Int] {
+        var out: [Int] = []
+        for e in incident[node] ?? [] {
+            let way = map.ways[e.way]
+            for at in [e.at - 1, e.at + 1] {
+                guard way.n.indices.contains(at) else { continue }
+                let n = way.n[at]
+                if n != node, !out.contains(n) { out.append(n) }
             }
         }
-        return best
+        return out
     }
 
     private func evaluate(_ entry: (way: Int, seg: Int), at p: GeoPoint) -> Snap? {

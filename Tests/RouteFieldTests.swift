@@ -93,6 +93,35 @@ final class RouteFieldTests: XCTestCase {
                                  straightWithinDeg: 25, maxLookM: 300))
     }
 
+    // MARK: - いま進むべき向き(ビーコンが指す方位)
+
+    /// **自宅の直線方向ではなく、道に沿った向きを指す。**
+    /// コの字の道では、自宅は真南でも進むべきは西(角を回ってから南)
+    func testNextBearingFollowsTheRoadNotTheStraightLine() {
+        let g = uShape()
+        let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
+        let end = at(0, 100)
+        // 自宅は真南(180°)にある
+        XCTAssertEqual(Geo.bearingDeg(from: end, to: at(0, 0)), 180, accuracy: 2)
+        // だが進むべきは東(角 (100,100) へ向かう)
+        XCTAssertEqual(f?.nextBearingDeg(from: end, graph: g) ?? -1, 90, accuracy: 3)
+    }
+
+    /// 節点の手前ではその節点へ向かう。角を曲がる前に曲がった先を指さない
+    func testPointsAtTheNextNodeWhileApproachingIt() {
+        let g = uShape()
+        let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
+        // 角 (100,100) の 30m 手前(西側)
+        let p = at(70, 100)
+        XCTAssertEqual(f?.nextBearingDeg(from: p, graph: g) ?? -1, 90, accuracy: 3)
+    }
+
+    func testReturnsNilOffTheMapForBearing() {
+        let g = uShape()
+        let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
+        XCTAssertNil(f?.nextBearingDeg(from: at(0, 500), graph: g))
+    }
+
     // MARK: - 経路の選び方
 
     /// 同じ距離なら、横断コストの低い道を選ぶ。

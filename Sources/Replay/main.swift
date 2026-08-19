@@ -311,6 +311,8 @@ let gp = TurnGuidance.Params(
     leftBehindM: params.audio.guidanceLeftBehindM, turnedWithinDeg: r.branchStraightDeg,
     closingTones: params.audio.guidanceClosingTones)
 var active: (g: TurnGuidance, at: Date, rels: [Double])?
+/// 交差点までの「道なり / 直線」。1.0 に近いほど、指す向きが道と一致している
+var detourRatios: [Double] = []
 var guidanceReports: [String] = []
 /// 左右の付き方の集計。|相対| が小さい音は「ほぼ正面」で左右の手がかりを持たない
 var relCenter = 0, relMid = 0, relSide = 0
@@ -341,8 +343,19 @@ for f in inMap where f.state == "wandering" {
     }
 
     guard let x = graph.upcomingIntersection(from: f.point, bearingDeg: course,
-                                             withinM: r.intersectionLookaheadM) else { continue }
+                                             withinM: r.intersectionLookaheadM,
+                                             snapMaxDistanceM: r.snapMaxDistanceM) else {
+        continue
+    }
     intersectionsSeen += 1
+    // 交差点までの**直線距離と道なりの距離**を比べる。大きく違えば、
+    // その交差点は街区の向こう側にある(=そこを指すと私有地を突っ切る)
+    if let s = graph.snap(f.point, maxDistanceM: r.snapMaxDistanceM) {
+        let straight = Geo.distanceM(s.point, x.point)
+        if straight > 1 {
+            detourRatios.append(x.distanceM / straight)
+        }
+    }
     // 直前に提案した地点から離れていなければ鳴らさない(実機と同じ間引き)
     if let last = lastChoiceAt, Geo.distanceM(last, f.point) < r.suggestionMinTravelM { continue }
 
@@ -370,6 +383,15 @@ for f in inMap where f.state == "wandering" {
 }
 
 print("交差点に接近した回数: \(intersectionsSeen)")
+if !detourRatios.isEmpty {
+    let sorted = detourRatios.sorted()
+    // 1.0 = 交差点が真っ直ぐ先にある。大きいほど、直線で指すと道から外れる
+    print(String(format: "交差点までの 道なり/直線: 中央 %.2f / 最大 %.2f(%d 件)",
+                 sorted[sorted.count / 2], sorted.last!, sorted.count))
+    let far = sorted.filter { $0 > 1.5 }.count
+    print(String(format: "  1.5 倍を超える(街区を回り込む位置)= %d 件 (%.0f%%)",
+                 far, Double(far) / Double(sorted.count) * 100))
+}
 print("提案した回数: \(choices.count)")
 if !rejected.isEmpty {
     print("却下の内訳(移動距離の間引きを通った分):")
