@@ -64,12 +64,12 @@ public enum BranchSuggester {
                               position: GeoPoint, home: GeoPoint,
                               grid: VisitGrid, homewardBias: Double,
                               target: GeoPoint? = nil, graph: WalkGraph? = nil,
-                              route: AppParameters.Route, now: Date) -> Choice? {
+                              route: AppParameters.Route) -> Choice? {
         if case .suggest(let c) = decide(intersection: intersection,
                                          travelBearingDeg: travelBearingDeg,
                                          position: position, home: home, grid: grid,
                                          homewardBias: homewardBias, target: target,
-                                         graph: graph, route: route, now: now) {
+                                         graph: graph, route: route) {
             return c
         }
         return nil
@@ -84,7 +84,7 @@ public enum BranchSuggester {
                               position: GeoPoint, home: GeoPoint,
                               grid: VisitGrid, homewardBias: Double,
                               target: GeoPoint? = nil, graph: WalkGraph? = nil,
-                              route: AppParameters.Route, now: Date) -> Decision {
+                              route: AppParameters.Route) -> Decision {
         let homeBearing = Geo.bearingDeg(from: position, to: home)
         let targetBearing = target.map { Geo.bearingDeg(from: position, to: $0) }
         // 行き先の寄与は帰宅バイアスの裏返し。**帰宅が常に優先**なので、
@@ -105,8 +105,8 @@ public enum BranchSuggester {
                                               stepM: route.cellSizeM) ?? []
             let fam = samples.isEmpty
                 ? grid.sectorFamiliarity(from: intersection.point, bearingDeg: b.bearingDeg,
-                                         params: route, now: now)
-                : grid.averageFamiliarity(at: samples, now: now,
+                                         params: route)
+                : grid.averageFamiliarity(at: samples,
                                           excludedFamiliarity: route.excludedFamiliarity)
             let novelty = 1.0 / (1.0 + fam)
             let angleToHome = abs(Geo.angularDiffDeg(b.bearingDeg, homeBearing)) / 180.0

@@ -6,7 +6,7 @@ final class BranchSuggesterTests: XCTestCase {
     private func lon(_ m: Double) -> Double { 139.0 + m / (111_320.0 * cos(35.0 * .pi / 180)) }
 
     private let route = AppParameters.Route(
-        cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
+        cellSizeM: 50, visitHalfLifeM: 20_000, sectorWidthDeg: 60,
         sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
         suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30,
         mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25, nodeArrivalToleranceM: 8,
@@ -129,16 +129,16 @@ final class BranchSuggesterTests: XCTestCase {
         let p = GeoPoint(latitude: lat(20), longitude: lon(0))
         let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
         // 北(来た道)を強く新鮮に、他を馴染ませても北は選ばれない
-        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        var grid = VisitGrid(cellSizeM: 50, halfLifeM: 20_000)
         let now = Date(timeIntervalSince1970: 0)
         for b in [90.0, 180.0, 270.0] {
             let q = Geo.destination(from: x.point, bearingDeg: b, distanceM: 100)
-            for _ in 0..<5 { grid.recordVisit(at: q, date: now) }
+            for _ in 0..<5 { grid.recordVisit(at: q) }
         }
         let home = Geo.destination(from: x.point, bearingDeg: 0, distanceM: 500)
         let c = BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
                                        position: p, home: home, grid: grid,
-                                       homewardBias: 1.0, route: route, now: now)
+                                       homewardBias: 1.0, route: route)
         // 北を向く提案(相対角の大きさが branchBackwardDeg 以上)は出ない
         if let c { XCTAssertLessThan(abs(c.relativeBearingDeg), 135) }
     }
@@ -149,16 +149,16 @@ final class BranchSuggesterTests: XCTestCase {
         let p = GeoPoint(latitude: lat(20), longitude: lon(0))
         let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
         // 東西を馴染ませ、直進(南)を新鮮に保つ
-        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        var grid = VisitGrid(cellSizeM: 50, halfLifeM: 20_000)
         let now = Date(timeIntervalSince1970: 0)
         for b in [90.0, 270.0] {
             let q = Geo.destination(from: x.point, bearingDeg: b, distanceM: 100)
-            for _ in 0..<5 { grid.recordVisit(at: q, date: now) }
+            for _ in 0..<5 { grid.recordVisit(at: q) }
         }
         let home = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 500)
         XCTAssertNil(BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
                                            position: p, home: home, grid: grid,
-                                           homewardBias: 0, route: route, now: now))
+                                           homewardBias: 0, route: route))
     }
 
     /// 直進が馴染んでいれば、実在する横道を提案する
@@ -166,14 +166,13 @@ final class BranchSuggesterTests: XCTestCase {
         let g = crossroads()
         let p = GeoPoint(latitude: lat(20), longitude: lon(0))
         let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
-        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
-        let now = Date(timeIntervalSince1970: 0)
+        var grid = VisitGrid(cellSizeM: 50, halfLifeM: 20_000)
         let south = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 100)
-        for _ in 0..<8 { grid.recordVisit(at: south, date: now) }
+        for _ in 0..<8 { grid.recordVisit(at: south) }
         let home = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 500)
         let c = BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
                                        position: p, home: home, grid: grid,
-                                       homewardBias: 0, route: route, now: now)
+                                       homewardBias: 0, route: route)
         XCTAssertNotNil(c)
         // 東(相対 -90)か西(相対 +90)のどちらか
         XCTAssertEqual(abs(c?.relativeBearingDeg ?? 0), 90, accuracy: 1.0)
@@ -181,13 +180,11 @@ final class BranchSuggesterTests: XCTestCase {
 
     /// 横断コストが高い道は、同じ新鮮さなら選ばれにくくなる
     func testCrossingCostPushesTheChoiceAway() {
-        let now = Date(timeIntervalSince1970: 0)
-        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        var grid = VisitGrid(cellSizeM: 50, halfLifeM: 20_000)
         // 直進(南)を馴染ませて、東西のどちらかを選ばせる状況にする
         let center = GeoPoint(latitude: lat(0), longitude: lon(0))
         for _ in 0..<8 {
-            grid.recordVisit(at: Geo.destination(from: center, bearingDeg: 180, distanceM: 100),
-                             date: now)
+            grid.recordVisit(at: Geo.destination(from: center, bearingDeg: 180, distanceM: 100))
         }
         let p = GeoPoint(latitude: lat(20), longitude: lon(0))
         let home = Geo.destination(from: center, bearingDeg: 180, distanceM: 500)
@@ -197,7 +194,7 @@ final class BranchSuggesterTests: XCTestCase {
         let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
         let c = BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
                                        position: p, home: home, grid: grid,
-                                       homewardBias: 0, route: route, now: now)
+                                       homewardBias: 0, route: route)
         XCTAssertEqual(c?.branch.cls, .residential)
         XCTAssertEqual(c?.relativeBearingDeg ?? 0, 90, accuracy: 1.0)  // 西
     }
@@ -208,20 +205,20 @@ final class BranchSuggesterTests: XCTestCase {
         let g = crossroads()
         let p = GeoPoint(latitude: lat(20), longitude: lon(0))
         let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
-        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        var grid = VisitGrid(cellSizeM: 50, halfLifeM: 20_000)
         let now = Date(timeIntervalSince1970: 0)
         // 全方向を歩き込む(絶対値の下限を割る水準)。直進(南)はさらに濃く
         for b in [90.0, 270.0] {
             let q = Geo.destination(from: x.point, bearingDeg: b, distanceM: 100)
-            for _ in 0..<5 { grid.recordVisit(at: q, date: now) }
+            for _ in 0..<5 { grid.recordVisit(at: q) }
         }
         let south = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 100)
-        for _ in 0..<40 { grid.recordVisit(at: south, date: now) }
+        for _ in 0..<40 { grid.recordVisit(at: south) }
         let home = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 500)
 
         let d = BranchSuggester.decide(intersection: x, travelBearingDeg: 180,
                                        position: p, home: home, grid: grid,
-                                       homewardBias: 0, route: route, now: now)
+                                       homewardBias: 0, route: route)
         guard case .suggest(let c) = d else {
             return XCTFail("馴染んだ界隈でも相対的に良い分岐は鳴るべき: \(d)")
         }
@@ -235,16 +232,16 @@ final class BranchSuggesterTests: XCTestCase {
         let g = crossroads()
         let p = GeoPoint(latitude: lat(20), longitude: lon(0))
         let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
-        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        var grid = VisitGrid(cellSizeM: 50, halfLifeM: 20_000)
         let now = Date(timeIntervalSince1970: 0)
         for b in [90.0, 270.0] {
             let q = Geo.destination(from: x.point, bearingDeg: b, distanceM: 100)
-            for _ in 0..<5 { grid.recordVisit(at: q, date: now) }
+            for _ in 0..<5 { grid.recordVisit(at: q) }
         }
         let home = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 500)
         let d = BranchSuggester.decide(intersection: x, travelBearingDeg: 180,
                                        position: p, home: home, grid: grid,
-                                       homewardBias: 0, route: route, now: now)
+                                       homewardBias: 0, route: route)
         guard case .silent(let why, let best) = d else {
             return XCTFail("直進が最良なのに提案した")
         }
@@ -261,19 +258,16 @@ final class BranchSuggesterTests: XCTestCase {
         let g = crossroads()
         let p = GeoPoint(latitude: lat(20), longitude: lon(0))
         let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
-        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
-        let now = Date(timeIntervalSince1970: 0)
+        var grid = VisitGrid(cellSizeM: 50, halfLifeM: 20_000)
         // 直進(南)を歩き込んで、東西のどちらかを選ばせる
         for _ in 0..<8 {
-            grid.recordVisit(at: Geo.destination(from: x.point, bearingDeg: 180, distanceM: 60),
-                             date: now)
+            grid.recordVisit(at: Geo.destination(from: x.point, bearingDeg: 180, distanceM: 60))
         }
         // **東の道そのものではなく、東の扇形の中の「道でない場所」**を歩き込む。
         // 交差点の東 60m・北へ 60m ずれた地点は、東の扇形(±30°)には入らないので
         // 代わりに東の道から離れた斜め方向を濃くする
         for _ in 0..<8 {
-            grid.recordVisit(at: Geo.destination(from: x.point, bearingDeg: 65, distanceM: 120),
-                             date: now)
+            grid.recordVisit(at: Geo.destination(from: x.point, bearingDeg: 65, distanceM: 120))
         }
         let home = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 500)
 
@@ -287,7 +281,7 @@ final class BranchSuggesterTests: XCTestCase {
         }
         let c = BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
                                        position: p, home: home, grid: grid,
-                                       homewardBias: 0, graph: g, route: route, now: now)
+                                       homewardBias: 0, graph: g, route: route)
         XCTAssertNotNil(c)
     }
 
@@ -314,14 +308,13 @@ final class BranchSuggesterTests: XCTestCase {
 
     /// 半分だけ歩いた道は、半分の馴染み度になる(扇形版は歩いた側だけを平均していた)
     func testUnvisitedStretchesCountAsZero() {
-        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
-        let now = Date(timeIntervalSince1970: 0)
+        var grid = VisitGrid(cellSizeM: 50, halfLifeM: 20_000)
         let a = GeoPoint(latitude: lat(0), longitude: lon(0))
         let b = GeoPoint(latitude: lat(0), longitude: lon(200))
-        grid.recordVisit(at: a, date: now)
-        grid.recordVisit(at: a, date: now)
+        grid.recordVisit(at: a)
+        grid.recordVisit(at: a)
         // 片方だけ通った 2 点の平均は 1.0(= 2 と 0 の平均)
-        XCTAssertEqual(grid.averageFamiliarity(at: [a, b], now: now, excludedFamiliarity: 8),
+        XCTAssertEqual(grid.averageFamiliarity(at: [a, b], excludedFamiliarity: 8),
                        1.0, accuracy: 0.001)
     }
 
@@ -333,11 +326,10 @@ final class BranchSuggesterTests: XCTestCase {
         let g = crossroads()
         let p = GeoPoint(latitude: lat(20), longitude: lon(0))
         let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
-        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
-        let now = Date(timeIntervalSince1970: 0)
+        var grid = VisitGrid(cellSizeM: 50, halfLifeM: 20_000)
         // 直進(南)を馴染ませ、東西のどちらかを選ばせる
         let south = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 100)
-        for _ in 0..<8 { grid.recordVisit(at: south, date: now) }
+        for _ in 0..<8 { grid.recordVisit(at: south) }
         let home = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 500)
 
         // 行き先が東(90°)にあれば東、西(270°)にあれば西
@@ -346,11 +338,11 @@ final class BranchSuggesterTests: XCTestCase {
         let toEast = BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
                                             position: p, home: home, grid: grid,
                                             homewardBias: 0, target: east,
-                                            route: route, now: now)
+                                            route: route)
         let toWest = BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
                                             position: p, home: home, grid: grid,
                                             homewardBias: 0, target: west,
-                                            route: route, now: now)
+                                            route: route)
         // 南へ歩いているので、東は相対 -90(左)、西は相対 +90(右)
         XCTAssertEqual(toEast?.relativeBearingDeg ?? 0, -90, accuracy: 1)
         XCTAssertEqual(toWest?.relativeBearingDeg ?? 0, 90, accuracy: 1)
@@ -361,10 +353,9 @@ final class BranchSuggesterTests: XCTestCase {
         let g = crossroads()
         let p = GeoPoint(latitude: lat(20), longitude: lon(0))
         let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
-        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
-        let now = Date(timeIntervalSince1970: 0)
+        var grid = VisitGrid(cellSizeM: 50, halfLifeM: 20_000)
         let south = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 100)
-        for _ in 0..<8 { grid.recordVisit(at: south, date: now) }
+        for _ in 0..<8 { grid.recordVisit(at: south) }
 
         // 自宅は西、行き先は東。バイアスが最大なら自宅側(西)が勝つ
         let home = Geo.destination(from: x.point, bearingDeg: 270, distanceM: 500)
@@ -372,7 +363,7 @@ final class BranchSuggesterTests: XCTestCase {
         let c = BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
                                        position: p, home: home, grid: grid,
                                        homewardBias: 1.0, target: east,
-                                       route: route, now: now)
+                                       route: route)
         XCTAssertEqual(c?.relativeBearingDeg ?? 0, 90, accuracy: 1, "西(自宅側)")
     }
 

@@ -276,7 +276,7 @@ if inMap.isEmpty {
 // MARK: - 提案の再生(交差点でどう判断したか)
 
 print("\n== 提案の再生(交差点接近の検出 + 分岐の選択)==")
-var grid = VisitGrid(cellSizeM: r.cellSizeM, halfLifeDays: r.visitHalfLifeDays)
+var grid = VisitGrid(cellSizeM: r.cellSizeM, halfLifeM: r.visitHalfLifeM)
 
 // 端末の VisitGrid は過去の散歩ぶん馴染み度を溜めている。
 // 同じ状態を再現しないと「なぜ鳴らないか」を再生で判定できないので、
@@ -285,9 +285,21 @@ var historyFixes = 0
 if let files = try? FileManager.default.contentsOfDirectory(atPath: "field-logs") {
     for name in files.filter({ $0.hasSuffix(".tsv") }).sorted()
     where !logPath.hasSuffix(name) {
+        // 実機と同じく、歩いた分だけ減衰の時計を進める。
+        // これをやらないと過去の記録が一切減衰せず、馴染み度が実機と食い違う
+        var previous: GeoPoint?
         for f in readFixes("field-logs/" + name)
         where f.state == "wandering" || f.state == "returning" {
-            grid.recordVisit(at: f.point, date: f.time)
+            if let q = previous {
+                let d = Geo.distanceM(q, f.point)
+                if d >= b.pathSegmentMinM {
+                    grid.advance(byM: d)
+                    previous = f.point
+                }
+            } else {
+                previous = f.point
+            }
+            grid.recordVisit(at: f.point)
             historyFixes += 1
         }
     }
@@ -317,8 +329,18 @@ var guidanceReports: [String] = []
 /// 左右の付き方の集計。|相対| が小さい音は「ほぼ正面」で左右の手がかりを持たない
 var relCenter = 0, relMid = 0, relSide = 0
 
+var odometerPrevious: GeoPoint?
 for f in inMap where f.state == "wandering" {
-    grid.recordVisit(at: f.point, date: f.time)
+    if let q = odometerPrevious {
+        let d = Geo.distanceM(q, f.point)
+        if d >= b.pathSegmentMinM {
+            grid.advance(byM: d)
+            odometerPrevious = f.point
+        }
+    } else {
+        odometerPrevious = f.point
+    }
+    grid.recordVisit(at: f.point)
     guard let course = f.courseDeg, course >= 0 else { continue }
 
     // 誘導中は次の提案を評価しない(実機と同じ)
@@ -365,7 +387,7 @@ for f in inMap where f.state == "wandering" {
     let decision = BranchSuggester.decide(intersection: x, travelBearingDeg: course,
                                           position: f.point, home: walkMap.center,
                                           grid: grid, homewardBias: 0, graph: graph,
-                                          route: r, now: f.time)
+                                          route: r)
     if let best = decision.best { bestScores.append(best.score) }
     switch decision {
     case .silent(let why, _):
@@ -453,7 +475,7 @@ if guidanceReports.isEmpty {
     for allowed in [377.0, 700.0, 1450.0] {
         let pick = allowed * b.softZoneRatio
         let t = zoneMap.chooseTarget(from: home, home: home, allowedRadiusM: pick,
-                                     grid: grid, now: Date(timeIntervalSince1970: 1_786_000_000),
+                                     grid: grid,
                                      p: r.zoneParams)
         guard let t else {
             print(String(format: "  許容 %4.0fm(選定 %3.0fm): 選べる地帯なし", allowed, pick))

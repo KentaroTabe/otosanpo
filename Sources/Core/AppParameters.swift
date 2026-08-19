@@ -59,7 +59,8 @@ public struct AppParameters: Codable, Equatable {
 
     public struct Route: Codable, Equatable {
         public var cellSizeM: Double
-        public var visitHalfLifeDays: Double
+        /// 通過の重みが半分になるまでに歩く距離 [m]。**減衰の時計は日数ではなく歩いた総距離**
+        public var visitHalfLifeM: Double
         public var sectorWidthDeg: Double
         public var sectorRadiusM: Double
         public var suggestionMinScore: Double

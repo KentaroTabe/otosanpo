@@ -49,6 +49,8 @@ final class WalkSessionController: ObservableObject {
     private var returnDirectionStarted = false
     /// 散歩全体と帰路それぞれの歩行実測。予算模型の係数を実測から決めるための計測
     private var walkMetrics = GaitMetrics()
+    /// 積算歩行距離の時計を進めた地点(この散歩の経路長のうち、既に反映した分)
+    private var odometerBaseM: Double = 0
     private var returnMetrics: GaitMetrics?
     private var returnStart: (distanceM: Double, at: Date)?
     /// ヘッドフォンの接続状態と、外している間に持ち越したプロンプト
@@ -91,7 +93,7 @@ final class WalkSessionController: ObservableObject {
         self.params = params
         durationMin = params.session.defaultDurationMin
         grid = GridStore.load(cellSizeM: params.route.cellSizeM,
-                              halfLifeDays: params.route.visitHalfLifeDays)
+                              halfLifeM: params.route.visitHalfLifeM)
         detector = HeadGestureDetector(params: params.gesture)
         shadowDetector = HeadGestureDetector(params: params.gesture)
         home = HomeStore.load()
@@ -156,6 +158,7 @@ final class WalkSessionController: ObservableObject {
         lastGoodCourse = nil
         shadowDetector = HeadGestureDetector(params: params.gesture)
         walkMetrics = GaitMetrics()
+        odometerBaseM = 0
         returnMetrics = nil
         returnStart = nil
         promptPending = false
@@ -397,7 +400,7 @@ final class WalkSessionController: ObservableObject {
                                                   position: p, home: h, grid: grid,
                                                   homewardBias: bias,
                                                   target: target?.zone.center, graph: graph,
-                                                  route: params.route, now: Date())
+                                                  route: params.route)
             guard case .suggest(let c) = decision else {
                 if case .silent(let why, let best) = decision {
                     // 最良候補も残す。「惜しかったのか、遠く及ばなかったのか」が
@@ -427,7 +430,7 @@ final class WalkSessionController: ObservableObject {
 
         if let s = BearingSuggester.suggest(position: p, headingDeg: heading, home: h,
                                             grid: grid, homewardBias: bias,
-                                            route: params.route, now: Date()) {
+                                            route: params.route) {
             let reference = latestFacingBearing ?? heading
             let rel = Geo.angularDiffDeg(s.absoluteBearingDeg, reference)
             synth?.play(.suggestion, relativeBearingDeg: rel)
@@ -569,11 +572,15 @@ final class WalkSessionController: ObservableObject {
             // 純粋ロジックの変更は、歩き直さずに記録したログの再生で検証できる
             // (scripts/replay_log.sh)。docs/05「検証の方針」
             logToFile("fix [\(summary(of: fix))]")
+            // **馴染み度の減衰の時計は「歩いた総距離」**(docs/04)。歩いた分だけ進める。
+            // 経路長は揺れを除いた実距離なので、そのまま時計に使える
+            grid.advance(byM: walkMetrics.pathLengthM - odometerBaseM)
+            odometerBaseM = walkMetrics.pathLengthM
         }
         if commuteLearning {
-            grid.markExcluded(at: p, date: now)
+            grid.markExcluded(at: p)
         } else if state == .wandering || state == .returning {
-            grid.recordVisit(at: p, date: now)
+            grid.recordVisit(at: p)
         }
         if state == .returning, let h = home,
            Geo.distanceM(p, h) <= params.session.arrivalRadiusM {
@@ -847,7 +854,7 @@ final class WalkSessionController: ObservableObject {
         // (2026-08-19 実測: 許容 369m のとき 363m 先を選び、9 秒で失効した)
         let pickRadius = allowedRadiusM * params.budget.softZoneRatio
         guard let next = zones.chooseTarget(from: p, home: h, allowedRadiusM: pickRadius,
-                                            grid: grid, now: Date(),
+                                            grid: grid,
                                             p: params.route.zoneParams) else {
             if target != nil { logToFile("行き先を選べません(\(reason))") }
             target = nil

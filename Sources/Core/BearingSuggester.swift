@@ -38,7 +38,7 @@ public struct Suggestion: Equatable {
 public enum BearingSuggester {
     public static func suggest(position: GeoPoint, headingDeg: Double, home: GeoPoint,
                                grid: VisitGrid, homewardBias: Double,
-                               route: AppParameters.Route, now: Date) -> Suggestion? {
+                               route: AppParameters.Route) -> Suggestion? {
         let homeBearing = Geo.bearingDeg(from: position, to: home)
         var best: (dir: RelativeDirection, score: Double)?
         var straightScore = 0.0
@@ -46,7 +46,7 @@ public enum BearingSuggester {
         for dir in RelativeDirection.allCases {
             let absBearing = Geo.normalizeDeg(headingDeg + dir.offsetDeg)
             let fam = grid.sectorFamiliarity(from: position, bearingDeg: absBearing,
-                                             params: route, now: now)
+                                             params: route)
             let novelty = 1.0 / (1.0 + fam)
             let angleToHome = abs(Geo.angularDiffDeg(absBearing, homeBearing)) / 180.0
             let score = novelty - homewardBias * angleToHome

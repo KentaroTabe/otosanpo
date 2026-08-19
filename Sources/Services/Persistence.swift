@@ -32,12 +32,16 @@ enum GridStore {
         return dir.appendingPathComponent("visit_grid.json")
     }
 
-    static func load(cellSizeM: Double, halfLifeDays: Double) -> VisitGrid {
+    static func load(cellSizeM: Double, halfLifeM: Double) -> VisitGrid {
         guard let url = try? fileURL(),
               let data = try? Data(contentsOf: url),
-              let grid = try? JSONDecoder().decode(VisitGrid.self, from: data) else {
-            return VisitGrid(cellSizeM: cellSizeM, halfLifeDays: halfLifeDays)
+              var grid = try? JSONDecoder().decode(VisitGrid.self, from: data) else {
+            return VisitGrid(cellSizeM: cellSizeM, halfLifeM: halfLifeM)
         }
+        // 設定ファイルを正とする(保存された値は読み込み時点のもので、古くなりうる)。
+        // 積算距離と各セルの記録はそのまま引き継ぐ
+        grid.cellSizeM = cellSizeM
+        grid.halfLifeM = halfLifeM
         return grid
     }
 

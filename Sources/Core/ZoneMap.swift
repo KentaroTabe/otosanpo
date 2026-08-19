@@ -112,7 +112,7 @@ public struct ZoneMap {
     ///     **選ぶときは予算いっぱいではなく余裕を持たせた値を渡す**。
     ///     許容半径は時間とともに縮むので、縁ぎりぎりの地帯を選ぶと数秒で無効になる
     public func chooseTarget(from position: GeoPoint, home: GeoPoint,
-                             allowedRadiusM: Double, grid: VisitGrid, now: Date,
+                             allowedRadiusM: Double, grid: VisitGrid,
                              p: Params) -> Target? {
         var best: Target?
         let minDistanceM = p.effectiveMinDistanceM(allowedRadiusM: allowedRadiusM)
@@ -123,7 +123,7 @@ public struct ZoneMap {
             guard d >= minDistanceM else { continue }
             guard zone.roadLengthM >= p.minRoadM else { continue }
 
-            let novelty = 1.0 / (1.0 + familiarity(of: zone, grid: grid, now: now, p: p))
+            let novelty = 1.0 / (1.0 + familiarity(of: zone, grid: grid, p: p))
             // 道が多いほど歩きでがある。下限で正規化し、際限なく効かないよう 1 で頭打ちにする
             let density = min(1.0, zone.roadLengthM / (p.minRoadM * 3))
             let score = novelty * density
@@ -144,10 +144,10 @@ public struct ZoneMap {
     }
 
     /// 地帯の馴染み度。地帯は通過履歴のセルより大きいので、格子状に標本を取って平均する
-    private func familiarity(of zone: Zone, grid: VisitGrid, now: Date, p: Params) -> Double {
+    private func familiarity(of zone: Zone, grid: VisitGrid, p: Params) -> Double {
         let n = max(1, p.sampleGrid)
         guard n > 1 else {
-            return grid.familiarity(at: zone.center, now: now,
+            return grid.familiarity(at: zone.center,
                                     excludedFamiliarity: p.excludedFamiliarity)
         }
         var total = 0.0
@@ -160,7 +160,7 @@ public struct ZoneMap {
                 let q = Geo.destination(
                     from: Geo.destination(from: zone.center, bearingDeg: 90, distanceM: dx),
                     bearingDeg: 0, distanceM: dy)
-                total += grid.familiarity(at: q, now: now,
+                total += grid.familiarity(at: q,
                                           excludedFamiliarity: p.excludedFamiliarity)
             }
         }

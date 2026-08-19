@@ -23,7 +23,7 @@
   },
   "route": {
     "cell_size_m": 50,
-    "visit_half_life_days": 45,
+    "visit_half_life_m": 20000,
     "sector_width_deg": 60,
     "sector_radius_m": 250,
     "suggestion_min_score": 0.15,
