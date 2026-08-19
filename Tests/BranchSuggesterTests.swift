@@ -253,6 +253,78 @@ final class BranchSuggesterTests: XCTestCase {
         XCTAssertEqual(best?.relativeBearingDeg ?? .nan, 0, accuracy: 1)
     }
 
+    // MARK: - 新鮮さを「その道に沿って」測る
+
+    /// 扇形では、**そこから行けない道**まで馴染み度に混ざる。
+    /// 道に沿って測れば「この道が新しいか」を直接答えられる
+    func testFamiliarityFollowsTheRoadNotTheWedge() {
+        let g = crossroads()
+        let p = GeoPoint(latitude: lat(20), longitude: lon(0))
+        let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
+        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        let now = Date(timeIntervalSince1970: 0)
+        // 直進(南)を歩き込んで、東西のどちらかを選ばせる
+        for _ in 0..<8 {
+            grid.recordVisit(at: Geo.destination(from: x.point, bearingDeg: 180, distanceM: 60),
+                             date: now)
+        }
+        // **東の道そのものではなく、東の扇形の中の「道でない場所」**を歩き込む。
+        // 交差点の東 60m・北へ 60m ずれた地点は、東の扇形(±30°)には入らないので
+        // 代わりに東の道から離れた斜め方向を濃くする
+        for _ in 0..<8 {
+            grid.recordVisit(at: Geo.destination(from: x.point, bearingDeg: 65, distanceM: 120),
+                             date: now)
+        }
+        let home = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 500)
+
+        // 道に沿って測れば、東の道自体は未踏なので東が選ばれうる
+        let samples = g.samplesAlong(branch: x.branches.first { abs(Geo.angularDiffDeg($0.bearingDeg, 90)) < 5 }!,
+                                     from: x.nodeIndex, withinM: 250, stepM: 50)
+        XCTAssertFalse(samples.isEmpty, "東の道に沿った標本が取れる")
+        for s in samples {
+            XCTAssertLessThan(abs(Geo.angularDiffDeg(Geo.bearingDeg(from: x.point, to: s), 90)), 5,
+                              "標本は東の道の上にある")
+        }
+        let c = BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
+                                       position: p, home: home, grid: grid,
+                                       homewardBias: 0, graph: g, route: route, now: now)
+        XCTAssertNotNil(c)
+    }
+
+    /// 標本は道が続く限り取れ、道が尽きたらそこで止まる
+    func testSamplesStopWhereTheRoadEnds() {
+        let g = crossroads()
+        let p = GeoPoint(latitude: lat(20), longitude: lon(0))
+        let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
+        // 東の道は交差点から 100m で行き止まり。250m 分は取れない
+        let east = x.branches.first { abs(Geo.angularDiffDeg($0.bearingDeg, 90)) < 5 }!
+        let samples = g.samplesAlong(branch: east, from: x.nodeIndex, withinM: 250, stepM: 50)
+        XCTAssertFalse(samples.isEmpty)
+        // 道の終端(100m)を超える標本は出ない
+        for s in samples {
+            XCTAssertLessThanOrEqual(Geo.distanceM(x.point, s), 101)
+        }
+        XCTAssertEqual(Geo.distanceM(x.point, samples[0]), 50, accuracy: 3, "1 点目は 50m")
+
+        // 十分に長い道なら、探索の上限まで刻んで取れる
+        let south = x.branches.first { abs(Geo.angularDiffDeg($0.bearingDeg, 180)) < 5 }!
+        let southSamples = g.samplesAlong(branch: south, from: x.nodeIndex, withinM: 80, stepM: 25)
+        XCTAssertEqual(southSamples.count, 3, "25 / 50 / 75m の 3 点")
+    }
+
+    /// 半分だけ歩いた道は、半分の馴染み度になる(扇形版は歩いた側だけを平均していた)
+    func testUnvisitedStretchesCountAsZero() {
+        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        let now = Date(timeIntervalSince1970: 0)
+        let a = GeoPoint(latitude: lat(0), longitude: lon(0))
+        let b = GeoPoint(latitude: lat(0), longitude: lon(200))
+        grid.recordVisit(at: a, date: now)
+        grid.recordVisit(at: a, date: now)
+        // 片方だけ通った 2 点の平均は 1.0(= 2 と 0 の平均)
+        XCTAssertEqual(grid.averageFamiliarity(at: [a, b], now: now, excludedFamiliarity: 8),
+                       1.0, accuracy: 0.001)
+    }
+
     // MARK: - 行き先バイアス(広域の向きを局所の選択に効かせる)
 
     /// 東西どちらも同じ条件なら、行き先のある側を選ぶ。

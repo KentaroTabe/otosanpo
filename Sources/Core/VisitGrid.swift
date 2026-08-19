@@ -68,6 +68,21 @@ public struct VisitGrid: Codable, Equatable {
         return r.excluded ? excludedFamiliarity : decayed(r, at: now)
     }
 
+    /// 与えた点列の平均馴染み度。**通っていない点は 0 として数える**。
+    ///
+    /// 道に沿って標本を取り、その平均を「その道の馴染み度」とする(`WalkGraph.samplesAlong`)。
+    /// 扇形版と違い記録の無い点も分母に入れるので、半分だけ歩いた道は半分の馴染み度になる。
+    /// 「その道をどれだけ歩いたか」としてはこちらが正しい。
+    public func averageFamiliarity(at points: [GeoPoint], now: Date,
+                                   excludedFamiliarity: Double) -> Double {
+        guard !points.isEmpty else { return 0 }
+        var total = 0.0
+        for p in points {
+            total += familiarity(at: p, now: now, excludedFamiliarity: excludedFamiliarity)
+        }
+        return total / Double(points.count)
+    }
+
     /// origin から bearing 方向の扇形(幅 sectorWidthDeg、半径 sectorRadiusM)内にある
     /// 記録済みセルの平均馴染み度。記録が 1 つもなければ 0(=完全に未踏)。
     public func sectorFamiliarity(from origin: GeoPoint, bearingDeg: Double,

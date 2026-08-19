@@ -242,6 +242,60 @@ public struct WalkGraph: @unchecked Sendable {
         return best?.node
     }
 
+    /// その分岐へ入ってから `withinM` 進むまでの、**道の上の点列**(`stepM` 間隔)。
+    ///
+    /// 何のためか: 分岐の新鮮さを「その方向の扇形」ではなく**その道そのもの**で測るため。
+    /// 扇形(`sectorFamiliarity`)は空間を切り取るだけなので、交差点の東の扇形には
+    /// 東へ行く道も、そこから行けない別の道も、道でない場所も入る。
+    /// 実際に歩く道を辿って測れば、「この道が新しいか」を直接答えられる。
+    ///
+    /// 分岐の先で交差点に出たら、最も真っ直ぐな道へ進む(「この道を進んだらどうなるか」の模型)。
+    public func samplesAlong(branch: Branch, from node: Int,
+                             withinM: Double, stepM: Double) -> [GeoPoint] {
+        guard stepM > 0, withinM > 0, let origin = map.point(node) else { return [] }
+        // 分岐の向きに最も近い隣接節点へ踏み出す
+        var first: (node: Int, diff: Double)?
+        for n in adjacentNodes(of: node) {
+            guard let q = map.point(n) else { continue }
+            let d = abs(Geo.angularDiffDeg(Geo.bearingDeg(from: origin, to: q), branch.bearingDeg))
+            if first == nil || d < first!.diff { first = (n, d) }
+        }
+        guard var current = first?.node else { return [] }
+
+        // 道なりの折れ線を作る
+        var polyline = [origin]
+        var previous = node
+        var visited: Set<Int> = [node]
+        var length = 0.0
+        while visited.insert(current).inserted, let here = map.point(current) {
+            length += Geo.distanceM(polyline[polyline.count - 1], here)
+            polyline.append(here)
+            if length >= withinM { break }
+            guard let next = continuation(at: current, from: previous, heading: here) else { break }
+            previous = current
+            current = next
+        }
+        guard polyline.count >= 2 else { return [] }
+
+        // 等間隔に標本を取る。緯度経度の線形補間で足りる距離(数十 m)
+        var out: [GeoPoint] = []
+        var travelled = 0.0
+        var target = stepM
+        for i in 1..<polyline.count {
+            let a = polyline[i - 1], b = polyline[i]
+            let seg = Geo.distanceM(a, b)
+            while target <= travelled + seg, target <= withinM {
+                let t = seg > 0 ? (target - travelled) / seg : 0
+                out.append(GeoPoint(latitude: a.latitude + (b.latitude - a.latitude) * t,
+                                    longitude: a.longitude + (b.longitude - a.longitude) * t))
+                target += stepM
+            }
+            travelled += seg
+            if travelled >= withinM { break }
+        }
+        return out
+    }
+
     /// その節点に隣接する節点。`branches` と違い**向きで畳まない**
     public func adjacentNodes(of node: Int) -> [Int] {
         var out: [Int] = []

@@ -364,7 +364,7 @@ for f in inMap where f.state == "wandering" {
     // (実測: 比ゲートへ変えた後も「スコア不足(< 0.15)」と出ていた)
     let decision = BranchSuggester.decide(intersection: x, travelBearingDeg: course,
                                           position: f.point, home: walkMap.center,
-                                          grid: grid, homewardBias: 0,
+                                          grid: grid, homewardBias: 0, graph: graph,
                                           route: r, now: f.time)
     if let best = decision.best { bestScores.append(best.score) }
     switch decision {

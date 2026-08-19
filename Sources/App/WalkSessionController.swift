@@ -396,7 +396,7 @@ final class WalkSessionController: ObservableObject {
             let decision = BranchSuggester.decide(intersection: x, travelBearingDeg: heading,
                                                   position: p, home: h, grid: grid,
                                                   homewardBias: bias,
-                                                  target: target?.zone.center,
+                                                  target: target?.zone.center, graph: graph,
                                                   route: params.route, now: Date())
             guard case .suggest(let c) = decision else {
                 if case .silent(let why, let best) = decision {
