@@ -57,6 +57,11 @@ final class WalkSessionController: ObservableObject {
     private var guidanceTimer: Timer?
     /// 経路データ。Documents に置かれていれば読む。無ければグリッドのみで動く
     private var graph: WalkGraph?
+    /// 自宅を終点とする経路の場。開始時に 1 回だけ解き、以後は引くだけ。
+    /// 逸脱しても作り直さない(逸脱先の節点も既に答えを持っている)
+    private var routeField: RouteField?
+    /// 散歩をまたいで積む歩行速度の推定。帰宅推定の分母になる
+    private var speed: SpeedEstimator
     /// 顔の向きの推定。定位の基準を進行方位から「顔の向き」へ寄せる
     private var headingFusion = HeadingFusion()
     /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
@@ -80,6 +85,7 @@ final class WalkSessionController: ObservableObject {
         shadowDetector = HeadGestureDetector(params: params.gesture)
         home = HomeStore.load()
         graph = MapStore.load(cellSizeM: params.route.mapIndexCellSizeM)
+        speed = SpeedStore.load()
 
         location.$position
             .sink { [weak self] p in
@@ -147,6 +153,7 @@ final class WalkSessionController: ObservableObject {
         lastHeadingLogAt = nil
         turnGuidance = nil
         guidanceTimer?.invalidate()
+        buildRouteField()
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
@@ -257,8 +264,8 @@ final class WalkSessionController: ObservableObject {
             // 1 秒後に再発火して 4 回連続で首を振る羽目になった。
             // 帰宅ぶんと予備を先に確保したうえで、延長分だけ歩ける締切にする
             let reserveMin: Double = {
-                guard let p = location.position, let h = home else { return 0 }
-                return ReturnBudget.estimatedReturnMin(distanceM: Geo.distanceM(p, h),
+                guard let p = location.position, let d = homeDistance(from: p) else { return 0 }
+                return ReturnBudget.estimatedReturnMin(d, speedMPerMin: effectiveSpeedMPerMin,
                                                        p: params.budget)
                     + params.budget.returnReserveMin
             }()
@@ -333,7 +340,9 @@ final class WalkSessionController: ObservableObject {
         noteDirectionAvailable()
         let heading = travel.deg
         let remainingMin = end.timeIntervalSinceNow / 60
-        let allowed = ReturnBudget.allowedRadiusM(remainingMin: remainingMin, p: params.budget)
+        let allowed = ReturnBudget.allowedRadiusM(remainingMin: remainingMin,
+                                                  speedMPerMin: effectiveSpeedMPerMin,
+                                                  p: params.budget)
         let bias = ReturnBudget.homewardBias(distanceM: Geo.distanceM(p, h),
                                              allowedRadiusM: allowed,
                                              p: params.budget)
@@ -501,6 +510,7 @@ final class WalkSessionController: ObservableObject {
             apply(.reachedHome)
             log("到着しました")
         } else if state == .returning {
+            checkReturnGuidance(at: p)
             advanceBeaconIfDirectionChanged(at: p, now: now)
         } else if state == .wandering {
             checkReturnPrompt(at: p)
@@ -680,9 +690,10 @@ final class WalkSessionController: ObservableObject {
             statusLine = "現在地を取得しました。自宅を設定してください"
             return
         }
-        let d = Geo.distanceM(p, h)
-        let ret = ReturnBudget.estimatedReturnMin(distanceM: d, p: params.budget)
-        var parts = ["自宅まで \(Int(d)) m(徒歩約 \(Int(ret.rounded())) 分)"]
+        let d = homeDistance(from: p) ?? .straight(Geo.distanceM(p, h))
+        let ret = ReturnBudget.estimatedReturnMin(d, speedMPerMin: effectiveSpeedMPerMin,
+                                                  p: params.budget)
+        var parts = ["自宅まで \(Int(d.rawM)) m(\(d.label)・徒歩約 \(Int(ret.rounded())) 分)"]
         if let end = sessionEnd {
             parts.append("残り \(max(0, Int(end.timeIntervalSinceNow / 60))) 分")
         }
@@ -728,6 +739,21 @@ final class WalkSessionController: ObservableObject {
 
     // MARK: - 曲がり角の誘導
 
+    /// 帰路でも、経路上の次の角へ誘導音を張る。
+    /// ビーコンは「自宅の在り処」を指すだけなので、川や私有地越しにも鳴りうる。
+    /// 実際に曲がる場所を指せるのは経路データがある場合だけ(docs/06 柱 3)。
+    /// ビーコンとの重なりは音の裁定(誘導 > ビーコン)で解決している
+    private func checkReturnGuidance(at p: GeoPoint) {
+        guard turnGuidance == nil, let f = routeField, let graph else { return }
+        // 確認音の最中は割り込まない(同意が伝わったことを先に伝える)
+        if let ack = ackEnd, Date() < ack { return }
+        guard let turn = f.nextTurn(from: p, graph: graph,
+                                    straightWithinDeg: params.route.branchStraightDeg,
+                                    maxLookM: params.route.intersectionLookaheadM) else { return }
+        logToFile(String(format: "帰路の誘導を開始(角まで %.0fm)", turn.distanceM))
+        startTurnGuidance(at: turn.corner, branchBearingDeg: turn.branchBearingDeg)
+    }
+
     /// 誘導の設定値。Core は数値を持たないので、ここで束ねて渡す
     private var guidanceParams: TurnGuidance.Params {
         let a = params.audio
@@ -761,7 +787,10 @@ final class WalkSessionController: ObservableObject {
     }
 
     private func fireGuidanceTick() {
-        guard state == .wandering, turnGuidance != nil, let p = location.position else {
+        // 散策でも帰路でも同じ誘導を使う。帰路は「次にどこで曲がるか」が経路から決まるだけで、
+        // 音の作り方は変わらない(docs/06 柱 3)
+        guard state == .wandering || state == .returning,
+              turnGuidance != nil, let p = location.position else {
             stopTurnGuidance("状態が変わった")
             return
         }
@@ -790,20 +819,72 @@ final class WalkSessionController: ObservableObject {
         }
     }
 
+    // MARK: - 帰宅予算(経路長と実測速度で見積もる)
+
+    /// 自宅を終点とする経路の場を作る。散歩の開始時に 1 回だけ。
+    ///
+    /// 数万節点の探索になるので**背景で解く**(実測 0.6 秒・Mac の Debug ビルド。
+    /// 実機の Debug はこれより遅い)。開始の操作を待たせない。
+    /// できるまでの数秒は直線距離で代替するので、動作は止まらない
+    private func buildRouteField() {
+        routeField = nil
+        guard let graph, let h = home, graph.map.covers(h) else { return }
+        let snapMax = params.route.snapMaxDistanceM
+        let weights = RouteField.Weights(crossCostWeight: params.route.crossCostWeight,
+                                         wayClassWeight: params.route.wayClassWeight)
+        let started = Date()
+        Task.detached(priority: .userInitiated) {
+            let field = RouteField(graph: graph, goal: h,
+                                   snapMaxDistanceM: snapMax, weights: weights)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                // 解いている間に散歩が終わっていたら捨てる
+                guard self.state != .idle else { return }
+                self.routeField = field
+                guard let f = field else {
+                    self.log("経路の場を作れません(自宅が道に乗らない)")
+                    return
+                }
+                self.log(String(format: "経路の場を作りました(到達できる節点 %d / %d・%.1f 秒)",
+                                f.reachableNodes, graph.map.nodes.count,
+                                -started.timeIntervalSinceNow))
+            }
+        }
+    }
+
+    /// いま帰宅推定に使う歩行速度 [m/min]。
+    /// 歩いている最中の実測を優先し、無ければ過去の推定、それも無ければ設定値
+    private var effectiveSpeedMPerMin: Double {
+        speed.effectiveMPerMin(sessionAverageMPerMin: walkMetrics.averageMovingSpeedMPerMin,
+                               movingSamples: walkMetrics.movingSamples,
+                               fallback: params.budget.walkingSpeedMPerMin,
+                               limits: params.budget.speedLimits)
+    }
+
+    /// 自宅までの距離。**経路データがあれば実際に歩く距離**、無ければ直線距離。
+    /// 直線 × 迂回率は川や私有地を突っ切った値になるので、取れるなら使わない
+    private func homeDistance(from p: GeoPoint) -> ReturnBudget.Distance? {
+        guard let h = home else { return nil }
+        if let f = routeField, let graph, let m = f.pathLengthM(from: p, graph: graph) {
+            return .route(m)
+        }
+        return .straight(Geo.distanceM(p, h))
+    }
+
     /// 「今帰り始めれば設定時間ちょうどに着く」瞬間にプロンプトを発火する。
     /// sessionEnd で鳴らす方式では鳴った時点からさらに帰路の時間がかかり、
     /// 実測でも利用者はタイマーの 6 分前に「帰るべき時が過ぎている」と感じて手動発火した
     /// (2026-08-18)。sessionEnd のタイマーは GPS が取れない場合の後詰めとして残す。
     private func checkReturnPrompt(at p: GeoPoint) {
-        guard let h = home, let end = sessionEnd else { return }
+        guard let end = sessionEnd, let d = homeDistance(from: p) else { return }
         let remainingMin = end.timeIntervalSinceNow / 60
-        guard ReturnBudget.shouldPromptReturn(remainingMin: remainingMin,
-                                              distanceM: Geo.distanceM(p, h),
-                                              p: params.budget) else { return }
-        log(String(format: "帰りどきです(残り %.0f 分・帰宅推定 %.0f 分)",
+        let v = effectiveSpeedMPerMin
+        guard ReturnBudget.shouldPromptReturn(remainingMin: remainingMin, distance: d,
+                                              speedMPerMin: v, p: params.budget) else { return }
+        log(String(format: "帰りどきです(残り %.0f 分・帰宅推定 %.0f 分・%@ %.0fm・%.0fm/min)",
                    remainingMin,
-                   ReturnBudget.estimatedReturnMin(distanceM: Geo.distanceM(p, h),
-                                                   p: params.budget)))
+                   ReturnBudget.estimatedReturnMin(d, speedMPerMin: v, p: params.budget),
+                   d.label, d.rawM, v))
         apply(.timeUp)
     }
 
@@ -827,12 +908,24 @@ final class WalkSessionController: ObservableObject {
         logWalkTotals()
     }
 
-    /// 散歩全体の実測。途中で終了した場合も残す(帰路が完了しなくても速度は取れる)
+    /// 散歩全体の実測。途中で終了した場合も残す(帰路が完了しなくても速度は取れる)。
+    /// ここで速度の推定に取り込む。次回以降の帰宅推定の分母になる
     private func logWalkTotals() {
         let avg = walkMetrics.averageMovingSpeedMPerMin
         logToFile("散歩全体 経路長=\(String(format: "%.0f", walkMetrics.pathLengthM))m"
                   + " 平均速度=\(avg.map { String(format: "%.0f", $0) } ?? "-")m/min"
                   + " 最高速度=\(String(format: "%.2f", walkMetrics.maxSpeedMps))m/s")
+        let before = speed.mPerMin
+        speed.record(sessionAverageMPerMin: avg, movingSamples: walkMetrics.movingSamples,
+                     limits: params.budget.speedLimits)
+        guard speed.mPerMin != before else {
+            logToFile("速度の推定は据え置き(サンプル \(walkMetrics.movingSamples) 件)")
+            return
+        }
+        SpeedStore.save(speed)
+        logToFile(String(format: "速度の推定を更新 %@ → %.0fm/min(%d 回目・設定値 %.0f)",
+                         before.map { String(format: "%.0f", $0) } ?? "なし",
+                         speed.mPerMin ?? 0, speed.walks, params.budget.walkingSpeedMPerMin))
     }
 
     /// 進行方向の解決と、有効だった course の保持をまとめて行う。

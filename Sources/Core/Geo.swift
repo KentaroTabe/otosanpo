@@ -1,7 +1,7 @@
 import Foundation
 
 /// 緯度経度(度)。CoreLocation 非依存の純粋型。
-public struct GeoPoint: Equatable, Codable {
+public struct GeoPoint: Equatable, Codable, Sendable {
     public var latitude: Double
     public var longitude: Double
 

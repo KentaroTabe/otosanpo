@@ -5,7 +5,9 @@ final class ReturnBudgetTests: XCTestCase {
     private let budget = AppParameters.Budget(
         walkingSpeedMPerMin: 70, minMovingSpeedMPerS: 0.5, pathSegmentMinM: 10,
         maxAccuracyForMetricsM: 20, detourFactor: 1.3,
-        returnReserveMin: 3, softZoneRatio: 0.7)
+        returnReserveMin: 3, softZoneRatio: 0.7,
+        speedEwmaWeight: 0.4, speedMinSamples: 60,
+        speedMinMPerMin: 45, speedMaxMPerMin: 90)
 
     func testEstimatedReturnMin() {
         // 700 m * 1.3 / 70 = 13 分

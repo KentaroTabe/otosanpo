@@ -63,7 +63,7 @@ public struct UpcomingIntersection: Equatable {
 /// 探索は問い合わせ点の周囲 1 セル分だけを見る。
 ///
 /// なぜ要るか: 5 km 圏の way は数万本になる。毎秒の位置更新で全探索はできない。
-public struct WalkGraph {
+public struct WalkGraph: @unchecked Sendable {
     public let map: WalkMap
     private let cellSizeM: Double
     private var buckets: [Int64: [(way: Int, seg: Int)]] = [:]
@@ -136,6 +136,18 @@ public struct WalkGraph {
         }
         guard let b = best, b.distanceM <= maxDistanceM else { return nil }
         return b
+    }
+
+    // MARK: - 経路探索のための入り口
+
+    /// `p` に最も近い**節点**。スナップした線分の端点のうち近い方を返す。
+    /// 経路探索の出発点・目的地を決めるために使う。
+    public func nearestNode(to p: GeoPoint, maxDistanceM: Double) -> Int? {
+        guard let s = snap(p, maxDistanceM: maxDistanceM) else { return nil }
+        let way = map.ways[s.wayIndex]
+        let a = way.n[s.segmentIndex], b = way.n[s.segmentIndex + 1]
+        guard let pa = map.point(a), let pb = map.point(b) else { return nil }
+        return Geo.distanceM(p, pa) <= Geo.distanceM(p, pb) ? a : b
     }
 
     // MARK: - 交差点と分岐

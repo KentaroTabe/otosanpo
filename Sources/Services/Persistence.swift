@@ -70,6 +70,25 @@ enum MapStore {
     }
 }
 
+/// 歩行速度の推定の永続化。VisitGrid と同じく**端末内にのみ保存**する
+enum SpeedStore {
+    private static let key = "speed_estimator"
+
+    static func load() -> SpeedEstimator {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let e = try? JSONDecoder().decode(SpeedEstimator.self, from: data) else {
+            return SpeedEstimator()
+        }
+        return e
+    }
+
+    static func save(_ e: SpeedEstimator) {
+        if let data = try? JSONEncoder().encode(e) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+}
+
 enum HomeStore {
     private static let key = "home_point"
 

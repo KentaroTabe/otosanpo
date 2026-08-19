@@ -26,6 +26,7 @@ public struct AppParameters: Codable, Equatable {
     }
 
     public struct Budget: Codable, Equatable {
+        /// 歩行速度の**初期値** [m/min]。実測が貯まればそちらを使う(SpeedEstimator)
         public var walkingSpeedMPerMin: Double
         /// 平均速度の集計から「立ち止まっている」サンプルを除く下限 [m/s]。
         /// 実測から歩行速度を求めるための計測用で、判定には使わない
@@ -35,9 +36,25 @@ public struct AppParameters: Codable, Equatable {
         public var pathSegmentMinM: Double
         /// 実測に使う fix の水平精度の上限 [m]。これより悪い fix は経路長も速度も使わない
         public var maxAccuracyForMetricsM: Double
+        /// 直線距離を歩く距離に直す係数。**経路データがあるときは使わない**。
+        /// 実測は 1.09〜1.70 に散らばり、固定値ではどちら側にも外れる(docs/03)
         public var detourFactor: Double
         public var returnReserveMin: Double
         public var softZoneRatio: Double
+        /// 散歩 1 回ぶんの平均速度をどれだけ取り込むか [0..1]
+        public var speedEwmaWeight: Double
+        /// 平均速度を採用するのに要る「歩いている」サンプル数
+        public var speedMinSamples: Int
+        /// 速度の推定として認める範囲 [m/min]。走った回に引きずられて
+        /// 帰宅推定が楽観的になる(= 帰りが間に合わない)のを防ぐ
+        public var speedMinMPerMin: Double
+        public var speedMaxMPerMin: Double
+
+        /// SpeedEstimator に渡す制限値
+        public var speedLimits: SpeedEstimator.Limits {
+            SpeedEstimator.Limits(ewmaWeight: speedEwmaWeight, minSamples: speedMinSamples,
+                                  minMPerMin: speedMinMPerMin, maxMPerMin: speedMaxMPerMin)
+        }
     }
 
     public struct Route: Codable, Equatable {

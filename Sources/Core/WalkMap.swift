@@ -28,7 +28,7 @@ public enum WayClass: Int, Codable, Equatable, CaseIterable {
 ///
 /// 保存形式は JSON。デバッグと再生ツールから直接読めることを優先した。
 /// 生成は PC 側の `scripts/build_map.sh`(osmium + MapBuild)。
-public struct WalkMap: Codable, Equatable {
+public struct WalkMap: Codable, Equatable, Sendable {
     public struct Way: Codable, Equatable {
         /// `nodes` への添字列。2 点未満の way は生成側で捨てる
         public var n: [Int]

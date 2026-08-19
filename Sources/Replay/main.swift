@@ -411,6 +411,52 @@ if guidanceReports.isEmpty {
 }
 
 
+// MARK: - 帰宅推定(経路長 vs 直線 × 迂回率)
+
+/// 記録した帰路を使って、2 つの見積もり方の**誤差**を比べる。
+/// 帰路は目的地が決まっている唯一の区間なので、正解(実際にかかった時間)が分かる。
+if let walkMap = loadedMap, !legs.isEmpty {
+    let graph = WalkGraph(map: walkMap, cellSizeM: r.mapIndexCellSizeM)
+    print("\n== 帰宅推定の測り比べ(帰路の開始時点で何分と見積もるか)==")
+    print("  正解 = 実際にかかった時間。経路長は自宅を到着地点で近似している")
+    print(String(format: "  %8@ %7@ %9@ %9@ %11@ %11@",
+                 "開始" as NSString, "正解" as NSString, "直線" as NSString,
+                 "経路" as NSString, "直線の誤差" as NSString, "経路の誤差" as NSString))
+    var straightErr = 0.0, routeErr = 0.0, counted = 0
+    for leg in legs {
+        guard let first = leg.fixes.first, let last = leg.fixes.last else { continue }
+        // 自宅は到着地点で近似する(実機の到着判定は arrival_radius_m 以内で成立している)
+        // 経路の場は散歩の開始時に 1 回だけ解く。実機で待たされないか確かめるため計測する
+        let started = Date()
+        guard let field = RouteField(
+            graph: graph, goal: last.point, snapMaxDistanceM: r.snapMaxDistanceM,
+            weights: RouteField.Weights(crossCostWeight: r.crossCostWeight,
+                                        wayClassWeight: r.wayClassWeight)) else { continue }
+        if counted == 0 {
+            print(String(format: "  (経路の場の構築: %.2f 秒 / 到達できる節点 %d / %d)",
+                         -started.timeIntervalSinceNow, field.reachableNodes,
+                         walkMap.nodes.count))
+        }
+        guard let routeM = field.pathLengthM(from: first.point, graph: graph) else { continue }
+        // 速度はその帰路の実測を使う(速度の推定そのものは別の話なので固定しない)
+        let m = replay(leg.fixes, limits: currentLimits)
+        let v = m.averageMovingSpeedMPerMin ?? b.walkingSpeedMPerMin
+        let byStraight = ReturnBudget.estimatedReturnMin(.straight(leg.straightM),
+                                                         speedMPerMin: v, p: b)
+        let byRoute = ReturnBudget.estimatedReturnMin(.route(routeM), speedMPerMin: v, p: b)
+        straightErr += abs(byStraight - leg.elapsedMin)
+        routeErr += abs(byRoute - leg.elapsedMin)
+        counted += 1
+        print(String(format: "  %8@ %6.1f分 %8.1f分 %8.1f分 %+10.1f分 %+10.1f分",
+                     clock.string(from: first.time) as NSString, leg.elapsedMin,
+                     byStraight, byRoute, byStraight - leg.elapsedMin, byRoute - leg.elapsedMin))
+    }
+    if counted > 0 {
+        print(String(format: "  平均誤差: 直線 %.1f分 / 経路 %.1f分(%d 本)",
+                     straightErr / Double(counted), routeErr / Double(counted), counted))
+    }
+}
+
 // MARK: - CoreMotion の yaw の符号を実測から決める
 
 /// 顔の向きの推定(HeadingFusion)は、CoreMotion の yaw と方位の**回転の向きが揃っている**
