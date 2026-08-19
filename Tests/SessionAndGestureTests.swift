@@ -63,19 +63,19 @@ final class HeadGestureDetectorTests: XCTestCase {
 final class WalkMachineTests: XCTestCase {
     private let session = AppParameters.Session(
         defaultDurationMin: 30, minDurationMin: 10, maxDurationMin: 90,
-        extensionStepMin: 10, maxExtensions: 2,
+        extensionRatio: 0.33, maxExtensions: 2,
         rePromptIntervalSec: 60, arrivalRadiusM: 40)
 
     func testStartFromIdle() {
         let (s, e) = WalkMachine.reduce(state: .idle, event: .start,
-                                        extensionsUsed: 0, params: session)
+                                        extensionsUsed: 0, plannedDurationMin: 30, params: session)
         XCTAssertEqual(s, .wandering)
         XCTAssertTrue(e.contains(.startSuggestionLoop))
     }
 
     func testTimeUpPrompts() {
         let (s, e) = WalkMachine.reduce(state: .wandering, event: .timeUp,
-                                        extensionsUsed: 0, params: session)
+                                        extensionsUsed: 0, plannedDurationMin: 30, params: session)
         XCTAssertEqual(s, .promptingReturn)
         XCTAssertTrue(e.contains(.play(.timeUpPrompt)))
         XCTAssertTrue(e.contains(.stopSuggestionLoop))
@@ -83,29 +83,30 @@ final class WalkMachineTests: XCTestCase {
 
     func testNodStartsReturnPhase() {
         let (s, e) = WalkMachine.reduce(state: .promptingReturn, event: .nod,
-                                        extensionsUsed: 0, params: session)
+                                        extensionsUsed: 0, plannedDurationMin: 30, params: session)
         XCTAssertEqual(s, .returning)
         XCTAssertTrue(e.contains(.startReturnPhase))
     }
 
     func testShakeExtendsUntilLimit() {
         let (s, e) = WalkMachine.reduce(state: .promptingReturn, event: .shake,
-                                        extensionsUsed: 1, params: session)
+                                        extensionsUsed: 1, plannedDurationMin: 30, params: session)
         XCTAssertEqual(s, .wandering)
-        XCTAssertTrue(e.contains(.extendSession(minutes: 10)))
+        // 延長は設定時間 × extension_ratio(30 分 × 0.33 ≒ 10 分)
+        XCTAssertTrue(e.contains(.extendSession(minutes: 30 * 0.33)))
     }
 
     func testShakeAtLimitOnlyReprompts() {
         let (s, e) = WalkMachine.reduce(state: .promptingReturn, event: .shake,
-                                        extensionsUsed: 2, params: session)
+                                        extensionsUsed: 2, plannedDurationMin: 30, params: session)
         XCTAssertEqual(s, .promptingReturn)
-        XCTAssertFalse(e.contains(.extendSession(minutes: 10)))
+        XCTAssertFalse(e.contains(.extendSession(minutes: 30 * 0.33)))
         XCTAssertTrue(e.contains(.play(.timeUpPrompt)))
     }
 
     func testReachedHomeArrives() {
         let (s, e) = WalkMachine.reduce(state: .returning, event: .reachedHome,
-                                        extensionsUsed: 0, params: session)
+                                        extensionsUsed: 0, plannedDurationMin: 30, params: session)
         XCTAssertEqual(s, .arrived)
         XCTAssertTrue(e.contains(.play(.arrival)))
         XCTAssertTrue(e.contains(.endSession))
@@ -114,9 +115,33 @@ final class WalkMachineTests: XCTestCase {
     func testStopFromAnywhere() {
         for state: WalkState in [.wandering, .promptingReturn, .returning, .arrived] {
             let (s, e) = WalkMachine.reduce(state: state, event: .stop,
-                                            extensionsUsed: 0, params: session)
+                                            extensionsUsed: 0, plannedDurationMin: 30, params: session)
             XCTAssertEqual(s, .idle)
             XCTAssertTrue(e.contains(.endSession))
         }
+    }
+}
+
+/// 帰路の確認音をいつまで繰り返すか。
+/// 実測(2026-08-19)では確認音が誘導とビーコンを 60 秒せき止め、
+/// **帰路の最初の 64 秒間、方向の手がかりが 1 つも鳴っていなかった**
+final class ReturnAckTests: XCTestCase {
+    func testStopsAsSoonAsGuidanceStarts() {
+        // 案内が始まれば「同意が伝わった」ことは伝わっている。上限を待たない
+        XCTAssertFalse(ReturnAck.shouldRepeat(directionStarted: true, elapsedSec: 1,
+                                              durationSec: 60))
+    }
+
+    func testKeepsGoingWhileNoDirectionIsAvailable() {
+        // 進行方向が取れない・地図が無いなど、案内を出せない状況では確認音だけが頼り
+        XCTAssertTrue(ReturnAck.shouldRepeat(directionStarted: false, elapsedSec: 1,
+                                             durationSec: 60))
+        XCTAssertTrue(ReturnAck.shouldRepeat(directionStarted: false, elapsedSec: 59,
+                                             durationSec: 60))
+    }
+
+    func testStopsAtTheUpperBound() {
+        XCTAssertFalse(ReturnAck.shouldRepeat(directionStarted: false, elapsedSec: 60,
+                                              durationSec: 60))
     }
 }

@@ -40,8 +40,11 @@ public enum WalkEffect: Equatable {
 
 /// 状態遷移の純粋 reducer。副作用(タイマー・音・位置)は Controller が Effect を実行する。
 public enum WalkMachine {
+    /// - Parameter plannedDurationMin: この散歩の設定時間。延長量はこれに比例する
+    ///   (`extension_ratio`。固定分だと 30 分の散歩と 90 分の散歩で延長の意味が変わる)
     public static func reduce(state: WalkState, event: WalkEvent,
                               extensionsUsed: Int,
+                              plannedDurationMin: Double,
                               params: AppParameters.Session) -> (WalkState, [WalkEffect]) {
         switch (state, event) {
         case (.idle, .start), (.arrived, .start):
@@ -54,7 +57,7 @@ public enum WalkMachine {
             return (.returning, [.startReturnPhase])
 
         case (.promptingReturn, .shake) where extensionsUsed < params.maxExtensions:
-            return (.wandering, [.extendSession(minutes: params.extensionStepMin),
+            return (.wandering, [.extendSession(minutes: plannedDurationMin * params.extensionRatio),
                                  .play(.suggestion),
                                  .startSuggestionLoop])
 

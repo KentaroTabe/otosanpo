@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: フィールドテストの進め方・未確認事項の一覧
+    url: https://github.com/KentaroTabe/otosanpo/blob/main/docs/05_field_test.md
+    about: 既知の課題・保留と決めたもの・実機で確かめる待ち行列はここに集約している
+  - name: 設計方針と実験計画
+    url: https://github.com/KentaroTabe/otosanpo/blob/main/docs/06_design_plan.md
+    about: 4 本の柱と、どこに実装の切れ目(実験の必要)があるか
+  - name: コンセプトと決定事項
+    url: https://github.com/KentaroTabe/otosanpo/blob/main/docs/01_concept_and_decisions.md
+    about: 3 原則とロードマップ。提案を出す前にここと照らす

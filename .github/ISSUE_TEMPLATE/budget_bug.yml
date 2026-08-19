@@ -1,0 +1,110 @@
+name: 時間と帰宅の不具合
+description: 帰りどきが鳴らない・早すぎる、延長が効かない、到着音が鳴らない
+labels: ["bug", "budget"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        docs/01 の 3 原則のうち**「約束を守る」**に関わる面。
+        「どの瞬間に帰り始めても設定時間に収まる」ことを保証する仕組みの不具合。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      placeholder: 帰るべき時刻を過ぎても鳴らず、デバッグボタンで手動発火した
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 種別
+      options:
+        - 帰りどきが鳴らない
+        - 帰りどきが早すぎる
+        - 帰りどきが遅すぎる(帰ると時間を超過する)
+        - 延長しても足りない(すぐまた鳴る)
+        - 延長が効かない
+        - 到着音が鳴らない
+        - 到着していないのに到着扱いになる
+        - 帰宅推定が実際と大きくずれる
+    validations:
+      required: true
+
+  - type: textarea
+    id: numbers
+    attributes:
+      label: 時間の実際
+      description: |
+        ログの「帰りどきです(残り X 分・帰宅推定 Y 分・経路 Zm・Vm/min)」と
+        「帰路実測」の行から取れる
+      value: |
+        - 設定した時間:
+        - 実際に家を出てから帰るまで:
+        - 帰りどきが鳴った時刻(鳴らなければ「鳴らず」):
+        - そのときの帰宅推定:
+        - 帰路に実際にかかった時間:
+    validations:
+      required: true
+
+  - type: dropdown
+    id: distance_source
+    attributes:
+      label: 帰宅推定の測り方
+      description: |
+        ログの「帰りどきです」に **経路 / 直線** のどちらかが出る。
+        地図があれば経路長、無ければ直線 × 迂回率に落ちる(docs/04)
+      options:
+        - 経路(地図あり)
+        - 直線(地図なし・圏外)
+        - 不明
+    validations:
+      required: true
+
+  - type: textarea
+    id: speed
+    attributes:
+      label: 歩行速度
+      description: |
+        速度は散歩ごとに実測して積んでいる(`SpeedEstimator`)。
+        ログの「速度の推定を更新」「散歩全体 … 平均速度」の行
+      value: |
+        - この回の平均速度:
+        - 推定値(「速度の推定を更新」の行):
+        - いつもと違う歩き方をしたか(走った・ゆっくり歩いた等):
+    validations:
+      required: false
+
+  - type: textarea
+    id: log
+    attributes:
+      label: フィールドログ
+      value: |
+        - ファイル名:
+        - 該当時刻(HH:MM:SS):
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: replay
+    attributes:
+      label: 再生で再現するか
+      description: |
+        帰宅推定は純粋計算なので、**ほぼ再生で確かめられる**。
+        `scripts/replay_log.sh` の「帰宅推定の測り比べ」を見る
+      options:
+        - 未確認
+        - 再生でも再現する
+        - 再生では再現しない
+    validations:
+      required: true
+
+  - type: input
+    id: frequency
+    attributes:
+      label: 再現性
+      placeholder: 毎回 / たまに / 1 回だけ
+    validations:
+      required: true

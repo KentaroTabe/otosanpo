@@ -1,0 +1,100 @@
+name: 頭ジェスチャの不具合
+description: うなずき・首振りが認識されない、意図せず認識される
+labels: ["bug", "gesture"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        うなずき = 帰路開始 / 首振り = 延長。応答待ち(promptingReturn)中のみ有効。
+
+        **既知・対処しない方針のもの**(docs/04・05)。悪化した場合のみ報告してほしい:
+        - **首振りの誤検出 約 9%** — 振幅では歩行中の頭の動きと分離できない。
+          失うのは時間だけなので、頻発して困るまで対処しない
+        - 応答が認識されなかった場合の専用処理 — 60 秒ごとに鳴り直すので保留
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      placeholder: 応答待ちでうなずいたが認識されず、3 回繰り返してやっと通った
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 種別
+      options:
+        - うなずきが認識されない
+        - 首振りが認識されない
+        - 意図せず帰路が始まった(うなずきの誤検出)
+        - 意図せず延長された(首振りの誤検出)
+        - 応答待ちが先に切れてしまう
+        - AirPods の着脱がからむ
+    validations:
+      required: true
+
+  - type: textarea
+    id: amplitude
+    attributes:
+      label: モーションの実測
+      description: |
+        要約の「応答待ち中のモーション振幅」から取れる。
+        **検出条件は「振幅 > 閾値 × 2」**(うなずき ±8° → 振幅 16°、首振り ±12° → 24°)
+      value: |
+        - 最大 pitch 振幅:
+        - 最大 yaw 振幅:
+        - サンプリング頻度(Hz):
+    validations:
+      required: false
+
+  - type: dropdown
+    id: motion
+    attributes:
+      label: 動作の大きさ
+      description: 軽い動作が通らないのか、はっきりした動作でも通らないのかで対処が変わる
+      options:
+        - 軽く動かした
+        - はっきり動かした
+        - 何度か繰り返した
+        - 動かしていない(誤検出)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: wearing
+    attributes:
+      label: 装着の状態
+      description: |
+        **再装着で姿勢の基準が引き直され yaw が跳ぶ**(実測 203.7°)。
+        検出器の窓は捨てるようにしてあるが、絡んでいないかの確認
+      options:
+        - ずっと両耳に装着していた
+        - 直前に着け直した
+        - 片耳だけ着けていた
+        - 直前に外していた
+        - 不明
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: フィールドログ
+      description: |
+        要約の「影検出」の回数も添えてほしい(誤検出率が悪化していないかの比較材料)
+      value: |
+        - ファイル名:
+        - 該当時刻(HH:MM:SS):
+        - 影検出の回数(うなずき / 首振り):
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: frequency
+    attributes:
+      label: 再現性
+      placeholder: 毎回 / たまに / 1 回だけ
+    validations:
+      required: true

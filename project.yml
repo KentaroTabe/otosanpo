@@ -24,7 +24,11 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: Sources
+      # Sources 全体ではなく個別に並べる。Sources/Replay は macOS のコマンドラインツール
+      # (トップレベルコードを持つ)なので、アプリに混ぜると @main と衝突する
+      - path: Sources/App
+      - path: Sources/Core
+      - path: Sources/Services
       - path: config/parameters.json
         buildPhase: resources
     info:
@@ -57,7 +61,53 @@ targets:
     dependencies:
       - target: OtoSanpo
 
+  # 記録したフィールドログを再生して Core を検証する開発用ツール(macOS)。
+  # 実機テストの回数を減らすための土台。docs/05「検証の方針」
+  Replay:
+    type: tool
+    platform: macOS
+    deploymentTarget: "13.0"
+    sources:
+      - path: Sources/Core
+      - path: Sources/Replay
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: "-"
+        PRODUCT_NAME: otosanpo-replay
+
+  # osmium が出した GeoJSON を端末に置く WalkMap 形式へ変換する開発用ツール(macOS)。
+  # 形式の定義をアプリと共有するため Swift で書く。docs/04「OSM データの持ち方」
+  MapBuild:
+    type: tool
+    platform: macOS
+    deploymentTarget: "13.0"
+    sources:
+      - path: Sources/Core
+      - path: Sources/MapBuild
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: "-"
+        PRODUCT_NAME: otosanpo-mapbuild
+
 schemes:
+  MapBuild:
+    build:
+      targets:
+        MapBuild: all
+    run:
+      config: Debug
+
+  Replay:
+    build:
+      targets:
+        Replay: all
+    run:
+      config: Debug
+
   OtoSanpo:
     build:
       targets:

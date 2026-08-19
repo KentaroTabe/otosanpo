@@ -5,17 +5,33 @@ final class ReturnBudgetTests: XCTestCase {
     private let budget = AppParameters.Budget(
         walkingSpeedMPerMin: 70, minMovingSpeedMPerS: 0.5, pathSegmentMinM: 10,
         maxAccuracyForMetricsM: 20, detourFactor: 1.3,
-        returnReserveMin: 3, maxReturnWalkMin: 15, softZoneRatio: 0.7)
+        returnReserveMin: 3, softZoneRatio: 0.7,
+        speedEwmaWeight: 0.4, speedMinSamples: 60,
+        speedMinMPerMin: 45, speedMaxMPerMin: 90)
 
     func testEstimatedReturnMin() {
         // 700 m * 1.3 / 70 = 13 分
         XCTAssertEqual(ReturnBudget.estimatedReturnMin(distanceM: 700, p: budget), 13, accuracy: 0.01)
     }
 
-    func testAllowedRadiusCappedByMaxReturnWalk() {
-        // 残り 60 分でも、帰路は maxReturnWalkMin = 15 分ぶんが天井
+    func testAllowedRadiusGrowsWithRemainingTime() {
+        // 天井(max_return_walk_min)は廃止した。残り時間に応じて許容半径は伸び続ける。
+        // 天井があると予算が飽和し、延長しても条件が抜けなくなる(docs/03)
         let r = ReturnBudget.allowedRadiusM(remainingMin: 60, p: budget)
-        XCTAssertEqual(r, 15 * 70 / 1.3, accuracy: 0.01)
+        XCTAssertEqual(r, 57 * 70 / 1.3, accuracy: 0.01)
+    }
+
+    func testShouldPromptReturnAtTheTurnaroundMoment() {
+        // 帰宅推定 = 700 × 1.3 / 70 = 13 分。予備 3 分 → 残り 16 分ちょうどで発火
+        XCTAssertFalse(ReturnBudget.shouldPromptReturn(remainingMin: 17, distanceM: 700, p: budget))
+        XCTAssertTrue(ReturnBudget.shouldPromptReturn(remainingMin: 16, distanceM: 700, p: budget))
+        XCTAssertTrue(ReturnBudget.shouldPromptReturn(remainingMin: 10, distanceM: 700, p: budget))
+    }
+
+    func testShouldPromptNearHomeOnlyWhenTimeIsAlmostUp() {
+        // 自宅の目の前に居れば、残りが予備時間を切るまで鳴らない
+        XCTAssertFalse(ReturnBudget.shouldPromptReturn(remainingMin: 5, distanceM: 10, p: budget))
+        XCTAssertTrue(ReturnBudget.shouldPromptReturn(remainingMin: 3, distanceM: 10, p: budget))
     }
 
     func testAllowedRadiusShrinksAsTimeRunsOut() {
@@ -59,7 +75,12 @@ final class VisitGridTests: XCTestCase {
         let route = AppParameters.Route(
             cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
             sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
-            suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30)
+            suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30,
+            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25,
+            intersectionLookaheadM: 35, branchStraightDeg: 25, branchBackwardDeg: 135,
+            crossCostWeight: 0.12, wayClassWeight: 0.08, branchNoveltyRatio: 1.3,
+            zoneSizeM: 300, zoneMinRoadM: 400, zoneSampleGrid: 3,
+            targetMinDistanceM: 300, targetReachedM: 150, targetBiasWeight: 0.3)
         let north = Geo.destination(from: origin, bearingDeg: 0, distanceM: 100)
         let now = Date(timeIntervalSince1970: 0)
         g.recordVisit(at: north, date: now)
@@ -76,7 +97,12 @@ final class BearingSuggesterTests: XCTestCase {
     private let route = AppParameters.Route(
         cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
         sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
-        suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30)
+        suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30,
+        mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25,
+        intersectionLookaheadM: 35, branchStraightDeg: 25, branchBackwardDeg: 135,
+        crossCostWeight: 0.12, wayClassWeight: 0.08, branchNoveltyRatio: 1.3,
+        zoneSizeM: 300, zoneMinRoadM: 400, zoneSampleGrid: 3,
+        targetMinDistanceM: 300, targetReachedM: 150, targetBiasWeight: 0.3)
 
     func testAllNovelPrefersStraightAndStaysSilent() {
         // 全方向が未踏なら最良は直進 → 直進に音は出さない設計なので nil
@@ -118,7 +144,12 @@ final class BearingSuggesterTests: XCTestCase {
         let narrow = AppParameters.Route(
             cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
             sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
-            suggestionMarginOverStraight: 0.6, suggestionMinTravelM: 30)
+            suggestionMarginOverStraight: 0.6, suggestionMinTravelM: 30,
+            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25,
+            intersectionLookaheadM: 35, branchStraightDeg: 25, branchBackwardDeg: 135,
+            crossCostWeight: 0.12, wayClassWeight: 0.08, branchNoveltyRatio: 1.3,
+            zoneSizeM: 300, zoneMinRoadM: 400, zoneSampleGrid: 3,
+            targetMinDistanceM: 300, targetReachedM: 150, targetBiasWeight: 0.3)
         XCTAssertNil(BearingSuggester.suggest(position: origin, headingDeg: 0, home: home,
                                               grid: grid, homewardBias: 0,
                                               route: narrow, now: now))
@@ -127,7 +158,12 @@ final class BearingSuggesterTests: XCTestCase {
         let loose = AppParameters.Route(
             cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
             sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
-            suggestionMarginOverStraight: 0.4, suggestionMinTravelM: 30)
+            suggestionMarginOverStraight: 0.4, suggestionMinTravelM: 30,
+            mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25,
+            intersectionLookaheadM: 35, branchStraightDeg: 25, branchBackwardDeg: 135,
+            crossCostWeight: 0.12, wayClassWeight: 0.08, branchNoveltyRatio: 1.3,
+            zoneSizeM: 300, zoneMinRoadM: 400, zoneSampleGrid: 3,
+            targetMinDistanceM: 300, targetReachedM: 150, targetBiasWeight: 0.3)
         XCTAssertNotNil(BearingSuggester.suggest(position: origin, headingDeg: 0, home: home,
                                                  grid: grid, homewardBias: 0,
                                                  route: loose, now: now))

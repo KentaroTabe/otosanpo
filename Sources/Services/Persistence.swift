@@ -49,6 +49,46 @@ enum GridStore {
 }
 
 /// 自宅座標の永続化(UserDefaults)
+/// 経路データ(WalkMap)の読み込み。
+/// Documents に置かれたファイルを読むだけで、取得も生成も行わない。
+/// PC 側で `scripts/build_map.sh` が作り、Finder で Documents に入れる想定
+/// (docs/04「OSM データの持ち方」)。無ければグリッドのみで動く。
+enum MapStore {
+    static let fileName = "otosanpo-map.json"
+
+    static func fileURL() -> URL? {
+        try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                     appropriateFor: nil, create: false)
+            .appendingPathComponent(fileName)
+    }
+
+    static func load(cellSizeM: Double) -> WalkGraph? {
+        guard let url = fileURL(),
+              let data = try? Data(contentsOf: url),
+              let map = try? JSONDecoder().decode(WalkMap.self, from: data) else { return nil }
+        return WalkGraph(map: map, cellSizeM: cellSizeM)
+    }
+}
+
+/// 歩行速度の推定の永続化。VisitGrid と同じく**端末内にのみ保存**する
+enum SpeedStore {
+    private static let key = "speed_estimator"
+
+    static func load() -> SpeedEstimator {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let e = try? JSONDecoder().decode(SpeedEstimator.self, from: data) else {
+            return SpeedEstimator()
+        }
+        return e
+    }
+
+    static func save(_ e: SpeedEstimator) {
+        if let data = try? JSONEncoder().encode(e) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+}
+
 enum HomeStore {
     private static let key = "home_point"
 

@@ -1,0 +1,126 @@
+name: 音の不具合
+description: 鳴らない、左右が分からない、雑音が混じる、音量がおかしい
+labels: ["bug", "audio"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **「どう聞こえたか」**の問題はこちら。
+        鳴り方は正しいが行き先の判断がおかしい場合は「案内の中身の不具合」へ。
+
+        既知として扱っており、報告不要なもの:
+        - **前後の聴き分けができない** — HRTF では成立しないと実測で確定済み。
+          音色(暗さ)で分ける方式に変えてある(docs/03)
+        - **顔の向きに追従しない** — AirPods の yaw が旋回を追えず不成立。
+          `use_head_orientation` は false(docs/03)
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      placeholder: 角を曲がり終えた直後、音が反対側へ流れていった
+    validations:
+      required: true
+
+  - type: dropdown
+    id: earcon
+    attributes:
+      label: どの音か
+      description: 語彙は 5 種に固定してある(docs/03「earcon 語彙」)
+      options:
+        - 提案・曲がり角の誘導(suggestion)
+        - 時間到来のプロンプト(timeUpPrompt)
+        - 帰路の確認音(returnAck)
+        - 帰路のビーコン(homeBeacon)
+        - 到着(arrival)
+        - すべての音
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 種別
+      options:
+        - まったく鳴らない
+        - 途中で鳴らなくなる
+        - 左右が分からない
+        - 左右が逆
+        - 音量が小さすぎる・大きすぎる
+        - 距離が音量で伝わらない
+        - 雑音が混じる
+        - 間隔がおかしい
+        - 他アプリの音(音楽・通話)との干渉
+    validations:
+      required: true
+
+  - type: textarea
+    id: device
+    attributes:
+      label: 再生環境
+      value: |
+        - 出力先(AirPods Pro / AirPods Max / 他社 BT / 有線 / 本体スピーカー):
+        - 端末:
+        - iOS バージョン:
+        - 画面の「音声:」表示(稼働 / 停止):
+    validations:
+      required: true
+
+  - type: dropdown
+    id: route_change
+    attributes:
+      label: 出力先の切替が絡むか
+      description: |
+        **経路変更で AVAudioEngine が止まる**のは実際に起きた不具合。自己修復を入れてあるが、
+        イベントログに「音声エンジンを再開しました」が出ていないか確認してほしい(docs/03)
+      options:
+        - 切替していない(定常状態で発生)
+        - AirPods を接続した直後
+        - AirPods を外した直後・再装着直後
+        - 別デバイス(車・スピーカー)へ切り替えた直後
+        - 不明
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: 期待した聞こえ方 / 実際の聞こえ方
+      description: 定位の問題では、どちらから聞こえるべきでどう聞こえたかを具体的に
+      value: |
+        - 期待(例: 右手からだんだん大きく):
+        - 実際(例: 正面のまま音量も変わらない):
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: フィールドログ
+      description: |
+        ビーコンと誘導の行には **pan と「進行基準なら」の併記**があるので、
+        聞こえ方と計算値のどちらがずれているかを切り分けられる
+      value: |
+        - ファイル名:
+        - 該当時刻(HH:MM:SS):
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: frequency
+    attributes:
+      label: 再現性
+      placeholder: 毎回 / 特定の出力先でのみ / 数回に 1 回
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: 補足
+      description: |
+        机上で再現できる場合はその手順(ContentView のデバッグボタンなど)。
+        **散歩に出ずに確かめられるものは、そのほうが早い**
+    validations:
+      required: false

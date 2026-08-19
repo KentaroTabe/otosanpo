@@ -17,6 +17,30 @@ function hhmmss(iso) {
   return substr(iso, 12, 8)
 }
 
+# 曲がり角の誘導は 1 イベントで数十行になる。1 行ずつ読む意味は薄いので、
+# 「1 つの曲がるイベント」単位に畳んで、開始 → 最接近 → 終了の理由だけを出す。
+# 見たいのは「角へ寄れたか」「どこで終わったか」であり、途中の各音ではない。
+function guidanceLine(msg,   d, rel) {
+  if (index(msg, "誘導終了") == 1) {
+    if (gOpen) {
+      gEvents[++nGuidance] = sprintf("%s  %2d音 %.0fm→最接近%.0fm 向き %+.0f°→%+.0f° %s",
+                                     gStart, gTones, gStartD, gMinD, gFirstRel, gLastRel,
+                                     substr(msg, length("誘導終了") + 1))
+      gOpen = 0
+    }
+    return
+  }
+  d = numafter(msg, "角まで=")
+  # 「鳴らす向き=」は角を指す方式にした後の書式。それ以前のログは「相対=」
+  rel = (index(msg, "鳴らす向き=") > 0) ? numafter(msg, "鳴らす向き=") : numafter(msg, "相対=")
+  if (!gOpen) {
+    gOpen = 1; gStart = hhmmss($1); gStartD = d; gMinD = d; gTones = 0; gFirstRel = rel
+  }
+  gTones++
+  gLastRel = rel
+  if (d < gMinD) gMinD = d
+}
+
 NR == 1 && $1 == "time" { next }
 
 {
@@ -31,10 +55,20 @@ NR == 1 && $1 == "time" { next }
   }
   stateCount[$2]++
 
-  if (index(msg, "提案: ") == 1) {
+  if (index(msg, "提案: ") == 1 || index(msg, "提案(分岐): ") == 1) {
+    # 経路データがある場合は「提案(分岐)」で鳴る。どちらも「鳴った」ぶんとして数える
     suggestions[++nSug] = hhmmss($1) "  " msg
   } else if (index(msg, "提案なし") == 1) {
     nNoSug++
+  } else if (index(msg, "fix ") == 1) {
+    # 位置更新の生記録。再生ツール(scripts/replay_log.sh)のための行であり、
+    # 1 行ずつ読む意味はない。件数だけ数えてイベント欄には流さない
+    nFix++
+  } else if (index(msg, "頭向き ") == 1) {
+    # yaw と course の対。符号の判定は再生ツールが一括で行う。ここでは数えるだけ
+    nHead++
+  } else if (index(msg, "誘導") == 1) {
+    guidanceLine(msg)
   } else if (index(msg, "ビーコン ") == 1) {
     nBeacon++
     d = numafter(msg, "距離=")
@@ -117,7 +151,8 @@ BEGIN { beaconStride = 10 }
 END {
   if (total == 0) { print "行がありません"; exit }
 
-  printf "期間: %s 〜 %s / %d 行\n", hhmmss(first), hhmmss(last), total
+  printf "期間: %s 〜 %s / %d 行(うち再生ツール用の生記録: 位置更新 %d 件・頭向き %d 件)\n",
+         hhmmss(first), hhmmss(last), total, nFix, nHead
   printf "状態別行数:"
   for (s in stateCount) printf " %s=%d", s, stateCount[s]
   printf "\n"
@@ -139,6 +174,14 @@ END {
   section("提案")
   printf "  鳴った=%d / 見送り(提案なし)=%d\n", nSug, nNoSug
   dump(suggestions, nSug, 0)
+
+  section("曲がり角の誘導(1 行 = 1 つの曲がるイベント)")
+  if (nGuidance == 0 && !gOpen) {
+    print "  記録なし"
+  } else {
+    printf "  %d 件%s\n", nGuidance, (gOpen ? "(+ 終了しないまま記録が切れた 1 件)" : "")
+    dump(gEvents, nGuidance, 30)
+  }
 
   section("応答待ち中のモーション振幅(ジェスチャ閾値の材料)")
   if (nPrompt == 0) {

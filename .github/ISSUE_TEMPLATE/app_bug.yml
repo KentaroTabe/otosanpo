@@ -1,0 +1,126 @@
+name: アプリ動作の不具合
+description: 画面を消すと止まる、電池消費、権限、クラッシュ、UI など
+labels: ["bug", "app"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        散歩中は画面を見ない前提なので、**バックグラウンドで動き続けること**が要。
+        位置・モーション・タイマーのどれが止まったのかで対処が変わる。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 種別
+      options:
+        - 画面を消すと案内が止まる
+        - ヘッドフォンのモーションが届かなくなる
+        - タイマー(時間到来)が発火しない
+        - 電池消費が大きい
+        - 権限まわり(位置情報)
+        - 地図ファイルを読み込めない
+        - クラッシュ・フリーズ
+        - 起動しない・インストールできない
+        - UI・表示
+    validations:
+      required: true
+
+  - type: dropdown
+    id: app_state
+    attributes:
+      label: 発生時のアプリの状態
+      options:
+        - 前面(画面を見ている)
+        - 画面ロック中・ポケットの中
+        - 他アプリを開いている
+        - アプリスイッチャーで放置
+        - 不明
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 再現手順
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: 期待する動作 / 実際の動作
+      value: |
+        - 期待:
+        - 実際:
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 環境
+      value: |
+        - 端末:
+        - iOS バージョン:
+        - 低電力モード(オン / オフ):
+        - 経過時間(発生までにどれくらい歩いていたか):
+        - ビルド(コミット):
+    validations:
+      required: true
+
+  - type: dropdown
+    id: clean_build
+    attributes:
+      label: クリーンビルドを試したか
+      description: |
+        **増分ビルドが古いまま通ることが実際に 2 度あった**
+        (未署名の .app が残って起動しない / 追加したテストが実行されない)。
+        原因不明の起動失敗が続く場合は `clean` を挟んでから報告してほしい(CLAUDE.md)
+      options:
+        - clean してから再現した
+        - 試していない
+        - 該当しない(実行時の不具合)
+    validations:
+      required: true
+
+  - type: textarea
+    id: crash
+    attributes:
+      label: クラッシュログ
+      description: Xcode の Organizer、または設定 > プライバシー > 解析データ から取得できる
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: log
+    attributes:
+      label: フィールドログ・イベントログ
+      description: |
+        止まった時刻の前後が分かると切り分けが早い。
+        画面のイベントログに出ていた文言でもよい
+      value: |
+        - ファイル名:
+        - 該当時刻(HH:MM:SS):
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: frequency
+    attributes:
+      label: 再現性
+      placeholder: 毎回 / たまに / 1 回だけ
+    validations:
+      required: true

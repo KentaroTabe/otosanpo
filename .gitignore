@@ -6,3 +6,6 @@ DerivedData/
 *.xcodeproj
 xcuserdata/
 field-logs/
+build-replay/
+maps/
+build-mapbuild/

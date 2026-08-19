@@ -1,0 +1,117 @@
+name: 案内の中身の不具合
+description: 曲がれない場所を指す、変な角へ誘導する、行き先の選び方がおかしい
+labels: ["bug", "guidance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **「音がどう鳴ったか」ではなく「どこへ行けと言われたか」**の問題はこちら。
+        音そのものが鳴らない・左右が分からない場合は「音の不具合」へ。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      placeholder: 用水路沿いで、渡れない側の道へ曲がるよう誘導された
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 種別
+      options:
+        - 曲がれない場所で鳴る(道が無い・私有地)
+        - 折り返し(来た道)を指す
+        - 誘導が意図と違う角を指している
+        - 誘導が途中で止まる
+        - 誘導が終わらない・鳴り続ける
+        - 行き先の選び方が変(つまらない方へ向かう)
+        - 提案が多すぎる
+        - 提案がまったく鳴らない
+        - 幹線・大きな横断を勧めてくる
+    validations:
+      required: true
+
+  - type: dropdown
+    id: map
+    attributes:
+      label: 経路データ(地図)の状態
+      description: |
+        画面の「地図:」表示。**有無で挙動が根本的に変わる**。
+        未読込・圏外では道を知らないグリッドのみの推測に落ちる(docs/04)
+      options:
+        - 読込済み・圏内
+        - 未読込
+        - 圏外
+        - 不明
+    validations:
+      required: true
+
+  - type: dropdown
+    id: state
+    attributes:
+      label: 発生時の状態
+      options:
+        - 散策中(wandering)
+        - 帰路(returning)
+        - 不明
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: フィールドログ
+      description: |
+        `scripts/import_log.sh` で取り込み、`scripts/summarize_log.sh --last` で要約。
+        該当する行(「提案(分岐)」「誘導」「行き先」「提案なし」)を貼ると早い
+      value: |
+        - ファイル名:
+        - 該当時刻(HH:MM:SS):
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: replay
+    attributes:
+      label: 再生で再現するか
+      description: |
+        `scripts/replay_log.sh` で記録を流し直す。**再現するなら純粋ロジックの問題**で、
+        歩き直さずにパラメータを振って直せる(docs/05「検証の方針」)
+      options:
+        - 未確認
+        - 再生でも再現する(純粋ロジックの問題)
+        - 再生では再現しない(実機側の問題を疑う)
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: 期待した案内 / 実際の案内
+      value: |
+        - 期待(例: そのまま直進、または左の路地へ):
+        - 実際(例: 用水路の向こう側を指した):
+    validations:
+      required: true
+
+  - type: input
+    id: frequency
+    attributes:
+      label: 再現性
+      placeholder: 特定の場所で毎回 / たまに / 1 回だけ
+    validations:
+      required: true
+
+  - type: textarea
+    id: place
+    attributes:
+      label: 場所の様子
+      description: |
+        座標は書かなくてよい(**自宅周辺が公開リポジトリに残るのを避ける**。docs/04)。
+        地形の特徴だけで足りる
+      placeholder: 川沿いの遊歩道で、対岸へ渡る橋は 200m 先にしかない
+    validations:
+      required: false
