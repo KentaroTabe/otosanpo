@@ -95,6 +95,20 @@ struct ContentView: View {
                         Text(line).font(.caption.monospaced())
                     }
                 }
+
+                // 経路データは OpenStreetMap 由来。**ODbL は出典表示を求める**ので、
+                // 地図を読み込んでいるかによらず常に出す(docs/04「OSM データの持ち方」)
+                Section("経路データの出典") {
+                    Text("© OpenStreetMap contributors")
+                        .font(.caption)
+                    Text("この経路データは OpenStreetMap から作成しました。"
+                         + "OpenStreetMap のデータは Open Database License (ODbL) の下で提供されています。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Link("openstreetmap.org/copyright",
+                         destination: URL(string: "https://www.openstreetmap.org/copyright")!)
+                        .font(.caption)
+                }
             }
             .navigationTitle("音さんぽ")
             .alert("操作できませんでした",

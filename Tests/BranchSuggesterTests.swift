@@ -9,7 +9,7 @@ final class BranchSuggesterTests: XCTestCase {
         cellSizeM: 50, visitHalfLifeDays: 45, sectorWidthDeg: 60,
         sectorRadiusM: 250, suggestionMinScore: 0.15, excludedFamiliarity: 8,
         suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30,
-        mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25,
+        mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25, nodeArrivalToleranceM: 8,
         intersectionLookaheadM: 35, branchStraightDeg: 25, branchBackwardDeg: 135,
         crossCostWeight: 0.12, wayClassWeight: 0.08, branchNoveltyRatio: 1.3,
         zoneSizeM: 300, zoneMinRoadM: 400, zoneSampleGrid: 3,

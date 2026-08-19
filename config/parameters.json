@@ -33,6 +33,7 @@
     "map_radius_m": 5000,
     "map_index_cell_size_m": 50,
     "snap_max_distance_m": 25,
+    "node_arrival_tolerance_m": 8,
     "intersection_lookahead_m": 35,
     "branch_straight_deg": 25,
     "branch_backward_deg": 135,

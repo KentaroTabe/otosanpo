@@ -494,7 +494,10 @@ final class WalkSessionController: ObservableObject {
         // (2026-08-19 実測)。道の上を指していれば「音の鳴る方に歩く」が成り立つ。
         // 経路が無い(地図なし・圏外)ときだけ直線に落ちる
         let routeBearing = routeField.flatMap { f in
-            graph.flatMap { f.nextBearingDeg(from: p, graph: $0) }
+            graph.flatMap {
+                f.nextBearingDeg(from: p, graph: $0,
+                                 nodeToleranceM: params.route.nodeArrivalToleranceM)
+            }
         }
         let bearingHome = routeBearing ?? Geo.bearingDeg(from: p, to: h)
         let fix = location.motionFix()
@@ -864,7 +867,9 @@ final class WalkSessionController: ObservableObject {
         guard turnGuidance == nil, let f = routeField, let graph else { return }
         guard let turn = f.nextTurn(from: p, graph: graph,
                                     straightWithinDeg: params.route.branchStraightDeg,
-                                    maxLookM: params.route.intersectionLookaheadM) else { return }
+                                    maxLookM: params.route.intersectionLookaheadM,
+                                    nodeToleranceM: params.route.nodeArrivalToleranceM)
+        else { return }
         logToFile(String(format: "帰路の誘導を開始(角まで %.0fm)", turn.distanceM))
         // 散策と同じ音を使う。**聞き分けられる必要は無い**(2026-08-19 の利用者判断)。
         // 音の意味を揃えるほうが分かりやすい:

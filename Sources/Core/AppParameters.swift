@@ -74,6 +74,9 @@ public struct AppParameters: Codable, Equatable {
         public var mapIndexCellSizeM: Double
         /// この距離より離れた点は道に乗せない [m]。水平精度(実測 3〜5 m)より大きく取る
         public var snapMaxDistanceM: Double
+        /// 経路上の節点に「着いた」とみなす距離 [m]。
+        /// 真上に立つと、そこへ向かう方位が雑音で暴れるため
+        public var nodeArrivalToleranceM: Double
         /// 前方この距離以内の交差点を「これから曲がる場所」として扱う [m]
         public var intersectionLookaheadM: Double
         /// 進行方向との差がこれ以内の分岐は「直進」とみなす [deg]
