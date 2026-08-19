@@ -87,6 +87,26 @@ public struct AppParameters: Codable, Equatable {
         /// 分岐が直進より何倍新鮮なら鳴らすか。**絶対差ではなく比**で見る。
         /// 新鮮さは馴染むほど 0 に圧縮されるので、絶対差では歩き込んだ地点ほど黙る
         public var branchNoveltyRatio: Double
+        /// 行き先の地帯の一辺 [m]
+        public var zoneSizeM: Double
+        /// 行き先として認める道の総延長の下限 [m]。**道の無い地帯へ向かわせない**
+        public var zoneMinRoadM: Double
+        /// 地帯の馴染み度を測る標本の 1 辺あたりの数(3 なら 3×3 = 9 点)
+        public var zoneSampleGrid: Int
+        /// 行き先として認める現在地からの最短距離 [m]。すぐ隣は行き先にならない
+        public var targetMinDistanceM: Double
+        /// 行き先にこの距離まで近づいたら、次の行き先を選び直す [m]
+        public var targetReachedM: Double
+        /// 分岐スコアで行き先の向きをどれだけ重んじるか。
+        /// 帰宅バイアスが立つにつれ線形に畳まれる(帰宅が常に優先)
+        public var targetBiasWeight: Double
+
+        /// ZoneMap に渡す設定値
+        public var zoneParams: ZoneMap.Params {
+            ZoneMap.Params(zoneSizeM: zoneSizeM, minRoadM: zoneMinRoadM,
+                           sampleGrid: zoneSampleGrid, minDistanceM: targetMinDistanceM,
+                           excludedFamiliarity: excludedFamiliarity)
+        }
     }
 
     public struct Location: Codable, Equatable {

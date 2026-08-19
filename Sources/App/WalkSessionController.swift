@@ -62,6 +62,10 @@ final class WalkSessionController: ObservableObject {
     private var routeField: RouteField?
     /// 散歩をまたいで積む歩行速度の推定。帰宅推定の分母になる
     private var speed: SpeedEstimator
+    /// 広域の「面白そうな地帯」の地図。局所の分岐選択に向きを与える
+    private var zones: ZoneMap?
+    /// いま向かっている地帯。到達したら選び直す
+    private var target: ZoneMap.Target?
     /// 顔の向きの推定。定位の基準を進行方位から「顔の向き」へ寄せる
     private var headingFusion = HeadingFusion()
     /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
@@ -86,6 +90,7 @@ final class WalkSessionController: ObservableObject {
         home = HomeStore.load()
         graph = MapStore.load(cellSizeM: params.route.mapIndexCellSizeM)
         speed = SpeedStore.load()
+        zones = graph.map { ZoneMap(map: $0.map, zoneSizeM: params.route.zoneSizeM) }
 
         location.$position
             .sink { [weak self] p in
@@ -152,6 +157,7 @@ final class WalkSessionController: ObservableObject {
         lastSuggestionAt = nil
         lastHeadingLogAt = nil
         turnGuidance = nil
+        target = nil
         guidanceTimer?.invalidate()
         buildRouteField()
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
@@ -346,10 +352,16 @@ final class WalkSessionController: ObservableObject {
         let bias = ReturnBudget.homewardBias(distanceM: Geo.distanceM(p, h),
                                              allowedRadiusM: allowed,
                                              p: params.budget)
+        // 広域の行き先を先に決める。局所の分岐選択に一貫した向きを与える(docs/06 柱 4)
+        updateTarget(at: p, home: h, allowedRadiusM: allowed, bias: bias)
         // 端末コンパスへ退避した理由を後から特定できるよう、判定に使った生値も残す
-        let context = String(format: "方向=%@ %.0f° 自宅まで=%.0fm 許容=%.0fm bias=%.2f [%@]",
+        let targetLabel = target.map {
+            String(format: " 行き先=%.0fm/%.0f°", Geo.distanceM(p, $0.zone.center),
+                   Geo.bearingDeg(from: p, to: $0.zone.center))
+        } ?? ""
+        let context = String(format: "方向=%@ %.0f° 自宅まで=%.0fm 許容=%.0fm bias=%.2f%@ [%@]",
                              label(for: travel.source), heading, Geo.distanceM(p, h), allowed, bias,
-                             summary(of: fix))
+                             targetLabel, summary(of: fix))
         // 経路データがあれば、実在する分岐から選ぶ。
         // 無ければ従来のグリッドのみの推測(±45°/±90°)に落ちる
         if let graph, graph.map.covers(p) {
@@ -362,6 +374,7 @@ final class WalkSessionController: ObservableObject {
             let decision = BranchSuggester.decide(intersection: x, travelBearingDeg: heading,
                                                   position: p, home: h, grid: grid,
                                                   homewardBias: bias,
+                                                  target: target?.zone.center,
                                                   route: params.route, now: Date())
             guard case .suggest(let c) = decision else {
                 if case .silent(let why, let best) = decision {
@@ -738,6 +751,51 @@ final class WalkSessionController: ObservableObject {
     }
 
     // MARK: - 曲がり角の誘導
+
+    // MARK: - 行き先(広域)
+
+    /// 向かう地帯を決める・選び直す。
+    ///
+    /// 交差点ごとの評価だけでは、曲がった直後の評価が高くてもその先がつまらない場所に
+    /// 出ることがある(2026-08-19 の指摘)。先に「どのあたりへ向かうか」を決めておけば、
+    /// 局所の選択に一貫した向きが与えられる。
+    ///
+    /// 選び直すのは 3 つの場合だけ:まだ無い / 着いた / 予算の外へ出た。
+    /// 毎回選び直すと行き先がふらついて、向きを与える意味が無くなる。
+    private func updateTarget(at p: GeoPoint, home h: GeoPoint,
+                              allowedRadiusM: Double, bias: Double) {
+        guard let zones else { return }
+        // 帰りどきが近づいたら行き先は捨てる。帰宅が優先(スコア側でも畳まれている)
+        if bias >= 1 {
+            if target != nil {
+                target = nil
+                logToFile("行き先を解除(帰宅を優先)")
+            }
+            return
+        }
+        var reason: String?
+        if target == nil {
+            reason = "未設定"
+        } else if let t = target,
+                  Geo.distanceM(p, t.zone.center) <= params.route.targetReachedM {
+            reason = "到達"
+        } else if let t = target,
+                  Geo.distanceM(t.zone.center, h) > allowedRadiusM {
+            reason = "予算の外に出た"
+        }
+        guard let reason else { return }
+        guard let next = zones.chooseTarget(from: p, home: h, allowedRadiusM: allowedRadiusM,
+                                            grid: grid, now: Date(),
+                                            p: params.route.zoneParams) else {
+            if target != nil { logToFile("行き先を選べません(\(reason))") }
+            target = nil
+            return
+        }
+        target = next
+        log(String(format: "行き先: %.0fm 先 方位 %.0f°(新鮮さ %.2f・道 %.0fm・%@)",
+                   next.distanceM, Geo.bearingDeg(from: p, to: next.zone.center),
+                   next.novelty, next.zone.roadLengthM, reason))
+    }
 
     /// 帰路でも、経路上の次の角へ誘導音を張る。
     /// ビーコンは「自宅の在り処」を指すだけなので、川や私有地越しにも鳴りうる。

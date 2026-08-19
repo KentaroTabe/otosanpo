@@ -405,6 +405,38 @@ if guidanceReports.isEmpty {
     print("  ※ 「ほぼ正面」の音は左右の手がかりを持たない。角そのものを指す設計上、"
           + "接近中は正面寄りになる")
 }
+
+// MARK: - 行き先の地帯
+/// 「音の鳴る方に歩くと面白い散歩ができる」の後半。
+/// 過去のログで馴染んだ地帯を避け、道のある地帯を選べているかを歩かずに確かめる。
+    print("\n== 行き先の地帯(広域の選定)==")
+    let started = Date()
+    let zoneMap = ZoneMap(map: walkMap, zoneSizeM: r.zoneSizeM)
+    print(String(format: "  地帯 %d 個(%.0fm 角・構築 %.2f 秒)",
+                 zoneMap.zones.count, r.zoneSizeM, -started.timeIntervalSinceNow))
+    let roads = zoneMap.zones.map(\.roadLengthM).sorted()
+    if !roads.isEmpty {
+        print(String(format: "  地帯あたりの道の総延長: 最小 %.0fm / 中央 %.0fm / 最大 %.0fm(下限 %.0fm)",
+                     roads.first!, roads[roads.count / 2], roads.last!, r.zoneMinRoadM))
+        let usable = roads.filter { $0 >= r.zoneMinRoadM }.count
+        print(String(format: "  行き先になりうる地帯: %d 個 (%.0f%%)",
+                     usable, Double(usable) / Double(roads.count) * 100))
+    }
+    // 馴染み度は上で再構成した grid をそのまま使う(過去の散歩ぶんが入っている)
+    let home = walkMap.center
+    for allowed in [500.0, 1000.0, 2000.0] {
+        let t = zoneMap.chooseTarget(from: home, home: home, allowedRadiusM: allowed,
+                                     grid: grid, now: Date(timeIntervalSince1970: 1_786_000_000),
+                                     p: r.zoneParams)
+        guard let t else {
+            print(String(format: "  許容 %.0fm: 選べる地帯なし", allowed))
+            continue
+        }
+        print(String(format: "  許容 %4.0fm → %4.0fm 先 方位 %3.0f°(新鮮さ %.2f・道 %.0fm)",
+                     allowed, t.distanceM, Geo.bearingDeg(from: home, to: t.zone.center),
+                     t.novelty, t.zone.roadLengthM))
+    }
+    print("  ※ 現在地を自宅としたときの選定。新鮮さは過去のログから再構成した馴染み度による")
 } else {
     print("\n経路データが無いため、スナップの再生は省略(\(mapPath))")
     print("scripts/build_map.sh で生成すると、この先も再生できます。")

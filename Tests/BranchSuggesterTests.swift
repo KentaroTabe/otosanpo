@@ -11,7 +11,9 @@ final class BranchSuggesterTests: XCTestCase {
         suggestionMarginOverStraight: 0.05, suggestionMinTravelM: 30,
         mapRadiusM: 5000, mapIndexCellSizeM: 50, snapMaxDistanceM: 25,
         intersectionLookaheadM: 35, branchStraightDeg: 25, branchBackwardDeg: 135,
-        crossCostWeight: 0.12, wayClassWeight: 0.08, branchNoveltyRatio: 1.3)
+        crossCostWeight: 0.12, wayClassWeight: 0.08, branchNoveltyRatio: 1.3,
+        zoneSizeM: 300, zoneMinRoadM: 400, zoneSampleGrid: 3,
+        targetMinDistanceM: 300, targetReachedM: 150, targetBiasWeight: 0.3)
 
     /// 十字路。北から来て、東西南へ分かれる
     /// 節点 0 = 交差点、1 = 北(来た道)、2 = 東、3 = 南(直進)、4 = 西
@@ -188,6 +190,57 @@ final class BranchSuggesterTests: XCTestCase {
         XCTAssertEqual(why, .straightIsBest)
         // 黙った時も最良候補は残す(「惜しかったのか」が分からないと閾値を動かせない)
         XCTAssertEqual(best?.relativeBearingDeg ?? .nan, 0, accuracy: 1)
+    }
+
+    // MARK: - 行き先バイアス(広域の向きを局所の選択に効かせる)
+
+    /// 東西どちらも同じ条件なら、行き先のある側を選ぶ。
+    /// 交差点ごとの評価だけでは、曲がった先がつまらない場所に出る(2026-08-19 の指摘)
+    func testTargetPullsTheChoiceTowardIt() {
+        let g = crossroads()
+        let p = GeoPoint(latitude: lat(20), longitude: lon(0))
+        let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
+        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        let now = Date(timeIntervalSince1970: 0)
+        // 直進(南)を馴染ませ、東西のどちらかを選ばせる
+        let south = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 100)
+        for _ in 0..<8 { grid.recordVisit(at: south, date: now) }
+        let home = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 500)
+
+        // 行き先が東(90°)にあれば東、西(270°)にあれば西
+        let east = Geo.destination(from: p, bearingDeg: 90, distanceM: 800)
+        let west = Geo.destination(from: p, bearingDeg: 270, distanceM: 800)
+        let toEast = BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
+                                            position: p, home: home, grid: grid,
+                                            homewardBias: 0, target: east,
+                                            route: route, now: now)
+        let toWest = BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
+                                            position: p, home: home, grid: grid,
+                                            homewardBias: 0, target: west,
+                                            route: route, now: now)
+        // 南へ歩いているので、東は相対 -90(左)、西は相対 +90(右)
+        XCTAssertEqual(toEast?.relativeBearingDeg ?? 0, -90, accuracy: 1)
+        XCTAssertEqual(toWest?.relativeBearingDeg ?? 0, 90, accuracy: 1)
+    }
+
+    /// **帰宅が常に優先**。帰りどきになれば行き先の寄与は消える
+    func testTargetIsFoldedAwayAsHomewardBiasRises() {
+        let g = crossroads()
+        let p = GeoPoint(latitude: lat(20), longitude: lon(0))
+        let x = g.upcomingIntersection(from: p, bearingDeg: 180, withinM: 35)!
+        var grid = VisitGrid(cellSizeM: 50, halfLifeDays: 45)
+        let now = Date(timeIntervalSince1970: 0)
+        let south = Geo.destination(from: x.point, bearingDeg: 180, distanceM: 100)
+        for _ in 0..<8 { grid.recordVisit(at: south, date: now) }
+
+        // 自宅は西、行き先は東。バイアスが最大なら自宅側(西)が勝つ
+        let home = Geo.destination(from: x.point, bearingDeg: 270, distanceM: 500)
+        let east = Geo.destination(from: p, bearingDeg: 90, distanceM: 800)
+        let c = BranchSuggester.choose(intersection: x, travelBearingDeg: 180,
+                                       position: p, home: home, grid: grid,
+                                       homewardBias: 1.0, target: east,
+                                       route: route, now: now)
+        XCTAssertEqual(c?.relativeBearingDeg ?? 0, 90, accuracy: 1, "西(自宅側)")
     }
 
     /// 分岐が 2 方向しかない(道が続いているだけ)場所では交差点として扱わない

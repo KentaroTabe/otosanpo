@@ -63,22 +63,31 @@ public enum BranchSuggester {
                               travelBearingDeg: Double,
                               position: GeoPoint, home: GeoPoint,
                               grid: VisitGrid, homewardBias: Double,
+                              target: GeoPoint? = nil,
                               route: AppParameters.Route, now: Date) -> Choice? {
         if case .suggest(let c) = decide(intersection: intersection,
                                          travelBearingDeg: travelBearingDeg,
                                          position: position, home: home, grid: grid,
-                                         homewardBias: homewardBias, route: route, now: now) {
+                                         homewardBias: homewardBias, target: target,
+                                         route: route, now: now) {
             return c
         }
         return nil
     }
 
+    /// - Parameter target: 向かっている地帯(ZoneMap が選ぶ)。
+    ///   局所の選択に広域の向きを与える。帰宅バイアスが立つにつれ効き目は畳まれる
     public static func decide(intersection: UpcomingIntersection,
                               travelBearingDeg: Double,
                               position: GeoPoint, home: GeoPoint,
                               grid: VisitGrid, homewardBias: Double,
+                              target: GeoPoint? = nil,
                               route: AppParameters.Route, now: Date) -> Decision {
         let homeBearing = Geo.bearingDeg(from: position, to: home)
+        let targetBearing = target.map { Geo.bearingDeg(from: position, to: $0) }
+        // 行き先の寄与は帰宅バイアスの裏返し。**帰宅が常に優先**なので、
+        // 帰りどきが近づくほど行き先は畳まれて消える
+        let targetWeight = route.targetBiasWeight * (1 - homewardBias)
         var straightNovelty: Double?
         var best: Choice?
 
@@ -94,7 +103,12 @@ public enum BranchSuggester {
             // 横断コストと道の種別は、どちらも「その道へ入る負担」として引く
             let crossPenalty = Double(b.crossCost) * route.crossCostWeight
             let classPenalty = Double(b.cls.preferenceRank) * route.wayClassWeight
+            // 行き先から逸れる方向を引く(帰宅バイアスと同じ形。向く先が違うだけ)
+            let targetPenalty = targetBearing.map {
+                targetWeight * abs(Geo.angularDiffDeg(b.bearingDeg, $0)) / 180.0
+            } ?? 0
             let score = novelty - homewardBias * angleToHome - crossPenalty - classPenalty
+                - targetPenalty
 
             // 直進に相当する分岐(進行方向にいちばん近い道)を基準にする
             if abs(rel) <= route.branchStraightDeg {
