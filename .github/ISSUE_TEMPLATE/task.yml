@@ -1,0 +1,84 @@
+name: 作業タスク
+description: 実装・リファクタリング・調査など、やることが決まっている作業
+labels: ["task"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目的
+      description: 関連する設計方針があれば docs へのリンクを添える(docs/06 の柱など)
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 作業内容
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: 主に触る層
+      description: |
+        依存方向は App → Services → Core。
+        **Core は Foundation のみ import 可**、Services にロジックを持たせない(CLAUDE.md)
+      options:
+        - Core(純粋ロジック)
+        - Services(OS フレームワークのラッパ)
+        - App(SwiftUI・WalkSessionController)
+        - 複数の層
+        - スクリプト・ツール(scripts / Replay / MapBuild)
+        - ドキュメントのみ
+    validations:
+      required: true
+
+  - type: dropdown
+    id: parameters
+    attributes:
+      label: パラメータの追加・変更があるか
+      description: |
+        数値・閾値は `config/parameters.json` に置く(Swift へのリテラル埋め込みは禁止)。
+        変更したら `Sources/Core/AppParameters.swift` と **docs の該当表も同時に更新**
+      options:
+        - 追加・変更なし
+        - 追加・変更あり(AppParameters と docs も更新する)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: files
+    attributes:
+      label: ファイルの追加・削除があるか
+      description: |
+        `project.yml` はディレクトリを glob しているため、
+        **追加・削除したら `scripts/setup.sh` で .xcodeproj を再生成**する
+      options:
+        - なし
+        - あり(setup.sh を実行する)
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: 完了条件
+      description: 判定可能な形で
+      value: |
+        - [ ] テスト全緑(`scripts/test.sh "iPhone 17 Pro"`)
+        - [ ] Core を変更した場合、対応するテストを追加・更新した
+        - [ ]
+    validations:
+      required: true
+
+  - type: textarea
+    id: deps
+    attributes:
+      label: 前提・依存
+      description: 先に片付けるべき Issue、待っている実機テストなど
+    validations:
+      required: false

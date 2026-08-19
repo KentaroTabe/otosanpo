@@ -1,0 +1,105 @@
+name: 機能追加・改善
+description: 新しい機能や既存機能の改善提案
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 解決したい課題
+      description: 「何が欲しいか」ではなく「今どう困っているか」を書く
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 提案する解決策
+    validations:
+      required: true
+
+  - type: dropdown
+    id: principle
+    attributes:
+      label: 3 原則との関係
+      description: |
+        docs/01 の 3 原則。**どれを強めるのか、どれと引き換えなのか**を意識して書く
+      options:
+        - 画面を見ない(散歩中の能動操作をゼロに保つ)
+        - 叱らない(提案は無視してよい・急かさない)
+        - 約束を守る(帰宅時間を予算内に収める)
+        - 複数にまたがる
+        - どれとも直接は関係しない
+    validations:
+      required: true
+
+  - type: dropdown
+    id: vocabulary
+    attributes:
+      label: 音の語彙を増やすか
+      description: |
+        **earcon は 5 種から増やさない**のが原則(docs/03)。
+        増やす提案は、その必要性を本文で示す
+      options:
+        - 増やさない(既存の音で表現する)
+        - 増やす(理由を本文に書いた)
+        - 音は関わらない
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 検討した代替案
+      description: 採らなかった理由も書く(後から同じ案を再検討しないため)
+    validations:
+      required: false
+
+  - type: dropdown
+    id: verification
+    attributes:
+      label: 検証手段
+      description: |
+        docs/05 の 3 段。**実機の散歩でしか確かめられないもの**だけを散歩に回す
+      options:
+        - ユニットテストで足りる
+        - ログ再生で確かめられる(scripts/replay_log.sh)
+        - 実機の散歩が要る(音の聞こえ方・ジェスチャ・OS の挙動)
+        - 散歩が要るが、他の項目とまとめて 1 回で見られる
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 完了条件
+      description: 何が満たされたら閉じてよいか。検証可能な形で書く
+      value: |
+        - [ ] テスト全緑(`scripts/test.sh "iPhone 17 Pro"`)
+        - [ ]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影響範囲
+      options:
+        - 内部実装のみ(外から見た挙動は変わらない)
+        - 挙動が変わる(既存の利用に影響あり)
+        - データ形式・保存形式が変わる(移行が必要)
+        - プライバシー方針に触れる(位置情報の扱い・通信の有無)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: privacy
+    attributes:
+      label: 通信を必要とするか
+      description: |
+        **位置情報を送信するコードは今後も持たない**(docs/04)。
+        通信が要る提案は、その前提を崩さずに済むかを本文で示す
+      options:
+        - 通信は不要(端末内で完結)
+        - 通信が要る(理由と代替案を本文に書いた)
+    validations:
+      required: true

@@ -1,0 +1,113 @@
+name: 位置・進行方向の不具合
+description: 現在地がずれる、進行方向が取れない、道に乗らない、地図が圏外になる
+labels: ["bug", "location"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **ログを見て位置側の問題だと分かった場合**はこちら。
+        「音が変な方を指した」という体感の段階では「音の不具合」か
+        「案内の中身の不具合」に出してよい(原因の切り分けはこちらで行う)。
+
+        前提として押さえてあること(docs/04):
+        - **端末の磁気コンパスは進行方向の代用にしない。** ポケット内の端末の向きは
+          進む向きと無関係で、実測で左右が反転した。退避は無効化してある
+          (`allow_compass_fallback: false`)。**キャリブレーションの話ではない**
+        - 進行方向は `CLLocation.course` を使い、途切れたら 15 秒まで直前の値を保持する
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      placeholder: 高架下で位置が 60m 飛び、経路長が実際より大きく出た
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 種別
+      options:
+        - 現在地がずれる・飛ぶ
+        - 位置の更新が止まる
+        - 進行方向が取得できない(中央で鳴り続ける)
+        - 進行方向が古い値のまま(保持が長すぎる)
+        - 道に乗らない(スナップ失敗)
+        - 違う道に乗る
+        - 地図が圏外になる
+        - 位置情報の権限まわり
+    validations:
+      required: true
+
+  - type: textarea
+    id: accuracy
+    attributes:
+      label: 位置精度と方向の取得元
+      description: |
+        `scripts/summarize_log.sh --last` の冒頭に出る。
+        通常は最良 3m / 平均 4〜6m / 最悪 20m 程度、方向は「移動方向」がほぼ全件
+      value: |
+        - 水平精度(最良 / 平均 / 最悪):
+        - 進行方向の取得元(移動方向 / 保持 / 端末コンパス の件数):
+        - 中央で鳴らした(左右なし)回数:
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: snap
+    attributes:
+      label: 道路スナップ
+      description: |
+        `scripts/replay_log.sh` の「道路スナップの再生」。
+        通常は「道に乗った 100%・平均 2〜3m」「道の向きと course が一致 9 割」程度
+      value: |
+        - 道に乗った割合:
+        - 平均 / 最大のずれ:
+        - 道の向きと course が一致した割合:
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 発生環境
+      description: 位置精度は環境で大きく変わる
+      value: |
+        - 場所の状況(屋外の開けた場所 / ビル街 / 高架下 / 木の下 / 屋内):
+        - 移動速度(徒歩 / 停止中 / 走っていた):
+        - 端末:
+        - iOS バージョン:
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: フィールドログ
+      description: 位置更新は `fix` 行として 1 件ずつ残っているので、再生で追える
+      value: |
+        - ファイル名:
+        - 該当時刻(HH:MM:SS):
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: frequency
+    attributes:
+      label: 再現性
+      placeholder: 特定の場所で毎回 / たまに / 1 回だけ
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: 補足
+      description: |
+        座標そのものは書かなくてよい(**自宅周辺が公開リポジトリに残るのを避ける**)。
+        地形の特徴で足りる
+    validations:
+      required: false

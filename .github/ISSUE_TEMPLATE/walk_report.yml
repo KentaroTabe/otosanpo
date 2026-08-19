@@ -1,0 +1,96 @@
+name: 散歩の報告(フィールドテスト)
+description: 実機で歩いた回の記録。気づいたことをまとめて出す
+labels: ["field-test"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **1 回の散歩につき 1 件。** 気づきが複数あってもここにまとめる
+        (docs/05「実機テストは実装ごとに行わない」)。
+
+        docs/05 との使い分け: **この Issue は生の報告**、docs/05 は分析後の結論と
+        課題の一覧。ここから切り出すべきものは個別の Issue にし、
+        判明した事実は docs/05 に集約する。
+
+  - type: input
+    id: when
+    attributes:
+      label: 実施日時と所要
+      placeholder: 2026-08-19 11:04〜11:17(13 分)
+    validations:
+      required: true
+
+  - type: textarea
+    id: purpose
+    attributes:
+      label: 何を確かめる回だったか
+      description: docs/05 の観察項目。ビルド(コミット)が分かれば添える
+      placeholder: |
+        - ビルド: 16d63dc
+        - 誘導音が音量で近さを伝えられるか
+        - 帰路の誘導だけで帰れるか
+    validations:
+      required: true
+
+  - type: textarea
+    id: intentional
+    attributes:
+      label: 意図的に試したこと
+      description: |
+        手順を覚えて実行する必要があるものは **1〜2 個まで**(docs/05)。
+        無ければ「なし(普通に歩いた)」
+      placeholder: 帰路でビーコンではなく誘導音に従って歩いた
+    validations:
+      required: true
+
+  - type: textarea
+    id: findings
+    attributes:
+      label: 気づいたこと
+      description: |
+        体感で構わない。**数値はログから取るのでこちらでは不要**。
+        「どう聞こえたか」「どう感じたか」を具体的に書くほど原因の切り分けが早い
+      placeholder: |
+        - 案内音の左右が非常に分かりにくかった
+        - 曲がり終わったあと音が反対側へ消えていく
+        - 延長は正しく機能していそう
+    validations:
+      required: true
+
+  - type: dropdown
+    id: fun
+    attributes:
+      label: 「音の鳴る方に歩くと面白い散歩ができた」か
+      description: docs/01 の指針。**主観で答えるのはここだけ**でよい
+      options:
+        - 面白かった
+        - 悪くない
+        - 面白くなかった
+        - 判断できない(音や案内が壊れていた)
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: フィールドログ
+      description: |
+        アプリ > フィールドログ > 「ログを書き出す」→ AirDrop で Mac →
+        `field-logs/inbox/` に置いて `scripts/import_log.sh`。
+        **歩き始める前に「ログを消去」**を押しておくと回の切り分けが楽
+      value: |
+        - 取り込んだファイル名:
+        - 消去してから歩いたか(はい / いいえ):
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: 環境
+      value: |
+        - 地図(画面の「地図:」表示。読込済み / 未読込 / 圏外):
+        - 天候・場所の様子:
+        - いつもと違ったこと(走った、人と話して AirPods を外した、等):
+    validations:
+      required: false
