@@ -44,7 +44,7 @@
     "allow_compass_fallback": false
   },
   "heading": {
-    "use_head_orientation": true,
+    "use_head_orientation": false,
     "baseline_alpha": 0.0005,
     "max_offset_deg": 90,
     "min_samples": 250,

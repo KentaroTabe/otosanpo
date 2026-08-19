@@ -301,9 +301,45 @@ var intersectionsSeen = 0
 var choices: [String] = []
 var lastChoiceAt: GeoPoint?
 
+// 誘導の再生。**進行方位を基準にしたときに左右がどれだけ付くか**を測る。
+// 2026-08-19 の指摘「案内音の左右が非常に分かりにくい」の主因は顔基準の破綻だったが、
+// 進行基準に戻したときに十分な左右が出るのかは別問題で、これは歩かずに測れる
+let gp = TurnGuidance.Params(
+    startDistanceM: r.intersectionLookaheadM, peakBeforeM: params.audio.guidancePeakBeforeM,
+    intervalSec: params.audio.guidanceIntervalSec, gainFar: params.audio.guidanceGainFar,
+    gainNear: params.audio.guidanceGainNear, endDistanceM: params.audio.guidanceEndDistanceM,
+    leftBehindM: params.audio.guidanceLeftBehindM, turnedWithinDeg: r.branchStraightDeg,
+    closingTones: params.audio.guidanceClosingTones)
+var active: (g: TurnGuidance, at: Date, rels: [Double])?
+var guidanceReports: [String] = []
+/// 左右の付き方の集計。|相対| が小さい音は「ほぼ正面」で左右の手がかりを持たない
+var relCenter = 0, relMid = 0, relSide = 0
+
 for f in inMap where f.state == "wandering" {
     grid.recordVisit(at: f.point, date: f.time)
     guard let course = f.courseDeg, course >= 0 else { continue }
+
+    // 誘導中は次の提案を評価しない(実機と同じ)
+    if active != nil {
+        switch active!.g.next(position: f.point, travelBearingDeg: course, p: gp) {
+        case .play(let s):
+            let rel = Geo.angularDiffDeg(s.targetBearingDeg, course)
+            active!.rels.append(rel)
+            if abs(rel) < 20 { relCenter += 1 } else if abs(rel) < 45 { relMid += 1 } else { relSide += 1 }
+        case .finished(let ending):
+            let rels = active!.rels
+            let centered = rels.filter { abs($0) < 20 }.count
+            guidanceReports.append(String(
+                format: "  %@ %2d音 相対 %+.0f°→%+.0f° 最大 %.0f° / ほぼ正面(<20°) %d音 (%.0f%%) %@",
+                clock.string(from: active!.at), rels.count,
+                rels.first ?? 0, rels.last ?? 0, rels.map { abs($0) }.max() ?? 0,
+                centered, rels.isEmpty ? 0 : Double(centered) / Double(rels.count) * 100,
+                ending.rawValue))
+            active = nil
+        }
+        continue
+    }
+
     guard let x = graph.upcomingIntersection(from: f.point, bearingDeg: course,
                                              withinM: r.intersectionLookaheadM) else { continue }
     intersectionsSeen += 1
@@ -328,6 +364,8 @@ for f in inMap where f.state == "wandering" {
         choices.append(String(format: "  %@ 交差点まで %.0fm / 分岐 %d 本 → 相対 %+.0f° (%@, 横断 %d) score=%.2f",
                               clock.string(from: f.time), x.distanceM, x.branches.count,
                               c.relativeBearingDeg, "\(c.branch.cls)", c.branch.crossCost, c.score))
+        active = (TurnGuidance(corner: x.point, branchBearingDeg: c.branch.bearingDeg,
+                               distanceM: x.distanceM), f.time, [])
     }
 }
 
@@ -348,6 +386,25 @@ for line in choices.prefix(30) { print(line) }
 if choices.count > 30 { print("  (以下 \(choices.count - 30) 件省略)") }
 print("\n自宅座標はログに無いため、帰宅バイアスは 0 として再生している"
       + "(交差点検出と分岐選択の確認が目的)。")
+
+// MARK: - 誘導の左右(進行方位を基準にした場合)
+
+print("\n== 誘導の再生(左右の付き方・進行基準)==")
+if guidanceReports.isEmpty {
+    print("  誘導イベントがありません")
+} else {
+    let total = relCenter + relMid + relSide
+    print(String(format: "  %d 件 / 音 %d 発の内訳: ほぼ正面(<20°) %d (%.0f%%) / "
+                 + "斜め(20〜45°) %d (%.0f%%) / 横(≥45°) %d (%.0f%%)",
+                 guidanceReports.count, total,
+                 relCenter, Double(relCenter) / Double(total) * 100,
+                 relMid, Double(relMid) / Double(total) * 100,
+                 relSide, Double(relSide) / Double(total) * 100))
+    for line in guidanceReports.prefix(20) { print(line) }
+    if guidanceReports.count > 20 { print("  (以下 \(guidanceReports.count - 20) 件省略)") }
+    print("  ※ 「ほぼ正面」の音は左右の手がかりを持たない。角そのものを指す設計上、"
+          + "接近中は正面寄りになる")
+}
 } else {
     print("\n経路データが無いため、スナップの再生は省略(\(mapPath))")
     print("scripts/build_map.sh で生成すると、この先も再生できます。")
@@ -380,23 +437,51 @@ func readHeadingPairs(_ path: String) -> [(time: Date, yawDeg: Double, courseDeg
     return out
 }
 
-/// 1 ファイルぶんの対を数える。**曲がった対だけを数える**のが要点。
-/// 直進中の対は Δcourse が雑音なので符号情報を持たず、一致率を 50% へ薄めてしまう
-/// (2026-08-18 のログで、閾値 10° では 45%・30° では 29% と判定が変わった)。
-func countSignAgreement(_ pairs: [(time: Date, yawDeg: Double, courseDeg: Double)],
-                        turnThresholdDeg: Double) -> (agree: Int, used: Int) {
-    var agree = 0, used = 0
-    for i in 1..<max(1, pairs.count) {
-        let dt = pairs[i].time.timeIntervalSince(pairs[i - 1].time)
+/// 曲がった対について、yaw が旋回を追えているかを調べる。
+///
+/// **符号の一致率だけでは判定できない**(2026-08-19 の失敗)。一致率は ± しか見ないので、
+/// yaw が旋回とほとんど無関係でも偏りがあれば「反転」と読めてしまう。実際
+/// 「一致 26% → 符号は −1」と結論して顔基準を有効にしたところ、左右が壊れた。
+///
+/// 大きさで見るのが正しい。`raw = s·yaw − course` は HeadingFusion の基準線の入力で、
+/// **体ごとの旋回では動かないはず**。動くなら、その符号では旋回を打ち消せていない。
+/// `|Δraw|` が `|Δcourse|` と同程度なら、yaw は旋回の情報を持っていない。
+struct YawStats {
+    var used = 0
+    var agree = 0
+    var sumCourse = 0.0
+    var sumRawNeg = 0.0
+    var sumRawPos = 0.0
+
+    var meanCourse: Double { used > 0 ? sumCourse / Double(used) : 0 }
+    var meanRawNeg: Double { used > 0 ? sumRawNeg / Double(used) : 0 }
+    var meanRawPos: Double { used > 0 ? sumRawPos / Double(used) : 0 }
+    var agreeRate: Double { used > 0 ? Double(agree) / Double(used) * 100 : 0 }
+}
+
+func yawStats(_ pairs: [(time: Date, yawDeg: Double, courseDeg: Double)],
+              turnThresholdDeg: Double) -> YawStats {
+    var s = YawStats()
+    guard pairs.count >= 2 else { return s }
+    for i in 1..<pairs.count {
+        let a = pairs[i - 1], b = pairs[i]
+        let dt = b.time.timeIntervalSince(a.time)
         // 間が空きすぎた対は、間に何が起きたか分からないので使わない
         guard dt > 0, dt <= 6 else { continue }
-        let dYaw = Geo.angularDiffDeg(pairs[i].yawDeg, pairs[i - 1].yawDeg)
-        let dCourse = Geo.angularDiffDeg(pairs[i].courseDeg, pairs[i - 1].courseDeg)
+        let dYaw = Geo.angularDiffDeg(b.yawDeg, a.yawDeg)
+        let dCourse = Geo.angularDiffDeg(b.courseDeg, a.courseDeg)
         guard abs(dYaw) >= 10, abs(dCourse) >= turnThresholdDeg else { continue }
-        used += 1
-        if (dYaw > 0) == (dCourse > 0) { agree += 1 }
+        s.used += 1
+        s.sumCourse += abs(dCourse)
+        if (dYaw > 0) == (dCourse > 0) { s.agree += 1 }
+        for sign in [-1.0, 1.0] {
+            let rawA = Geo.normalizeDeg(sign * a.yawDeg - a.courseDeg)
+            let rawB = Geo.normalizeDeg(sign * b.yawDeg - b.courseDeg)
+            let d = abs(Geo.angularDiffDeg(rawB, rawA))
+            if sign < 0 { s.sumRawNeg += d } else { s.sumRawPos += d }
+        }
     }
-    return (agree, used)
+    return s
 }
 
 // **手元の全ログを合わせて判定する。** 1 回の散歩では曲がる対が数十件しか取れず、
@@ -418,28 +503,32 @@ if let files = try? FileManager.default.contentsOfDirectory(atPath: "field-logs"
 if allPairs.isEmpty { allPairs = readHeadingPairs(logPath) }
 
 print("  対象: field-logs/ の \(pairFiles) ファイル(「頭向き」行 \(allPairs.count) 件)")
-print("  Δcourse の下限を振る(曲がった対だけが符号の情報を持つ):")
-for threshold in [10.0, 20.0, 30.0, 45.0] {
-    let (agree, used) = countSignAgreement(allPairs, turnThresholdDeg: threshold)
-    guard used > 0 else {
-        print(String(format: "    ≥%3.0f°:  対 0 件", threshold))
+print("  曲がった対で、raw = s·yaw − course がどれだけ動くか(小さいほどその符号が正しい):")
+print("    下限   対   |Δcourse|  |Δraw| s=-1  |Δraw| s=+1  符号一致")
+for threshold in [20.0, 30.0, 45.0] {
+    let s = yawStats(allPairs, turnThresholdDeg: threshold)
+    guard s.used > 0 else {
+        print(String(format: "    ≥%3.0f°   0", threshold))
         continue
     }
-    print(String(format: "    ≥%3.0f°:  対 %4d 件 / 一致 %4d 件 (%.0f%%)",
-                 threshold, used, agree, Double(agree) / Double(used) * 100))
+    print(String(format: "    ≥%3.0f° %4d %9.1f° %11.1f° %11.1f° %8.0f%%",
+                 threshold, s.used, s.meanCourse, s.meanRawNeg, s.meanRawPos, s.agreeRate))
 }
 
-let verdict = countSignAgreement(allPairs, turnThresholdDeg: 30)
-if verdict.used < 20 {
-    print("  判定に使える対が \(verdict.used) 件しかありません。曲がる場面を含む散歩の記録が要ります。")
+let v = yawStats(allPairs, turnThresholdDeg: 30)
+if v.used < 20 {
+    print("  判定に使える対が \(v.used) 件しかありません。曲がる場面を含む散歩の記録が要ります。")
 } else {
-    let rate = Double(verdict.agree) / Double(verdict.used) * 100
-    print(String(format: "  判定(≥30°・%d 件): 一致 %.0f%%", verdict.used, rate))
-    if rate >= 70 {
-        print("  → 符号は揃っている。yaw_sign は +1 のままでよい。")
-    } else if rate <= 30 {
-        print("  → 符号が反転している。yaw_sign を -1 にする。")
+    let best = min(v.meanRawNeg, v.meanRawPos)
+    // 旋回を打ち消せているなら |Δraw| は |Δcourse| よりはっきり小さくなるはず。
+    // 半分に届かないなら、どちらの符号でも yaw は基準として使えない
+    if best > v.meanCourse * 0.5 {
+        print(String(format: "  → **yaw は旋回を追えていない**(|Δraw| %.0f° に対し |Δcourse| %.0f°)。",
+                     best, v.meanCourse))
+        print("     符号の問題ではないので yaw_sign では直らない。use_head_orientation は false。")
+    } else if v.meanRawNeg < v.meanRawPos {
+        print("  → 符号は反転している。yaw_sign を -1 にする。")
     } else {
-        print("  → 判定できない。対の数を増やすか、別の指標が要る。")
+        print("  → 符号は揃っている。yaw_sign は +1 のままでよい。")
     }
 }

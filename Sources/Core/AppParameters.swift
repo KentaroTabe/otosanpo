@@ -99,8 +99,9 @@ public struct AppParameters: Codable, Equatable {
         /// yaw と course の対をログに残す間隔 [sec]。回転の向きが揃っているかの判定材料
         public var logIntervalSec: Double
         /// yaw の回転の向きを方位に合わせる符号(+1 / −1)。
-        /// 2026-08-18 の実測(全ログの曲がった対 38 件で一致 26%)で **−1** と確定。
-        /// 判定は `scripts/replay_log.sh` の「yaw の符号」節が自動で出す
+        /// **符号を直しても顔の向きは推定できない**(2026-08-19 実測)。
+        /// yaw は旋回そのものを追えておらず、|Δraw| が |Δcourse| とほぼ同じだった。
+        /// `use_head_orientation` は false のままにする(docs/03)
         public var yawSign: Double
     }
 

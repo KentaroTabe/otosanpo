@@ -28,7 +28,10 @@ public struct HeadingFusion: Equatable {
         /// yaw の回転の向きを方位に合わせる符号(+1 か −1)。
         /// **CoreMotion の yaw は反時計回りが正、方位は時計回りが正**なので、
         /// 揃っていなければ首を右に向けたとき推定は左へ動く。
-        /// 実測(2026-08-18・全ログの曲がった対 38 件で一致 26%)により **−1** で確定
+        ///
+        /// ただし実測(2026-08-19)では、**符号を直しても推定は成立しなかった**。
+        /// AirPods の yaw は磁気の基準を持たず不連続に飛ぶため、旋回そのものを追えていない
+        /// (docs/03)。この符号は残してあるが、`use_head_orientation` は false
         public let yawSign: Double
 
         public init(baselineAlpha: Double, maxOffsetDeg: Double, minSamples: Int,
