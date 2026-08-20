@@ -29,6 +29,51 @@ final class TurnGuidanceTests: XCTestCase {
         return nil
     }
 
+    // MARK: - 1 音目は「どちらへ曲がるか」を告げる
+
+    /// **1 音目だけは曲がる先を指す。**
+    /// 角を指す設計上、遠い時点では角は真正面にある(実測: 35m 地点で始まる回の
+    /// 1 音目は −10° / +18° / −12° / −11°)。前の音が無い 1 音目は、それ単独で
+    /// 「どちらへ曲がるか」を伝える必要がある(2026-08-20 の指摘)
+    func testFirstToneAnnouncesTheTurnDirection() {
+        var g = guidance()
+        guard let first = play(&g, at: approach(35), travel: 0) else { return XCTFail("鳴らない") }
+        XCTAssertTrue(first.isAnnouncing)
+        XCTAssertEqual(first.targetBearingDeg, branchDeg, accuracy: 1, "曲がる先(東)を指す")
+
+        // 2 音目からは従来どおり角を指す。「音の鳴る方に歩けば角に着く」は保たれる
+        guard let second = play(&g, at: approach(34), travel: 0) else { return XCTFail("鳴らない") }
+        XCTAssertFalse(second.isAnnouncing)
+        XCTAssertLessThan(abs(Geo.angularDiffDeg(second.targetBearingDeg, 0)), 10,
+                          "角(北)寄りを指す")
+        XCTAssertGreaterThan(abs(Geo.angularDiffDeg(second.targetBearingDeg, branchDeg)), 45,
+                             "曲がる先(東)からは離れている")
+    }
+
+    /// 予告は 1 回だけ。角へ近づいてから鳴り直したりしない
+    func testAnnouncementHappensOnlyOnce() {
+        var g = guidance()
+        for d in stride(from: 35.0, through: 12.0, by: -1.0) {
+            guard let s = play(&g, at: approach(d), travel: 0) else {
+                return XCTFail("鳴り止んだ(角まで \(d)m)")
+            }
+            XCTAssertEqual(s.isAnnouncing, d == 35.0, "予告は 1 音目だけ")
+        }
+    }
+
+    /// 予告を切れば、従来どおり 1 音目から角を指す
+    func testAnnouncementCanBeDisabled() {
+        let noAnnounce = TurnGuidance.Params(
+            startDistanceM: 35, peakBeforeM: 10, intervalSec: 1.2,
+            gainFar: 0.3, gainNear: 1.0, endDistanceM: 45, leftBehindM: 12,
+            turnedWithinDeg: 25, closingTones: 3, announceTones: 0)
+        var g = guidance()
+        guard case .play(let s) = g.next(position: approach(35), travelBearingDeg: 0,
+                                         p: noAnnounce) else { return XCTFail("鳴らない") }
+        XCTAssertFalse(s.isAnnouncing)
+        XCTAssertEqual(s.targetBearingDeg, 0, accuracy: 3)
+    }
+
     // MARK: - 距離は音量で、間隔は固定で
 
     func testIntervalIsConstantAndGainRisesTowardTheCorner() {
@@ -72,6 +117,8 @@ final class TurnGuidanceTests: XCTestCase {
 
     func testPointsAtCornerWhenFarAndAtBranchWhenNear() {
         var g = guidance()
+        // 1 音目は予告(曲がる先)なので、その次から見る
+        _ = play(&g, at: approach(35), travel: 0)
         guard let far = play(&g, at: approach(35), travel: 0) else { return XCTFail("鳴らない") }
         XCTAssertEqual(far.targetBearingDeg, 0, accuracy: 1, "遠いうちは角そのもの(北)を指す")
 

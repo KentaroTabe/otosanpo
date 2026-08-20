@@ -220,6 +220,10 @@ public struct AppParameters: Codable, Equatable {
         /// 曲がり終えた後、音量を落としながら鳴らす音の数。
         /// 「イベントが終わりかけている」ことを音で伝える
         public var guidanceClosingTones: Int
+        /// 冒頭に「曲がる先」を指す音の数。0 で無効。
+        /// 角を指す設計上、遠い時点では角は真正面にある。**1 音目は前の音が無いので、
+        /// それ単独で「どちらへ曲がるか」を伝える必要がある**(2026-08-20 の指摘)
+        public var guidanceAnnounceTones: Int
         /// 角からこの距離以上離れたら誘導を終える [m](通過後は間隔が開いて自然に消える)
         public var guidanceEndDistanceM: Double
         /// 最接近点からこれ以上遠ざかったら誘導を終える [m]。

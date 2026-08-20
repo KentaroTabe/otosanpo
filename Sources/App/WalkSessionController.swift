@@ -903,7 +903,8 @@ final class WalkSessionController: ObservableObject {
             endDistanceM: a.guidanceEndDistanceM,
             leftBehindM: a.guidanceLeftBehindM,
             turnedWithinDeg: params.route.branchStraightDeg,
-            closingTones: a.guidanceClosingTones)
+            closingTones: a.guidanceClosingTones,
+            announceTones: a.guidanceAnnounceTones)
     }
 
     /// 角へ近づくほど音量が上がる連続音。遠いうちは角そのものを指し、
@@ -948,10 +949,11 @@ final class WalkSessionController: ObservableObject {
         synth?.play(.suggestion, relativeBearingDeg: rel, gain: step.gain)
         // 誘導が鳴った時点で「方向のある音」は出せている。確認音はここで終わる
         noteReturnDirectionStarted()
-        logToFile(String(format: "誘導 角まで=%.0fm 鳴らす向き=%@ 音量=%.2f%@%@",
+        logToFile(String(format: "誘導 角まで=%.0fm 鳴らす向き=%@ 音量=%.2f%@%@%@",
                          step.distanceM,
                          rel.map { String(format: "%+.0f°", $0) } ?? "-",
                          step.gain,
+                         step.isAnnouncing ? " 予告" : "",
                          step.isClosing ? " 終端" : "",
                          state == .returning ? " 帰路" : ""))
         guidanceTimer?.invalidate()

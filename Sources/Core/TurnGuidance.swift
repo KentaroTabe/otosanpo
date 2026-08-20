@@ -35,10 +35,14 @@ public struct TurnGuidance: Equatable {
         public let turnedWithinDeg: Double
         /// 曲がり終えた後、音量を落としながら鳴らす音の数
         public let closingTones: Int
+        /// **冒頭に「曲がる先」を指す音の数。** 0 で無効。
+        /// 1 音目は前の音が無いので、それ単独で「どちらへ曲がるか」を伝える必要がある
+        public let announceTones: Int
 
         public init(startDistanceM: Double, peakBeforeM: Double, intervalSec: Double,
                     gainFar: Double, gainNear: Double, endDistanceM: Double,
-                    leftBehindM: Double, turnedWithinDeg: Double, closingTones: Int) {
+                    leftBehindM: Double, turnedWithinDeg: Double, closingTones: Int,
+                    announceTones: Int = 1) {
             self.startDistanceM = startDistanceM
             self.peakBeforeM = peakBeforeM
             self.intervalSec = intervalSec
@@ -48,6 +52,7 @@ public struct TurnGuidance: Equatable {
             self.leftBehindM = leftBehindM
             self.turnedWithinDeg = turnedWithinDeg
             self.closingTones = closingTones
+            self.announceTones = announceTones
         }
     }
 
@@ -68,6 +73,8 @@ public struct TurnGuidance: Equatable {
         public let distanceM: Double
         /// 終端(曲がり終えた後の減衰)の音か
         public let isClosing: Bool
+        /// 冒頭の「どちらへ曲がるか」を告げる音か
+        public var isAnnouncing: Bool = false
     }
 
     public enum Outcome: Equatable {
@@ -85,6 +92,8 @@ public struct TurnGuidance: Equatable {
     private var blend: Double = 1
     /// 終端に入ってから残っている音の数(nil なら未突入)
     private var closingLeft: Int?
+    /// 冒頭に「曲がる先」を指した音の数
+    private var announced: Int = 0
 
     public init(corner: GeoPoint, branchBearingDeg: Double, distanceM: Double) {
         self.corner = corner
@@ -134,6 +143,22 @@ public struct TurnGuidance: Equatable {
 
         if d > p.endDistanceM { return .finished(.leftBehind) }
         if d > closestM + p.leftBehindM { return .finished(.leftBehind) }
+
+        // **冒頭の数音は曲がる先を指す**(2026-08-20 の指摘「1 音目が向きを持っていない」)。
+        //
+        // 角を指す設計上、遠い時点では角は真正面にある(実測: 35 m 地点で始まる回の
+        // 1 音目は −10° / +18° / −12° / −11°)。歩いている道の先にあるのだから当然で、
+        // これは正しい。ただし **1 音目だけは事情が違う**。
+        // 前の音が無いので、それ単独で「何が来るのか」を伝えなければならない。
+        // 最も知りたいのは**どちらへ曲がるか**なので、そこを指す。
+        //
+        // 2 音目以降は従来どおり角を指す。「音の鳴る方に歩けば角に着く」は保たれる。
+        if announced < p.announceTones {
+            announced += 1
+            return .play(Step(targetBearingDeg: branchBearingDeg, gain: p.gainFar,
+                              intervalSec: p.intervalSec, distanceM: d,
+                              isClosing: false, isAnnouncing: true))
+        }
 
         // **補間は片道。** 一度詰まった向きは、離れても角へ戻さない
         let span = p.startDistanceM - p.peakBeforeM
