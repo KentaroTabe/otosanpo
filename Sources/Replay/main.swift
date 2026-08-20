@@ -322,7 +322,8 @@ let gp = TurnGuidance.Params(
     gainNear: params.audio.guidanceGainNear, endDistanceM: params.audio.guidanceEndDistanceM,
     leftBehindM: params.audio.guidanceLeftBehindM, turnedWithinDeg: r.branchStraightDeg,
     closingTones: params.audio.guidanceClosingTones,
-    announceTones: params.audio.guidanceAnnounceTones)
+    announceTones: params.audio.guidanceAnnounceTones,
+    abandonBehindDeg: params.audio.guidanceAbandonBehindDeg)
 var active: (g: TurnGuidance, at: Date, rels: [Double])?
 /// 交差点までの「道なり / 直線」。1.0 に近いほど、指す向きが道と一致している
 var detourRatios: [Double] = []

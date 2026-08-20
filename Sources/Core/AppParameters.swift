@@ -224,6 +224,10 @@ public struct AppParameters: Codable, Equatable {
         /// 角を指す設計上、遠い時点では角は真正面にある。**1 音目は前の音が無いので、
         /// それ単独で「どちらへ曲がるか」を伝える必要がある**(2026-08-20 の指摘)
         public var guidanceAnnounceTones: Int
+        /// 角への方位が進行方向からこれ以上離れたら、従わなかったとみなして誘導を止める [deg]。
+        /// **90° を超えるとは、幾何的にその角から遠ざかっているということ。**
+        /// 背後の角を指し続けるのは「戻れ」と言っているのと同じで、それは叱っている
+        public var guidanceAbandonBehindDeg: Double
         /// 角からこの距離以上離れたら誘導を終える [m](通過後は間隔が開いて自然に消える)
         public var guidanceEndDistanceM: Double
         /// 最接近点からこれ以上遠ざかったら誘導を終える [m]。

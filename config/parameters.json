@@ -97,6 +97,7 @@
     "guidance_peak_before_m": 10,
     "guidance_closing_tones": 3,
     "guidance_announce_tones": 1,
+    "guidance_abandon_behind_deg": 100,
     "guidance_end_distance_m": 45,
     "guidance_left_behind_m": 12,
     "earcon_gain": 0.5,

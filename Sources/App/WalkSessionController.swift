@@ -904,7 +904,8 @@ final class WalkSessionController: ObservableObject {
             leftBehindM: a.guidanceLeftBehindM,
             turnedWithinDeg: params.route.branchStraightDeg,
             closingTones: a.guidanceClosingTones,
-            announceTones: a.guidanceAnnounceTones)
+            announceTones: a.guidanceAnnounceTones,
+            abandonBehindDeg: a.guidanceAbandonBehindDeg)
     }
 
     /// 角へ近づくほど音量が上がる連続音。遠いうちは角そのものを指し、

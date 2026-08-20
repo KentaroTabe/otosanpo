@@ -38,11 +38,14 @@ public struct TurnGuidance: Equatable {
         /// **冒頭に「曲がる先」を指す音の数。** 0 で無効。
         /// 1 音目は前の音が無いので、それ単独で「どちらへ曲がるか」を伝える必要がある
         public let announceTones: Int
+        /// 角への方位が進行方向からこれ以上離れたら、従わなかったとみなして止める [deg]。
+        /// **90° を超えるとは、幾何的にその角から遠ざかっているということ**
+        public let abandonBehindDeg: Double
 
         public init(startDistanceM: Double, peakBeforeM: Double, intervalSec: Double,
                     gainFar: Double, gainNear: Double, endDistanceM: Double,
                     leftBehindM: Double, turnedWithinDeg: Double, closingTones: Int,
-                    announceTones: Int = 1) {
+                    announceTones: Int = 1, abandonBehindDeg: Double = 100) {
             self.startDistanceM = startDistanceM
             self.peakBeforeM = peakBeforeM
             self.intervalSec = intervalSec
@@ -53,6 +56,7 @@ public struct TurnGuidance: Equatable {
             self.turnedWithinDeg = turnedWithinDeg
             self.closingTones = closingTones
             self.announceTones = announceTones
+            self.abandonBehindDeg = abandonBehindDeg
         }
     }
 
@@ -62,6 +66,8 @@ public struct TurnGuidance: Equatable {
         case turned = "曲がり終えた"
         /// 角に寄らないまま離れた(提案に従わなかった、または角を取り違えた)
         case leftBehind = "角から離れた"
+        /// 角が背後に回った = 従わなかったことがはっきりした。**これ以上は鳴らさない**
+        case declined = "従わなかった"
     }
 
     /// 1 音ぶんの指示
@@ -143,6 +149,23 @@ public struct TurnGuidance: Equatable {
 
         if d > p.endDistanceM { return .finished(.leftBehind) }
         if d > closestM + p.leftBehindM { return .finished(.leftBehind) }
+
+        // **角に寄る前にその角が背後へ回ったら、従わなかったということ。**
+        //
+        // 角への方位が進行方向から 90° を超えるとは、幾何的に「その角から遠ざかっている」
+        // ということ。そこを指し続けるのは「戻れ」と言っているのと同じで、
+        // **それは叱っている**(docs/01 の 3 原則「叱らない」)。
+        // 実測(2026-08-20)では 242 発中 30 発が、断った後に鳴っていた。
+        // 帰路で経路が折り返す場合、角が最初から背後にあることもある(その回は 19 発)。
+        //
+        // 角まで寄った後は対象外。曲がっている最中は角が背後に来るのが当たり前で、
+        // そこは「曲がり終えた」の判定と終端の音が受け持つ
+        if closestM > p.peakBeforeM, let travel = travelBearingDeg {
+            let toCorner = Geo.bearingDeg(from: position, to: corner)
+            if abs(Geo.angularDiffDeg(toCorner, travel)) >= p.abandonBehindDeg {
+                return .finished(.declined)
+            }
+        }
 
         // **冒頭の数音は曲がる先を指す**(2026-08-20 の指摘「1 音目が向きを持っていない」)。
         //

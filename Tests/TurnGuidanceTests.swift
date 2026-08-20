@@ -178,6 +178,52 @@ final class TurnGuidanceTests: XCTestCase {
         XCTAssertFalse(s.isClosing)
     }
 
+    // MARK: - 従わなかったら止める(叱らない)
+
+    /// **角が背後に回ったら止める。**
+    /// 角への方位が進行方向から 90° を超えるとは、その角から遠ざかっているということ。
+    /// 指し続けるのは「戻れ」と言っているのと同じで、それは叱っている。
+    /// 実測(2026-08-20)では 242 発中 30 発が、断った後に鳴っていた
+    func testStopsOnceTheCornerIsBehind() {
+        var g = guidance(at: 30)
+        _ = play(&g, at: approach(30), travel: 0)
+        // 角の脇を通り過ぎて東へ向かった。角は西寄り後方(相対 -135°)になる
+        let past = Geo.destination(from: corner, bearingDeg: 135, distanceM: 20)
+        XCTAssertEqual(g.next(position: past, travelBearingDeg: 90, p: p),
+                       .finished(.declined))
+    }
+
+    /// **角まで寄った後は対象外。** 曲がっている最中は角が背後に来るのが当たり前で、
+    /// そこは「曲がり終えた」の判定と終端の音が受け持つ
+    func testDoesNotAbandonWhileTurningAtTheCorner() {
+        var g = guidance()
+        for d in stride(from: 35.0, through: 4.0, by: -1.0) {
+            _ = play(&g, at: approach(d), travel: 0)
+        }
+        // 角を東へ抜けた直後。角は背後だが、最接近 4m まで寄っているので打ち切らない
+        let past = Geo.destination(from: corner, bearingDeg: 90, distanceM: 10)
+        guard case .play(let s) = g.next(position: past, travelBearingDeg: branchDeg, p: p) else {
+            return XCTFail("曲がり終えた直後に打ち切ってはいけない")
+        }
+        XCTAssertTrue(s.isClosing, "終端の音として続く")
+    }
+
+    /// 接近中(角が前方)なら止めない
+    func testKeepsGoingWhileTheCornerIsAhead() {
+        var g = guidance()
+        _ = play(&g, at: approach(35), travel: 0)
+        XCTAssertNotNil(play(&g, at: approach(30), travel: 0))
+        XCTAssertNotNil(play(&g, at: approach(20), travel: 0))
+    }
+
+    /// 進行方向が取れないうちは判定しない(誤って打ち切らない)
+    func testDoesNotAbandonWithoutATravelBearing() {
+        var g = guidance(at: 30)
+        _ = play(&g, at: approach(30), travel: nil)
+        let past = Geo.destination(from: corner, bearingDeg: 135, distanceM: 20)
+        XCTAssertNotNil(play(&g, at: past, travel: nil))
+    }
+
     // MARK: - 曲がらなかった場合
 
     /// 実測(2026-08-18)では、角に近づかないまま 33m → 43m と離れる間ずっと鳴り続けた
