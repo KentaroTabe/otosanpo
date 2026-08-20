@@ -9,3 +9,5 @@ field-logs/
 build-replay/
 maps/
 build-mapbuild/
+build-demo/
+build-demo-tool/

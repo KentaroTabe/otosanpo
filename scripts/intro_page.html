@@ -1,0 +1,457 @@
+<title>音さんぽ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Old+Mincho:wght@400;600&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap">
+
+<style>
+  /* 明るい側を基準に置き、暗い側はトークンだけ差し替える */
+  :root {
+    --ground: #e9edf1;
+    --surface: #fbfcfd;
+    --surface-sunk: #e1e7ec;
+    --ink: #141e29;
+    --muted: #5a6a78;
+    --line: #ccd6de;
+    --accent: #b8701c;
+    --accent-ink: #ffffff;
+    --accent-dim: #e7dccb;
+    --shadow: 0 1px 2px rgb(20 30 41 / .06), 0 8px 24px rgb(20 30 41 / .05);
+
+    --display: "Zen Old Mincho", "Hiragino Mincho ProN", serif;
+    --body: "Zen Kaku Gothic New", "Hiragino Sans", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0e141a;
+      --surface: #161f28;
+      --surface-sunk: #111922;
+      --ink: #e2e9ef;
+      --muted: #8496a4;
+      --line: #27323d;
+      --accent: #dfa054;
+      --accent-ink: #171008;
+      --accent-dim: #2c2315;
+      --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px rgb(0 0 0 / .3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0e141a;
+    --surface: #161f28;
+    --surface-sunk: #111922;
+    --ink: #e2e9ef;
+    --muted: #8496a4;
+    --line: #27323d;
+    --accent: #dfa054;
+    --accent-ink: #171008;
+    --accent-dim: #2c2315;
+    --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px rgb(0 0 0 / .3);
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    line-height: 1.85;
+    margin: 0;
+    padding: clamp(2rem, 5vw, 4.5rem) 1.25rem 5rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 41rem; margin: 0 auto; display: flex; flex-direction: column; gap: 3.25rem; }
+
+  h1, h2 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(2.1rem, 6vw, 2.9rem); letter-spacing: .04em; line-height: 1.3; }
+  h2 { font-size: 1.3rem; letter-spacing: .03em; }
+  p { margin: 0; }
+  .lede { font-size: 1.06rem; color: var(--muted); }
+  .eyebrow {
+    font-size: .72rem; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--muted); font-weight: 700; font-family: var(--body);
+  }
+
+  header { display: flex; flex-direction: column; gap: .9rem; }
+  header .rule { height: 2px; width: 3.5rem; background: var(--accent); border-radius: 2px; }
+
+  section { display: flex; flex-direction: column; gap: 1.1rem; }
+  .section-head { display: flex; flex-direction: column; gap: .35rem; }
+
+  /* ヘッドフォンの注意。左右で方向を伝えるので、これが無いと体験が成立しない */
+  .notice {
+    display: flex; gap: .9rem; align-items: flex-start;
+    background: var(--accent-dim); border-radius: 10px;
+    padding: 1rem 1.15rem; font-size: .95rem;
+  }
+  .notice svg { flex: none; margin-top: .35rem; color: var(--accent); }
+
+  .scene {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 1.25rem; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: 1rem;
+  }
+  .scene-top { display: flex; align-items: center; gap: .9rem; }
+  .scene-title { display: flex; flex-direction: column; gap: .1rem; flex: 1; min-width: 0; }
+  .scene-title strong { font-family: var(--display); font-size: 1.08rem; font-weight: 600; }
+  .scene-title span { font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  button {
+    font: inherit; color: inherit; cursor: pointer; border: 0; background: none;
+  }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+
+  .play {
+    flex: none; width: 3rem; height: 3rem; border-radius: 50%;
+    background: var(--accent); color: var(--accent-ink);
+    display: grid; place-items: center;
+  }
+  .play svg { width: 1.1rem; height: 1.1rem; }
+
+  /* 音の並び。横軸が時間、縦軸が左右、丸の大きさが音量 */
+  .strip { position: relative; width: 100%; }
+  .strip svg { display: block; width: 100%; height: 82px; overflow: visible; }
+  .strip-labels {
+    display: flex; justify-content: space-between;
+    font-size: .68rem; letter-spacing: .1em; color: var(--muted); margin-top: .3rem;
+  }
+  .caption { font-size: .94rem; color: var(--muted); }
+  .caption b { color: var(--ink); font-weight: 500; }
+
+  /* 語彙 5 種 */
+  .vocab { display: flex; flex-direction: column; gap: .5rem; }
+  .chip {
+    display: flex; align-items: center; gap: .85rem; text-align: left; width: 100%;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: .7rem .9rem; transition: border-color .15s ease;
+  }
+  .chip:hover { border-color: var(--accent); }
+  .chip .dot {
+    flex: none; width: 1.9rem; height: 1.9rem; border-radius: 50%;
+    background: var(--surface-sunk); color: var(--accent);
+    display: grid; place-items: center;
+  }
+  .chip .dot svg { width: .8rem; height: .8rem; }
+  .chip .text { display: flex; flex-direction: column; gap: .05rem; min-width: 0; }
+  .chip .text b { font-weight: 500; font-size: .95rem; }
+  .chip .text span { font-size: .82rem; color: var(--muted); line-height: 1.6; }
+
+  .principles { display: flex; flex-direction: column; gap: .85rem; }
+  .principle { display: flex; gap: .9rem; align-items: baseline; }
+  .principle .mark {
+    flex: none; font-family: var(--mono); font-size: .78rem; color: var(--accent);
+    letter-spacing: .06em; padding-top: .15rem;
+  }
+  .principle p { font-size: .95rem; }
+  .principle b { font-weight: 500; }
+
+  footer {
+    border-top: 1px solid var(--line); padding-top: 1.5rem;
+    font-size: .86rem; color: var(--muted); display: flex; flex-direction: column; gap: .6rem;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition-duration: .01ms !important; }
+  }
+</style>
+
+<div class="page">
+  <header>
+    <div class="rule"></div>
+    <h1>音さんぽ</h1>
+    <p class="lede">
+      画面を見ない散歩アプリ。出かける前に時間だけ決めれば、あとは短い音が
+      「そっちに道があるよ」と教えてくれる。音の鳴る方へ歩くと、
+      通ったことのない道に出る。
+    </p>
+  </header>
+
+  <div class="notice">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" aria-hidden="true">
+      <path d="M3 14v-2a9 9 0 0 1 18 0v2"></path>
+      <path d="M21 15a2 2 0 0 1-2 2h-1v-5h1a2 2 0 0 1 2 2zM3 15a2 2 0 0 0 2 2h1v-5H5a2 2 0 0 0-2 2z"></path>
+    </svg>
+    <p><b>イヤホンかヘッドフォンで聴いてください。</b>
+      このアプリは左右の聞こえ方で方向を伝えます。スピーカーだと、
+      いちばん大事な手がかりが消えてしまいます。</p>
+  </div>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">散策</p>
+      <h2>角をひとつ、曲がる</h2>
+      <p class="caption">歩いていると、前方の曲がり角で音が鳴りはじめます。</p>
+    </div>
+
+    <div class="scene" data-scene="wandering">
+      <div class="scene-top">
+        <button class="play" aria-label="散策の場面を再生"></button>
+        <div class="scene-title">
+          <strong>35 m 先の角を、右へ</strong>
+          <span class="time">0:00 / 0:37</span>
+        </div>
+      </div>
+      <div class="strip"></div>
+      <p class="caption">
+        <b>1 音目だけが「右」を指します。</b>何が来るのかを最初に伝えるためです。
+        そのあとは角そのものを指すので、音のする方へ歩けば角に着きます。
+        近づくほど音は大きくなり、曲がり終えると 3 音かけて静かに消えます。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">帰路</p>
+      <h2>家の方から、歩調に合わせて</h2>
+      <p class="caption">
+        帰ると決めたら、音は「家はあっち」を指しつづけます。
+        鳴る間隔はあなたの歩調に同期し、距離は音量で伝えます。
+      </p>
+    </div>
+
+    <div class="scene" data-scene="return-far">
+      <div class="scene-top">
+        <button class="play" aria-label="帰り始めの場面を再生"></button>
+        <div class="scene-title">
+          <strong>帰りはじめ ― 家はまだ遠い</strong>
+          <span class="time">0:00 / 0:20</span>
+        </div>
+      </div>
+      <div class="strip"></div>
+      <p class="caption">
+        遠いので音は控えめです。途中で角を右に曲がると、
+        <b>家が右から左へ回り込みます。</b>自分が向きを変えても、
+        音のする場所は動かない ― という聞こえ方です。
+      </p>
+    </div>
+
+    <div class="scene" data-scene="return-near">
+      <div class="scene-top">
+        <button class="play" aria-label="家の近くの場面を再生"></button>
+        <div class="scene-title">
+          <strong>家の近く ― そして到着</strong>
+          <span class="time">0:00 / 0:17</span>
+        </div>
+      </div>
+      <div class="strip"></div>
+      <p class="caption">
+        同じ音ですが、<b>近いぶん大きく鳴ります。</b>ひとつ前と続けて聴くと違いが分かります。
+        最後の 3 音が到着の合図です。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">音の語彙</p>
+      <h2>使う音は 5 つだけ</h2>
+      <p class="caption">
+        言葉は使いません。覚えられる数に絞り、これ以上は増やさないと決めています。
+      </p>
+    </div>
+    <div class="vocab">
+      <button class="chip" data-tone="suggestion">
+        <span class="dot"></span>
+        <span class="text"><b>提案・曲がり角の案内</b>
+          <span>「そっちに道があるよ」。散策でも帰路でも同じ音</span></span>
+      </button>
+      <button class="chip" data-tone="time-up">
+        <span class="dot"></span>
+        <span class="text"><b>そろそろ帰る時間</b>
+          <span>うなずけば帰路へ、首を振れば延長。画面は触りません</span></span>
+      </button>
+      <button class="chip" data-tone="return-ack">
+        <span class="dot"></span>
+        <span class="text"><b>「帰るね」を受け取った合図</b>
+          <span>うなずきが伝わったことを 1 度だけ返します</span></span>
+      </button>
+      <button class="chip" data-tone="home-beacon">
+        <span class="dot"></span>
+        <span class="text"><b>家はあっち</b>
+          <span>帰路のあいだ、歩調に合わせて鳴りつづけます</span></span>
+      </button>
+      <button class="chip" data-tone="arrival">
+        <span class="dot"></span>
+        <span class="text"><b>着いた</b>
+          <span>家の前まで来たら鳴って、それで終わり</span></span>
+      </button>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">決めごと</p>
+      <h2>作るときに守っていること</h2>
+    </div>
+    <div class="principles">
+      <div class="principle">
+        <span class="mark">01</span>
+        <p><b>画面を見ない。</b>散歩中の操作はゼロ。入力は音と、うなずき・首振りだけ。</p>
+      </div>
+      <div class="principle">
+        <span class="mark">02</span>
+        <p><b>叱らない。</b>提案は無視していい。従わなかったと分かった時点で、
+          その音は黙ります。</p>
+      </div>
+      <div class="principle">
+        <span class="mark">03</span>
+        <p><b>約束を守る。</b>どの瞬間に帰り始めても、決めた時間に帰り着けるよう
+          内側で計算しつづけています。</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>まだ試作です。iPhone と AirPods で、実際に歩きながら少しずつ直しています。
+      経路の判断には端末内に置いた地図を使い、
+      <b style="color:var(--ink);font-weight:500">位置情報を外へ送るコードは持っていません。</b></p>
+    <p>ここで聴いた音は、アプリ本体と同じプログラムで書き出したものです。
+      実機では立体音響で鳴るため前後の違いも付きますが、
+      左右・音量・間隔はこの通りです。</p>
+  </footer>
+</div>
+
+<script>
+  const SCENES = __SCENES_JSON__;
+  const AUDIO = {
+    "wandering": "__SCENE_WANDERING__",
+    "return-far": "__SCENE_RETURN_FAR__",
+    "return-near": "__SCENE_RETURN_NEAR__",
+    "suggestion": "__TONE_SUGGESTION__",
+    "time-up": "__TONE_TIME_UP__",
+    "return-ack": "__TONE_RETURN_ACK__",
+    "home-beacon": "__TONE_HOME_BEACON__",
+    "arrival": "__TONE_ARRIVAL__"
+  };
+  const NS = "http://www.w3.org/2000/svg";
+  const PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">'
+    + '<path d="M8 5.5v13l11-6.5z"/></svg>';
+  const PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">'
+    + '<rect x="7" y="5.5" width="3.5" height="13" rx="1"/>'
+    + '<rect x="13.5" y="5.5" width="3.5" height="13" rx="1"/></svg>';
+
+  let current = null;              // いま鳴っている Audio
+  const players = new Map();       // scene -> {audio, marks, head, button, time}
+
+  function stopAll(except) {
+    players.forEach((p, key) => {
+      if (key === except) return;
+      p.audio.pause();
+      p.audio.currentTime = 0;
+      p.button.innerHTML = PLAY;
+    });
+  }
+
+  function mmss(sec) {
+    const s = Math.max(0, Math.round(sec));
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  // 音の並びを描く。横軸が時間、縦軸が左右、丸の大きさと濃さが音量
+  function drawStrip(host, scene) {
+    const W = 600, H = 82, PAD = 10;
+    const mid = H / 2, span = (H - PAD * 2) / 2;
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label",
+      "音が鳴るタイミングと左右の位置。横が時間、縦が左右、丸の大きさが音量");
+
+    const axis = document.createElementNS(NS, "line");
+    axis.setAttribute("x1", 0); axis.setAttribute("x2", W);
+    axis.setAttribute("y1", mid); axis.setAttribute("y2", mid);
+    axis.setAttribute("stroke", "var(--line)");
+    axis.setAttribute("stroke-dasharray", "3 5");
+    svg.appendChild(axis);
+
+    const head = document.createElementNS(NS, "line");
+    head.setAttribute("y1", 2); head.setAttribute("y2", H - 2);
+    head.setAttribute("stroke", "var(--accent)");
+    head.setAttribute("stroke-width", 1.5);
+    head.setAttribute("opacity", 0);
+    svg.appendChild(head);
+
+    // 目盛りは縦のバー。SVG を横に伸ばして使うので、円だと楕円に歪む
+    const marks = scene.tones.map(t => {
+      const h = 4 + t.gain * 12;
+      const r = document.createElementNS(NS, "rect");
+      r.setAttribute("x", (t.t / scene.durationSec) * W - 2);
+      r.setAttribute("y", mid + t.pan * span - h / 2);
+      r.setAttribute("width", 4);
+      r.setAttribute("height", h);
+      r.setAttribute("rx", 2);
+      r.setAttribute("fill", "var(--ink)");
+      r.setAttribute("opacity", 0.2 + t.gain * 0.25);
+      svg.appendChild(r);
+      return { el: r, t: t.t, gain: t.gain };
+    });
+
+    host.appendChild(svg);
+    const labels = document.createElement("div");
+    labels.className = "strip-labels";
+    labels.innerHTML = "<span>左</span><span>正面</span><span>右</span>";
+    host.appendChild(labels);
+    return { marks, head, width: W };
+  }
+
+  document.querySelectorAll(".scene").forEach(card => {
+    const key = card.dataset.scene;
+    const scene = SCENES[key];
+    const button = card.querySelector(".play");
+    const timeEl = card.querySelector(".time");
+    button.innerHTML = PLAY;
+
+    const { marks, head, width } = drawStrip(card.querySelector(".strip"), scene);
+    const audio = new Audio(AUDIO[key]);
+    audio.preload = "metadata";
+    players.set(key, { audio, marks, head, button, time: timeEl });
+
+    button.addEventListener("click", () => {
+      if (audio.paused) {
+        stopAll(key);
+        audio.play();
+        button.innerHTML = PAUSE;
+      } else {
+        audio.pause();
+        button.innerHTML = PLAY;
+      }
+    });
+
+    audio.addEventListener("timeupdate", () => {
+      const ratio = audio.currentTime / scene.durationSec;
+      head.setAttribute("x1", ratio * width);
+      head.setAttribute("x2", ratio * width);
+      head.setAttribute("opacity", 1);
+      timeEl.textContent = mmss(audio.currentTime) + " / " + mmss(scene.durationSec);
+      // 通過した音を灯す
+      marks.forEach(m => {
+        const passed = audio.currentTime >= m.t && audio.currentTime < m.t + 0.9;
+        m.el.setAttribute("fill", passed ? "var(--accent)" : "var(--ink)");
+        m.el.setAttribute("opacity", passed ? 1 : (0.2 + m.gain * 0.25));
+      });
+    });
+
+    audio.addEventListener("ended", () => {
+      button.innerHTML = PLAY;
+      head.setAttribute("opacity", 0);
+      timeEl.textContent = "0:00 / " + mmss(scene.durationSec);
+      marks.forEach(m => {
+        m.el.setAttribute("fill", "var(--ink)");
+        m.el.setAttribute("opacity", 0.2 + m.gain * 0.25);
+      });
+    });
+
+    timeEl.textContent = "0:00 / " + mmss(scene.durationSec);
+  });
+
+  // 語彙の 5 種。押したら 1 回鳴らすだけ
+  document.querySelectorAll(".chip").forEach(chip => {
+    chip.querySelector(".dot").innerHTML = PLAY;
+    const audio = new Audio(AUDIO[chip.dataset.tone]);
+    chip.addEventListener("click", () => {
+      stopAll(null);
+      audio.currentTime = 0;
+      audio.play();
+    });
+  });
+</script>

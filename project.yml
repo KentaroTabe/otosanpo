@@ -93,7 +93,30 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         PRODUCT_NAME: otosanpo-mapbuild
 
+  # 紹介用の音を書き出す開発ツール(macOS)。
+  # アプリと同じ Core のコードで鳴らすので、紹介した音と実物が食い違わない
+  Demo:
+    type: tool
+    platform: macOS
+    deploymentTarget: "13.0"
+    sources:
+      - path: Sources/Core
+      - path: Sources/Demo
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: "-"
+        PRODUCT_NAME: otosanpo-demo
+
 schemes:
+  Demo:
+    build:
+      targets:
+        Demo: all
+    run:
+      config: Debug
+
   MapBuild:
     build:
       targets:
