@@ -120,6 +120,15 @@ final class WalkMachineTests: XCTestCase {
             XCTAssertTrue(e.contains(.endSession))
         }
     }
+
+    /// **帰路の案内は帰路の音で鳴らす**(2026-08-21 の利用者判断)。
+    /// 帰る区間で誘導とビーコンの音色が混ざると落ち着かない
+    func testGuidanceUsesTheReturnToneOnlyWhileReturning() {
+        XCTAssertEqual(WalkMachine.guidanceEarcon(for: .returning), .homeBeacon)
+        for state: WalkState in [.idle, .wandering, .promptingReturn, .arrived] {
+            XCTAssertEqual(WalkMachine.guidanceEarcon(for: state), .suggestion)
+        }
+    }
 }
 
 /// 帰路の確認音をいつまで繰り返すか。

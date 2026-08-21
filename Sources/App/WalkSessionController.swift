@@ -878,9 +878,9 @@ final class WalkSessionController: ObservableObject {
                                     nodeToleranceM: params.route.nodeArrivalToleranceM)
         else { return }
         logToFile(String(format: "帰路の誘導を開始(角まで %.0fm)", turn.distanceM))
-        // 散策と同じ音を使う。**聞き分けられる必要は無い**(2026-08-19 の利用者判断)。
-        // 音の意味を揃えるほうが分かりやすい:
-        // suggestion =「こちらへ曲がれ」/ homeBeacon =「自宅はあちら」
+        // **帰路の音(homeBeacon)で案内する**(2026-08-21 の利用者判断)。
+        // 帰る区間で音が 2 種類混ざると落ち着かない。組み立て(間隔・音量・頂点・終端)は
+        // 散策とまったく同じ TurnGuidance のままで、変わるのは音色だけ
         startTurnGuidance(at: turn.corner, branchBearingDeg: turn.branchBearingDeg)
     }
 
@@ -911,8 +911,7 @@ final class WalkSessionController: ObservableObject {
     /// 角へ近づくほど音量が上がる連続音。遠いうちは角そのものを指し、
     /// 手前で曲がる先を指し切り、曲がり終えたら数音かけて閉じる(判断は TurnGuidance)。
     ///
-    /// 散策でも帰路でも `suggestion` を使う。音の意味を「こちらへ曲がれ」に揃え、
-    /// 「自宅はあちら」の `homeBeacon` と区別する(語彙は 5 種のまま)。
+    /// 音色は状態で決まる(`WalkMachine.guidanceEarcon`)。組み立て方は散策も帰路も同じ。
     private func startTurnGuidance(at point: GeoPoint, branchBearingDeg: Double) {
         let d = location.position.map { Geo.distanceM($0, point) } ?? .greatestFiniteMagnitude
         turnGuidance = TurnGuidance(corner: point, branchBearingDeg: branchBearingDeg,
@@ -947,7 +946,8 @@ final class WalkSessionController: ObservableObject {
         // 定位の基準は顔の向き。取れないうちは進行方位で代用する
         let reference = latestFacingBearing ?? travel
         let rel = reference.map { Geo.angularDiffDeg(step.targetBearingDeg, $0) }
-        synth?.play(.suggestion, relativeBearingDeg: rel, gain: step.gain)
+        // **帰路は帰路の音で案内する**(2026-08-21 の利用者判断)。判断は Core に置く
+        synth?.play(WalkMachine.guidanceEarcon(for: state), relativeBearingDeg: rel, gain: step.gain)
         // 誘導が鳴った時点で「方向のある音」は出せている。確認音はここで終わる
         noteReturnDirectionStarted()
         logToFile(String(format: "誘導 角まで=%.0fm 鳴らす向き=%@ 音量=%.2f%@%@%@",
