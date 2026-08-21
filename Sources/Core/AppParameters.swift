@@ -11,6 +11,7 @@ public struct AppParameters: Codable, Equatable {
     public var gesture: Gesture
     public var audio: Audio
     public var location: Location
+    public var summary: Summary
 
     public struct Session: Codable, Equatable {
         public var defaultDurationMin: Double
@@ -129,6 +130,17 @@ public struct AppParameters: Codable, Equatable {
         public var courseHoldSec: Double
         /// course が使えないとき端末コンパスへ退避するか
         public var allowCompassFallback: Bool
+    }
+
+    /// 散歩の記録(WalkSummary)。**開発中の振り返り用**の画面に効く
+    public struct Summary: Codable, Equatable {
+        /// 経路として残す点の上限。超えたら 1 つおきに間引き、以後の間隔を 2 倍にする。
+        /// 長い散歩でも記録が伸び続けないようにするための上限
+        public var maxTrackPoints: Int
+        /// 経路図の余白 [m]。端のイベントが枠に貼り付かないように
+        public var mapMarginM: Double
+        /// 経路図の最小の広さ [m]。ごく短い散歩でも図が破綻しないように
+        public var mapMinSpanM: Double
     }
 
     /// 顔の向きの推定(HeadingFusion)。docs/03「頭の向きを定位に反映」

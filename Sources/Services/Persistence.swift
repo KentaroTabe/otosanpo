@@ -52,6 +52,27 @@ enum GridStore {
     }
 }
 
+/// 直近の散歩の記録の永続化。VisitGrid と同じく**端末内にのみ保存**する。
+/// アプリを閉じても前回の経路図を開けるようにするため(開発中の振り返り用)
+enum SummaryStore {
+    static func fileURL() throws -> URL {
+        let dir = try FileManager.default.url(for: .applicationSupportDirectory,
+                                              in: .userDomainMask,
+                                              appropriateFor: nil, create: true)
+        return dir.appendingPathComponent("walk_summary.json")
+    }
+
+    static func load() -> WalkSummary? {
+        guard let url = try? fileURL(), let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(WalkSummary.self, from: data)
+    }
+
+    static func save(_ s: WalkSummary) {
+        guard let url = try? fileURL(), let data = try? JSONEncoder().encode(s) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
 /// 自宅座標の永続化(UserDefaults)
 /// 経路データ(WalkMap)の読み込み。
 /// Documents に置かれたファイルを読むだけで、取得も生成も行わない。

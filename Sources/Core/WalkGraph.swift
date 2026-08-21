@@ -40,6 +40,19 @@ public struct Branch: Equatable {
     }
 }
 
+/// 経路図に描く道の 1 線分。
+public struct RoadSegment: Equatable {
+    public let a: GeoPoint
+    public let b: GeoPoint
+    public let cls: WayClass
+
+    public init(a: GeoPoint, b: GeoPoint, cls: WayClass) {
+        self.a = a
+        self.b = b
+        self.cls = cls
+    }
+}
+
 /// 進行方向の先にある交差点。
 public struct UpcomingIntersection: Equatable {
     public let nodeIndex: Int
@@ -305,6 +318,22 @@ public struct WalkGraph: @unchecked Sendable {
                 guard way.n.indices.contains(at) else { continue }
                 let n = way.n[at]
                 if n != node, !out.contains(n) { out.append(n) }
+            }
+        }
+        return out
+    }
+
+    /// 枠に入る道の線分。**経路図の下地**に使う(docs/06「散歩の記録」)。
+    /// 索引は 1 点の近傍を引くためのものなので、ここは way を素直に走査する。
+    /// 図を開いた時に 1 回だけ呼ぶ前提(毎秒の判定には使わない)
+    public func roadSegments(in frame: MapFrame) -> [RoadSegment] {
+        var out: [RoadSegment] = []
+        for way in map.ways {
+            guard way.n.count >= 2 else { continue }
+            for i in 0..<(way.n.count - 1) {
+                guard let a = map.point(way.n[i]), let b = map.point(way.n[i + 1]),
+                      frame.mayContain(a, b) else { continue }
+                out.append(RoadSegment(a: a, b: b, cls: way.cls))
             }
         }
         return out

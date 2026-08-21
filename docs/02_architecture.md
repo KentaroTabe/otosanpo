@@ -21,7 +21,8 @@ App(SwiftUI・統合)──▶ Services(OSフレームワークのラッパ)─�
 | Core/BearingSuggester.swift | 方向提案エンジン |
 | Core/HeadGestureDetector.swift | うなずき / 首振り検出(±180° の折り返し解除を含む) |
 | Core/TravelDirection.swift | 進行方向の決定(移動方向 course / 端末コンパスの選択) |
-| Core/WalkMachine.swift | 状態機械(純粋 reducer)と earcon 語彙 |
+| Core/WalkMachine.swift | 状態機械(純粋 reducer)と earcon 語彙・誘導に使う音の選択 |
+| Core/WalkSummary.swift | 散歩の記録(経路・番号を振ったイベント)と経路図の枠 |
 | Services/LocationService.swift | CLLocationManager ラッパ(位置・course・speed・コンパス) |
 | Services/HeadphoneMotionService.swift | CMHeadphoneMotionManager ラッパ |
 | Services/EarconSynth.swift | earcon のコード合成・再生 |
@@ -29,6 +30,7 @@ App(SwiftUI・統合)──▶ Services(OSフレームワークのラッパ)─�
 | Services/FieldLog.swift | フィールドテスト用の追記ログ(端末内 TSV) |
 | App/WalkSessionController.swift | reducer への入力供給と Effect 実行(タイマー・音・保存) |
 | App/ContentView.swift | セットアップ / デバッグ用 UI |
+| App/WalkSummaryView.swift | 散歩の記録の画面(経路図・イベント番号。開発中の振り返り用) |
 
 ## 設計上の決まり
 

@@ -48,6 +48,11 @@
     "target_reached_m": 150,
     "target_bias_weight": 0.3
   },
+  "summary": {
+    "max_track_points": 2000,
+    "map_margin_m": 40,
+    "map_min_span_m": 150
+  },
   "location": {
     "min_speed_for_course_m_per_s": 0.7,
     "max_course_accuracy_deg": 70,

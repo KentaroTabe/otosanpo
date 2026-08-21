@@ -53,6 +53,22 @@ struct ContentView: View {
                     }
                 }
 
+                // 歩いている最中は書き留められないので、帰ってから振り返るための画面。
+                // 見せる範囲は開発中の判断(一般の利用者向けは未決・docs/06)
+                if let s = controller.lastSummary {
+                    Section("前回の散歩(開発用)") {
+                        LabeledContent("距離", value: String(format: "%.0f m", s.pathLengthM))
+                        LabeledContent("時間", value: String(format: "%.0f 分", s.durationSec / 60))
+                        LabeledContent("イベント", value: "\(s.guidanceEvents.count) 件")
+                        NavigationLink("経路図とイベントを見る") {
+                            WalkSummaryView(summary: s,
+                                            marginM: controller.params.summary.mapMarginM,
+                                            minSpanM: controller.params.summary.mapMinSpanM,
+                                            roadsProvider: { controller.roadSegments(in: $0) })
+                        }
+                    }
+                }
+
                 Section("デバッグ(シミュレータ・モーション非対応時の代替)") {
                     Button("時間到来を発火") { controller.debugTimeUp() }
                     Button("うなずきを発火(帰路開始)") { controller.debugNod() }

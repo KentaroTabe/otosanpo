@@ -93,6 +93,25 @@ final class WalkGraphTests: XCTestCase {
         XCTAssertFalse(m.covers(far))
     }
 
+    /// 経路図の下地。枠に入る線分だけを返す(枠の外の道で図が埋まらないこと)
+    func testRoadSegmentsAreClippedToTheFrame() {
+        let g = WalkGraph(map: crossMap(), cellSizeM: 50)
+        var s = WalkSummary(startedAt: Date(timeIntervalSince1970: 0),
+                            home: GeoPoint(latitude: lat(0), longitude: lon(100)))
+        s.add(GeoPoint(latitude: lat(0), longitude: lon(100)), minSegmentM: 10, maxPoints: 100)
+        guard let frame = s.frame(marginM: 10, minSpanM: 60) else {
+            return XCTFail("枠を作れなかった")
+        }
+        // 交差点の周り 60 m 四方には、どちらの道も 1 線分ずつ掛かる
+        XCTAssertEqual(g.roadSegments(in: frame).count, 2)
+
+        // 遠く離れた枠には 1 本も入らない
+        let far = MapFrame(northLat: lat(5000), southLat: lat(4900),
+                           westLon: lon(4900), eastLon: lon(5000),
+                           metersPerDegreeLon: 111_320.0 * cos(35.0 * .pi / 180))
+        XCTAssertTrue(g.roadSegments(in: far).isEmpty)
+    }
+
     /// 保存形式を往復できる(生成側と読み込み側で形が食い違わないこと)
     func testJSONRoundTrip() throws {
         let original = crossMap()

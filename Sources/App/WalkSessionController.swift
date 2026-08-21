@@ -15,6 +15,9 @@ final class WalkSessionController: ObservableObject {
     /// ヘッドフォンモーションの受信状況。検出できない原因の切り分けに使う
     @Published private(set) var motionStatusLine = "ヘッドフォンモーション: 未開始"
     @Published private(set) var eventLog: [String] = []
+    /// 直近の散歩の記録(経路・距離・時間・番号を振ったイベント)。
+    /// 歩いている最中は書き留められないので、帰ってから振り返るために残す
+    @Published private(set) var lastSummary: WalkSummary?
     /// 操作が通らなかったことを画面で知らせる(nil で非表示)
     @Published var alertMessage: String?
 
@@ -58,6 +61,10 @@ final class WalkSessionController: ObservableObject {
     private var promptPending = false
     /// 直近のビーコンで鳴らした相対方位と時刻(方向が変わったら次を繰り上げるため)
     private var lastBeacon: (relDeg: Double, at: Date)?
+    /// 記録中の散歩。終了時に閉じて `lastSummary` へ移す
+    private var summary: WalkSummary?
+    /// 進行中の誘導に振った番号。ログの行と経路図の印を突き合わせるために添える
+    private var guidanceNumber: Int?
     /// 進行中の曲がり角誘導。1 つの曲がるイベントに対して、角へ近づくほど音量が上がる
     /// 連続音を出し、曲がり終えたら数音かけて閉じる。判断は Core(TurnGuidance)が持つ
     private var turnGuidance: TurnGuidance?
@@ -100,6 +107,7 @@ final class WalkSessionController: ObservableObject {
         graph = MapStore.load(cellSizeM: params.route.mapIndexCellSizeM)
         speed = SpeedStore.load()
         zones = graph.map { ZoneMap(map: $0.map, zoneSizeM: params.route.zoneSizeM) }
+        lastSummary = SummaryStore.load()
 
         location.$position
             .sink { [weak self] p in
@@ -169,8 +177,10 @@ final class WalkSessionController: ObservableObject {
         lastSuggestionAt = nil
         lastHeadingLogAt = nil
         turnGuidance = nil
+        guidanceNumber = nil
         target = nil
         guidanceTimer?.invalidate()
+        summary = WalkSummary(startedAt: Date(), home: home)
         buildRouteField()
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
@@ -293,6 +303,9 @@ final class WalkSessionController: ObservableObject {
             sessionEnd = Date().addingTimeInterval((reserveMin + minutes) * 60)
             promptTimer?.invalidate()
             scheduleTimeUp()
+            if let p = location.position {
+                summary?.addMark(.extended, at: p, onReturn: false, now: Date())
+            }
             log(String(format: "延長 +%.0f 分(帰宅ぶん %.0f 分を別に確保)(%d/%d 回)",
                        minutes, reserveMin, extensionsUsed, params.session.maxExtensions))
 
@@ -304,6 +317,7 @@ final class WalkSessionController: ObservableObject {
             returnMetrics = GaitMetrics()
             if let p = location.position, let h = home {
                 returnStart = (distanceM: Geo.distanceM(p, h), at: Date())
+                summary?.addMark(.returnStart, at: p, onReturn: true, now: Date())
             }
             log("帰路開始に同意")
             // **同意した瞬間から案内を始める。** 確認音が終わるのを待たない。
@@ -328,6 +342,8 @@ final class WalkSessionController: ObservableObject {
             motion.stop()
             pedometer.stop()
             GridStore.save(grid)
+            // 終わり方は 2 つ(到着・手動終了)あるが、どちらもこの効果を通る
+            finishSummary()
             sessionEnd = nil
         }
     }
@@ -576,6 +592,9 @@ final class WalkSessionController: ObservableObject {
             // 経路長は揺れを除いた実距離なので、そのまま時計に使える
             grid.advance(byM: walkMetrics.pathLengthM - odometerBaseM)
             odometerBaseM = walkMetrics.pathLengthM
+            // 経路図の線。**間引きの基準は経路長と同じ**にして、図と距離が食い違わないようにする
+            summary?.add(p, minSegmentM: params.budget.pathSegmentMinM,
+                         maxPoints: params.summary.maxTrackPoints)
         }
         if commuteLearning {
             grid.markExcluded(at: p)
@@ -585,6 +604,7 @@ final class WalkSessionController: ObservableObject {
         if state == .returning, let h = home,
            Geo.distanceM(p, h) <= params.session.arrivalRadiusM {
             logReturnMeasurements(now: now)
+            summary?.addMark(.arrival, at: p, onReturn: true, now: now)
             apply(.reachedHome)
             log("到着しました")
         } else if state == .returning {
@@ -916,6 +936,9 @@ final class WalkSessionController: ObservableObject {
         let d = location.position.map { Geo.distanceM($0, point) } ?? .greatestFiniteMagnitude
         turnGuidance = TurnGuidance(corner: point, branchBearingDeg: branchBearingDeg,
                                     distanceM: d)
+        // 番号は「n 回目のイベント」として利用者が数える単位。ログにも図にも同じ番号を出す
+        guidanceNumber = summary?.startGuidance(at: point, bearingDeg: branchBearingDeg,
+                                                onReturn: state == .returning, now: Date())
         fireGuidanceTick()
     }
 
@@ -923,7 +946,15 @@ final class WalkSessionController: ObservableObject {
         guard let g = turnGuidance else { return }
         turnGuidance = nil
         guidanceTimer?.invalidate()
-        logToFile(String(format: "誘導終了(%@・最接近 %.0fm)", reason, g.closestM))
+        summary?.finishGuidance(ending: reason)
+        logToFile(String(format: "誘導終了%@(%@・最接近 %.0fm)",
+                         guidanceLabel, reason, g.closestM))
+        guidanceNumber = nil
+    }
+
+    /// ログに添える誘導の番号(経路図の印と同じ番号)
+    private var guidanceLabel: String {
+        guidanceNumber.map { " #\($0)" } ?? ""
     }
 
     private func fireGuidanceTick() {
@@ -950,8 +981,8 @@ final class WalkSessionController: ObservableObject {
         synth?.play(WalkMachine.guidanceEarcon(for: state), relativeBearingDeg: rel, gain: step.gain)
         // 誘導が鳴った時点で「方向のある音」は出せている。確認音はここで終わる
         noteReturnDirectionStarted()
-        logToFile(String(format: "誘導 角まで=%.0fm 鳴らす向き=%@ 音量=%.2f%@%@%@",
-                         step.distanceM,
+        logToFile(String(format: "誘導%@ 角まで=%.0fm 鳴らす向き=%@ 音量=%.2f%@%@%@",
+                         guidanceLabel, step.distanceM,
                          rel.map { String(format: "%+.0f°", $0) } ?? "-",
                          step.gain,
                          step.isAnnouncing ? " 予告" : "",
@@ -1071,6 +1102,25 @@ final class WalkSessionController: ObservableObject {
         logToFile(String(format: "速度の推定を更新 %@ → %.0fm/min(%d 回目・設定値 %.0f)",
                          before.map { String(format: "%.0f", $0) } ?? "なし",
                          speed.mPerMin ?? 0, speed.walks, params.budget.walkingSpeedMPerMin))
+    }
+
+    // MARK: - 散歩の記録
+
+    /// 記録を閉じて保存する。距離は計測側(GaitMetrics)の値をそのまま使う
+    private func finishSummary() {
+        guard var s = summary else { return }
+        s.finish(at: Date(), pathLengthM: walkMetrics.pathLengthM)
+        summary = nil
+        guidanceNumber = nil
+        lastSummary = s
+        SummaryStore.save(s)
+        log(String(format: "記録: %.0fm・%.0f 分・イベント %d 件",
+                   s.pathLengthM, s.durationSec / 60, s.guidanceEvents.count))
+    }
+
+    /// 経路図の下地になる道。地図が無ければ空(経路と印だけの図になる)
+    func roadSegments(in frame: MapFrame) -> [RoadSegment] {
+        graph?.roadSegments(in: frame) ?? []
     }
 
     /// 進行方向の解決と、有効だった course の保持をまとめて行う。
