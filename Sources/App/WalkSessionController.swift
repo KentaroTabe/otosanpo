@@ -85,6 +85,13 @@ final class WalkSessionController: ObservableObject {
     private var target: ZoneMap.Target?
     /// 顔の向きの推定。定位の基準を進行方位から「顔の向き」へ寄せる
     private var headingFusion = HeadingFusion()
+    /// 角速度から頭の向きを推定する別系統(HeadTracker)。既定では記録だけ
+    private var headTracker = HeadTracker()
+    /// 机上で頭の追従を確かめている最中か(散歩とは独立に回す)
+    @Published private(set) var headCheckActive = false
+    /// 机上テストの現在値。画面に出して符号と追従を目で確かめる
+    @Published private(set) var headCheckLine = ""
+    private var headCheckTimer: Timer?
     /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
     private var latestCourseBearing: Double?
     /// 推定した顔の絶対方位。nil なら進行方位をそのまま使う
@@ -239,6 +246,52 @@ final class WalkSessionController: ObservableObject {
         log("デバッグ再生: \(e.rawValue) 方位=\(String(format: "%.0f", relativeBearingDeg))°"
             + "(\(synth.isSpatial ? "3D" : "パン")"
             + "・エンジン\(synth.isRunning ? "稼働" : "停止"))")
+    }
+
+    // MARK: - 頭の追従の机上テスト
+
+    /// **歩かずに「頭の向きが音に乗るか」を確かめる。**
+    ///
+    /// 始めた瞬間に向いていた方向へ音を置き続ける。首を右に向ければ音は左へ動くのが正しい。
+    /// 動かない・逆に動くなら `head_rate_sign` か配線が違う。
+    ///
+    /// これを机上に置く理由: 姿勢(yaw)を使った系統は 2026-08-19 に散歩 1 回を丸ごと潰した
+    /// (左右が壊れた)。**符号と手応えは、散歩を使わずに決められる。**
+    func startHeadCheck() {
+        guard state == .idle || state == .arrived else {
+            alertMessage = "散歩中は確認できません。終了してからお試しください。"
+            return
+        }
+        ensureSynth()
+        headTracker.reset()
+        motion.start()
+        headCheckActive = true
+        headCheckLine = "正面を向いたまま始めてください(音は正面から鳴ります)"
+        log("頭の追従の確認を開始(首を右に向けると音は左へ動くのが正しい)")
+        fireHeadCheckTick()
+    }
+
+    func stopHeadCheck() {
+        headCheckTimer?.invalidate()
+        headCheckTimer = nil
+        headCheckActive = false
+        headCheckLine = ""
+        if state == .idle || state == .arrived { motion.stop() }
+        log("頭の追従の確認を終了")
+    }
+
+    private func fireHeadCheckTick() {
+        headCheckTimer?.invalidate()
+        guard headCheckActive else { return }
+        // 音源は「始めた時に向いていた方向」に固定。頭から見た相対方位はその逆符号になる
+        let offset = headTracker.offsetDeg
+        synth?.play(.homeBeacon, relativeBearingDeg: -offset)
+        headCheckLine = String(format: "首の向き %+.0f°(右が正)→ 音は %+.0f° に鳴る",
+                               offset, -offset)
+        headCheckTimer = Timer.scheduledTimer(withTimeInterval: params.audio.guidanceIntervalSec,
+                                              repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.fireHeadCheckTick() }
+        }
     }
 
     // デバッグ用(シミュレータ・モーション非対応時の代替)
@@ -450,7 +503,7 @@ final class WalkSessionController: ObservableObject {
         if let s = BearingSuggester.suggest(position: p, headingDeg: heading, home: h,
                                             grid: grid, homewardBias: bias,
                                             route: params.route) {
-            let reference = latestFacingBearing ?? heading
+            let reference = placementReference(heading)
             let rel = Geo.angularDiffDeg(s.absoluteBearingDeg, reference)
             synth?.play(.suggestion, relativeBearingDeg: rel)
             lastSuggestionPoint = p
@@ -528,9 +581,15 @@ final class WalkSessionController: ObservableObject {
         return (route, true)
     }
 
-    /// 定位の基準。顔の向きが取れればそれ、取れなければ進行方位
-    private func placementReference(_ travel: TravelDirectionFix) -> Double {
-        latestFacingBearing ?? travel.deg
+    /// 定位の基準。顔の向きが取れればそれ、取れなければ進行方位。
+    ///
+    /// 角速度からの推定(HeadTracker)を使う設定なら、進行方位に首のぶんを足す。
+    /// **既定は false**。姿勢の yaw を使った系統は 2026-08-19 に左右を壊した前科があるので、
+    /// 別系統であっても、机上で確かめるまでは動作に入れない(docs/08)
+    private func placementReference(_ travelDeg: Double) -> Double {
+        if let facing = latestFacingBearing { return facing }
+        guard params.heading.useGyroHeadOffset else { return travelDeg }
+        return Geo.normalizeDeg(travelDeg + headTracker.offsetDeg)
     }
 
     private func playBeacon() {
@@ -550,7 +609,7 @@ final class WalkSessionController: ObservableObject {
         noteDirectionAvailable()
         // 定位の基準は「顔の向き」。取れないうちは進行方位で代用する。
         // 顔基準にすると、首を振っても音が世界に固定されて聞こえる
-        let rel = Geo.angularDiffDeg(bearingHome, placementReference(travel))
+        let rel = Geo.angularDiffDeg(bearingHome, placementReference(travel.deg))
         let pan = SoundPlacement.pan(relativeBearingDeg: rel)
         let gain = beaconGain()
         synth?.play(.homeBeacon, relativeBearingDeg: rel, gain: gain)
@@ -651,13 +710,20 @@ final class WalkSessionController: ObservableObject {
     private func updateFacingBearing(_ s: HeadSample) {
         guard let course = latestCourseBearing else { return }
         // yaw と course の対を一定間隔で残す。角を曲がれば両方が同じだけ回るので、
-        // 回転の向きが揃っているかを後から自動判定できる(再生ツールが読む)
+        // 回転の向きが揃っているかを後から自動判定できる(再生ツールが読む)。
+        //
+        // **角速度の積分も併せて残す**(2026-08-21)。姿勢の yaw は旋回を追えていなかったが、
+        // ジャイロそのものが追えていないのかは別の問題。`回転` は減衰なしの積分なので、
+        // 角を曲がった区間で `Δcourse` と一致するかを見れば、ジャイロの可否が判定できる
         let now = Date()
         if state == .wandering || state == .returning,
            lastHeadingLogAt == nil
             || now.timeIntervalSince(lastHeadingLogAt!) >= params.heading.logIntervalSec {
             lastHeadingLogAt = now
-            logToFile(String(format: "頭向き yaw=%.1f° course=%.1f°", s.yawDeg, course))
+            let heading = s.headingDeg.map { String(format: "%.1f", $0) } ?? "-"
+            logToFile(String(format: "頭向き yaw=%.1f° course=%.1f° 回転=%.1f° 推定=%.1f° heading=%@",
+                             s.yawDeg, course, headTracker.takeRotation(),
+                             headTracker.offsetDeg, heading))
         }
         guard params.heading.useHeadOrientation else { return }
         let p = HeadingFusion.Params(baselineAlpha: params.heading.baselineAlpha,
@@ -675,6 +741,8 @@ final class WalkSessionController: ObservableObject {
         // 再装着で yaw の基準が引き直されるため、顔の向きの基準線も作り直す
         headingFusion.reset()
         latestFacingBearing = nil
+        // 角速度の積分も捨てる。外していた間の回転は分からない
+        headTracker.reset()
         diagCount = 0
         diagPitchMin = .infinity
         diagPitchMax = -.infinity
@@ -687,6 +755,11 @@ final class WalkSessionController: ObservableObject {
 
     private func onHeadSample(_ s: HeadSample) {
         accumulateMotionDiagnostics(s)
+        // **角速度から頭の向きを推定する。** 既定では記録するだけで動作に影響しない
+        // (`use_gyro_head_offset`)。姿勢の yaw を使う系統とは別物(docs/08)
+        headTracker.ingest(yawRateDegPerSec: s.yawRateDegPerSec, time: s.time,
+                           p: params.heading.headTracker)
+        if headCheckActive { return }
         updateFacingBearing(s)
 
         if state == .promptingReturn {
@@ -849,7 +922,7 @@ final class WalkSessionController: ObservableObject {
         guard now.timeIntervalSince(last.at) >= params.audio.beaconMinGapSec else { return }
         let fix = location.motionFix(now: now)
         guard let travel = currentTravel(fix, now: now) else { return }
-        let rel = Geo.angularDiffDeg(bearing.deg, placementReference(travel))
+        let rel = Geo.angularDiffDeg(bearing.deg, placementReference(travel.deg))
         let change = abs(Geo.angularDiffDeg(rel, last.relDeg))
         guard change >= params.audio.beaconDirectionChangeDeg else { return }
         logToFile(String(format: "ビーコン繰り上げ 方向が %.0f° 変化(%.0f° → %.0f°)",
@@ -1012,8 +1085,7 @@ final class WalkSessionController: ObservableObject {
         }
 
         // 定位の基準は顔の向き。取れないうちは進行方位で代用する
-        let reference = latestFacingBearing ?? travel
-        let rel = reference.map { Geo.angularDiffDeg(step.targetBearingDeg, $0) }
+        let rel = travel.map { Geo.angularDiffDeg(step.targetBearingDeg, placementReference($0)) }
         // **帰路は帰路の音で案内する**(2026-08-21 の利用者判断)。判断は Core に置く
         synth?.play(WalkMachine.guidanceEarcon(for: state), relativeBearingDeg: rel, gain: step.gain)
         // 番号は「n 回目のイベント」として利用者が数える単位。**鳴った時に振る**ので、

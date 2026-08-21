@@ -69,6 +69,27 @@ struct ContentView: View {
                     }
                 }
 
+                // 歩かずに符号と手応えを決めるための机上テスト。
+                // 姿勢(yaw)の系統は散歩 1 回を丸ごと潰した前科があるので、
+                // 角速度の系統は先にここで確かめる(docs/08)
+                Section("頭の追従の確認(机上・AirPods 装着)") {
+                    if controller.headCheckActive {
+                        Text(controller.headCheckLine)
+                            .font(.caption.monospaced())
+                        Text("正面を向いた時の方向に音が置かれています。"
+                             + "首を右に向けると音は左へ動くのが正しい動作です")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("確認を終了", role: .destructive) { controller.stopHeadCheck() }
+                    } else {
+                        Button("頭の追従を確認する") { controller.startHeadCheck() }
+                        Text("歩かずに確認できます。動かない・逆に動く場合は "
+                             + "head_rate_sign を反転させてください")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("デバッグ(シミュレータ・モーション非対応時の代替)") {
                     Button("時間到来を発火") { controller.debugTimeUp() }
                     Button("うなずきを発火(帰路開始)") { controller.debugNod() }

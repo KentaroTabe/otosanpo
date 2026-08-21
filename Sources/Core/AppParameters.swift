@@ -155,6 +155,28 @@ public struct AppParameters: Codable, Equatable {
         public var minSamples: Int
         /// yaw と course の対をログに残す間隔 [sec]。回転の向きが揃っているかの判定材料
         public var logIntervalSec: Double
+        /// **角速度から推定した頭の向きを定位に使うか。** false なら記録だけして動作に影響しない。
+        /// 姿勢(yaw)を使う `useHeadOrientation` とは別系統(そちらは 2026-08-19 に不成立)
+        public var useGyroHeadOffset: Bool
+        /// 角速度の推定が 0 へ戻る半減期 [sec]。絶対基準を持たないのでドリフトは時間で消す
+        public var headOffsetHalfLifeSec: Double
+        /// 角速度の推定として認める首の相対角の上限 [deg]
+        public var headOffsetMaxDeg: Double
+        /// これ未満の角速度は 0 とみなす [deg/sec]。ジャイロの雑音と偏りを捨てる
+        public var headRateDeadbandDegPerSec: Double
+        /// 角速度の向きを「右が正」に合わせる符号(+1 / −1)。**机上テストで確かめる**
+        public var headRateSign: Double
+        /// サンプルの間隔がこれを超えたら積分しない [sec](再装着・中断のあと)
+        public var headRateMaxGapSec: Double
+
+        /// HeadTracker に渡す設定値
+        public var headTracker: HeadTracker.Params {
+            HeadTracker.Params(halfLifeSec: headOffsetHalfLifeSec,
+                               maxOffsetDeg: headOffsetMaxDeg,
+                               deadbandDegPerSec: headRateDeadbandDegPerSec,
+                               sign: headRateSign, maxGapSec: headRateMaxGapSec)
+        }
+
         /// yaw の回転の向きを方位に合わせる符号(+1 / −1)。
         /// **符号を直しても顔の向きは推定できない**(2026-08-19 実測)。
         /// yaw は旋回そのものを追えておらず、|Δraw| が |Δcourse| とほぼ同じだった。

@@ -646,6 +646,147 @@ for threshold in [20.0, 30.0, 45.0] {
                  threshold, s.used, s.meanCourse, s.meanRawNeg, s.meanRawPos, s.agreeRate))
 }
 
+// MARK: - 検算: course をならしてから測り直す(2026-08-21)
+//
+// 上の判定は GPS の course を「正解」として使っている。しかし実測の courseAccuracy は
+// 40〜70° で、2 秒間隔の |Δcourse| ≥ 30° には**曲がっていない雑音**が相当混ざる。
+// 雑音を正解にすれば、どんな頭の動きも「合っていない」と出る。
+//
+// そこで (a) course を前後 1 サンプルでならし、(b) 4〜8 秒離れた対で見る。
+// 本当に曲がった区間だけが残るので、yaw が旋回を追えているかを公平に測れる。
+func smoothedPairs(_ pairs: [(time: Date, yawDeg: Double, courseDeg: Double)])
+    -> [(time: Date, yawDeg: Double, courseDeg: Double)] {
+    guard pairs.count >= 3 else { return pairs }
+    var out = pairs
+    for i in 1..<(pairs.count - 1) {
+        let window = [pairs[i - 1], pairs[i], pairs[i + 1]]
+        // 隣が時間的に離れすぎていれば、ならさずそのまま使う
+        guard window[2].time.timeIntervalSince(window[0].time) <= 8 else { continue }
+        var x = 0.0, y = 0.0
+        for w in window {
+            x += cos(w.courseDeg * .pi / 180)
+            y += sin(w.courseDeg * .pi / 180)
+        }
+        out[i].courseDeg = Geo.normalizeDeg(atan2(y, x) * 180 / .pi)
+    }
+    return out
+}
+
+/// 4〜8 秒離れた対で、持続した旋回だけを見る
+func sustainedYawStats(_ pairs: [(time: Date, yawDeg: Double, courseDeg: Double)],
+                       turnThresholdDeg: Double) -> YawStats {
+    var s = YawStats()
+    guard pairs.count >= 2 else { return s }
+    for i in 0..<pairs.count {
+        for j in (i + 1)..<pairs.count {
+            let a = pairs[i], b = pairs[j]
+            let dt = b.time.timeIntervalSince(a.time)
+            if dt < 4 { continue }
+            if dt > 8 { break }
+            let dCourse = Geo.angularDiffDeg(b.courseDeg, a.courseDeg)
+            guard abs(dCourse) >= turnThresholdDeg else { continue }
+            s.used += 1
+            s.sumCourse += abs(dCourse)
+            let dYaw = Geo.angularDiffDeg(b.yawDeg, a.yawDeg)
+            if (dYaw > 0) == (dCourse > 0) { s.agree += 1 }
+            for sign in [-1.0, 1.0] {
+                let rawA = Geo.normalizeDeg(sign * a.yawDeg - a.courseDeg)
+                let rawB = Geo.normalizeDeg(sign * b.yawDeg - b.courseDeg)
+                let d = abs(Geo.angularDiffDeg(rawB, rawA))
+                if sign < 0 { s.sumRawNeg += d } else { s.sumRawPos += d }
+            }
+            break
+        }
+    }
+    return s
+}
+
+print("\n  検算: course を平滑化し、4〜8 秒の持続した旋回だけで測り直す")
+print("  (元の判定は 2 秒間隔の生 course を正解にしており、GPS の雑音を旋回と数えうる)")
+print("    下限   対   |Δcourse|  |Δraw| s=-1  |Δraw| s=+1  符号一致")
+let smoothed = smoothedPairs(allPairs)
+for threshold in [30.0, 45.0, 60.0] {
+    let s = sustainedYawStats(smoothed, turnThresholdDeg: threshold)
+    guard s.used > 0 else {
+        print(String(format: "    ≥%3.0f°   0", threshold))
+        continue
+    }
+    print(String(format: "    ≥%3.0f° %4d %9.1f° %11.1f° %11.1f° %8.0f%%",
+                 threshold, s.used, s.meanCourse, s.meanRawNeg, s.meanRawPos, s.agreeRate))
+}
+let sv = sustainedYawStats(smoothed, turnThresholdDeg: 45)
+if sv.used >= 20 {
+    let best = min(sv.meanRawNeg, sv.meanRawPos)
+    if best > sv.meanCourse * 0.5 {
+        print("  → 検算しても yaw は旋回を追えていない。結論は変わらない")
+    } else {
+        print(String(format: "  → **検算では yaw が旋回を追えている**(|Δraw| %.0f° < |Δcourse| %.0f°)。",
+                     best, sv.meanCourse))
+        print("     元の判定は GPS の雑音を旋回と数えていた可能性がある。要再検討")
+    }
+} else {
+    print("  持続した旋回の対が \(sv.used) 件しかなく、検算では判定できない")
+}
+
+// MARK: - ジャイロ(角速度)は旋回を追えているか
+//
+// 姿勢(yaw)がだめでも、角速度そのものが追えていないとは限らない。
+// 「回転」列は減衰なしの積分なので、旋回した区間で Δcourse と一致すれば
+// **ジャイロは使える**ことになる(頭の向きの推定は HeadTracker が担う)。
+// 2026-08-21 以降のログにのみ含まれる。
+func readRotationPairs(_ path: String) -> [(time: Date, rotationDeg: Double, courseDeg: Double)] {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    var out: [(time: Date, rotationDeg: Double, courseDeg: Double)] = []
+    for line in text.split(separator: "\n") {
+        let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        guard cols.count >= 5, cols[4].hasPrefix("頭向き "),
+              let t = f.date(from: cols[0]),
+              let r = numberAfter("回転=", in: cols[4]),
+              let c = numberAfter("course=", in: cols[4]) else { continue }
+        out.append((time: t, rotationDeg: r, courseDeg: c))
+    }
+    return out
+}
+
+var rotationPairs: [(time: Date, rotationDeg: Double, courseDeg: Double)] = []
+if let files = try? FileManager.default.contentsOfDirectory(atPath: "field-logs") {
+    for name in files.filter({ $0.hasSuffix(".tsv") }).sorted() {
+        rotationPairs.append(contentsOf: readRotationPairs("field-logs/" + name))
+    }
+}
+if rotationPairs.isEmpty {
+    print("\n  角速度の記録(「回転=」)はまだありません。2026-08-21 以降のログで測れます")
+} else {
+    var used = 0, sumCourse = 0.0, sumDiff = 0.0, agree = 0
+    for i in 1..<rotationPairs.count {
+        let a = rotationPairs[i - 1], b = rotationPairs[i]
+        let dt = b.time.timeIntervalSince(a.time)
+        guard dt > 0, dt <= 6 else { continue }
+        let dCourse = Geo.angularDiffDeg(b.courseDeg, a.courseDeg)
+        guard abs(dCourse) >= 30 else { continue }
+        used += 1
+        sumCourse += abs(dCourse)
+        // 回転は「前回の記録からの積分」なので、b の値がその区間の頭の回転量
+        sumDiff += abs(Geo.angularDiffDeg(b.rotationDeg, dCourse))
+        if (b.rotationDeg > 0) == (dCourse > 0) { agree += 1 }
+    }
+    print("\n  角速度の積分と course の比較(「回転」列・\(rotationPairs.count) 件)")
+    if used == 0 {
+        print("    曲がった区間がまだありません")
+    } else {
+        print(String(format: "    対 %d / |Δcourse| %.1f° / |回転 − Δcourse| %.1f° / 符号一致 %.0f%%",
+                     used, sumCourse / Double(used), sumDiff / Double(used),
+                     100 * Double(agree) / Double(used)))
+        if sumDiff / Double(used) < sumCourse / Double(used) * 0.5 {
+            print("    → **ジャイロは旋回を追えている。** 頭の向きの推定に使える")
+        } else {
+            print("    → ジャイロでも旋回に追随できていない。符号(head_rate_sign)も確かめること")
+        }
+    }
+}
+
 let v = yawStats(allPairs, turnThresholdDeg: 30)
 if v.used < 20 {
     print("  判定に使える対が \(v.used) 件しかありません。曲がる場面を含む散歩の記録が要ります。")
