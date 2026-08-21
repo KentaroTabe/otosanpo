@@ -216,6 +216,24 @@ final class TurnGuidanceTests: XCTestCase {
         XCTAssertNotNil(play(&g, at: approach(20), travel: 0))
     }
 
+    /// **始める前にも同じ判定を通せる。**
+    /// 実測(2026-08-21)では、背後の角に対して誘導を始めては 1 音も鳴らさずに止める、
+    /// という空振りが 1 回の散歩で 6 件あった(毎秒の位置更新のたびに同じ角を選び直していた)
+    func testIsBehindAnswersTheSameQuestionBeforeStarting() {
+        let past = Geo.destination(from: corner, bearingDeg: 135, distanceM: 20)
+        XCTAssertTrue(TurnGuidance.isBehind(corner: corner, from: past, travelBearingDeg: 90,
+                                            closestM: 20, p: p))
+        // 前方の角は始めてよい
+        XCTAssertFalse(TurnGuidance.isBehind(corner: corner, from: approach(30),
+                                             travelBearingDeg: 0, closestM: 30, p: p))
+        // 角の手前まで寄っていれば対象外(曲がっている最中は背後になるのが当たり前)
+        XCTAssertFalse(TurnGuidance.isBehind(corner: corner, from: past, travelBearingDeg: 90,
+                                             closestM: p.peakBeforeM, p: p))
+        // 進行方向が取れないうちは判定しない
+        XCTAssertFalse(TurnGuidance.isBehind(corner: corner, from: past, travelBearingDeg: nil,
+                                             closestM: 20, p: p))
+    }
+
     /// 進行方向が取れないうちは判定しない(誤って打ち切らない)
     func testDoesNotAbandonWithoutATravelBearing() {
         var g = guidance(at: 30)

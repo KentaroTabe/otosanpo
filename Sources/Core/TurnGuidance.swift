@@ -107,6 +107,26 @@ public struct TurnGuidance: Equatable {
         self.closestM = distanceM
     }
 
+    /// その角はもう背後か。**角に寄る前にその角が背後へ回ったら、従わなかったということ。**
+    ///
+    /// 角への方位が進行方向から 90° を超えるとは、幾何的に「その角から遠ざかっている」
+    /// ということ。そこを指し続けるのは「戻れ」と言っているのと同じで、
+    /// **それは叱っている**(docs/01 の 3 原則「叱らない」)。
+    ///
+    /// 角まで寄った後は対象外。曲がっている最中は角が背後に来るのが当たり前で、
+    /// そこは「曲がり終えた」の判定と終端の音が受け持つ。
+    ///
+    /// **始める前にも同じ判定を通せるよう公開する。** 実測(2026-08-21)では、
+    /// 背後の角に対して誘導を始めては 1 音も鳴らさずに止める、という空振りが
+    /// 1 回の散歩で 6 件あった(毎秒の位置更新のたびに同じ角を選び直していた)。
+    public static func isBehind(corner: GeoPoint, from position: GeoPoint,
+                                travelBearingDeg: Double?, closestM: Double,
+                                p: Params) -> Bool {
+        guard closestM > p.peakBeforeM, let travel = travelBearingDeg else { return false }
+        let toCorner = Geo.bearingDeg(from: position, to: corner)
+        return abs(Geo.angularDiffDeg(toCorner, travel)) >= p.abandonBehindDeg
+    }
+
     /// 曲がり終えたと判断できるか。
     /// **角まで寄ったうえで**、進行方位が曲がる先に揃ったときだけ成立させる。
     /// 角に寄る前は、提案の条件から進行方位と分岐は必ず離れている(直進は提案しない)ので
@@ -150,21 +170,12 @@ public struct TurnGuidance: Equatable {
         if d > p.endDistanceM { return .finished(.leftBehind) }
         if d > closestM + p.leftBehindM { return .finished(.leftBehind) }
 
-        // **角に寄る前にその角が背後へ回ったら、従わなかったということ。**
-        //
-        // 角への方位が進行方向から 90° を超えるとは、幾何的に「その角から遠ざかっている」
-        // ということ。そこを指し続けるのは「戻れ」と言っているのと同じで、
-        // **それは叱っている**(docs/01 の 3 原則「叱らない」)。
+        // 角が背後に回ったら止める(判定は `isBehind`。始める前にも同じものを通す)。
         // 実測(2026-08-20)では 242 発中 30 発が、断った後に鳴っていた。
-        // 帰路で経路が折り返す場合、角が最初から背後にあることもある(その回は 19 発)。
-        //
-        // 角まで寄った後は対象外。曲がっている最中は角が背後に来るのが当たり前で、
-        // そこは「曲がり終えた」の判定と終端の音が受け持つ
-        if closestM > p.peakBeforeM, let travel = travelBearingDeg {
-            let toCorner = Geo.bearingDeg(from: position, to: corner)
-            if abs(Geo.angularDiffDeg(toCorner, travel)) >= p.abandonBehindDeg {
-                return .finished(.declined)
-            }
+        // 帰路で経路が折り返す場合、角が最初から背後にあることもある(その回は 19 発)
+        if Self.isBehind(corner: corner, from: position, travelBearingDeg: travelBearingDeg,
+                         closestM: closestM, p: p) {
+            return .finished(.declined)
         }
 
         // **冒頭の数音は曲がる先を指す**(2026-08-20 の指摘「1 音目が向きを持っていない」)。

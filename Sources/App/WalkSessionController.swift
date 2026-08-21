@@ -63,8 +63,11 @@ final class WalkSessionController: ObservableObject {
     private var lastBeacon: (relDeg: Double, at: Date)?
     /// 記録中の散歩。終了時に閉じて `lastSummary` へ移す
     private var summary: WalkSummary?
-    /// 進行中の誘導に振った番号。ログの行と経路図の印を突き合わせるために添える
+    /// 進行中の誘導に振った番号。ログの行と経路図の印を突き合わせるために添える。
+    /// **最初の 1 音が鳴った時に振る**(鳴らずに終わった誘導は番号を持たない)
     private var guidanceNumber: Int?
+    /// 背後なので見送った角。同じ角の見送りを毎秒記録しないために持つ
+    private var lastBehindCorner: GeoPoint?
     /// 進行中の曲がり角誘導。1 つの曲がるイベントに対して、角へ近づくほど音量が上がる
     /// 連続音を出し、曲がり終えたら数音かけて閉じる。判断は Core(TurnGuidance)が持つ
     private var turnGuidance: TurnGuidance?
@@ -507,18 +510,33 @@ final class WalkSessionController: ObservableObject {
         }
     }
 
-    private func playBeacon() {
-        guard let p = location.position, let h = home else { return }
-        // **経路が分かるなら、そちらを指す。** 自宅を直線で指すと川や街区の向こうを指しうる
-        // (2026-08-19 実測)。道の上を指していれば「音の鳴る方に歩く」が成り立つ。
-        // 経路が無い(地図なし・圏外)ときだけ直線に落ちる
-        let routeBearing = routeField.flatMap { f in
+    /// ビーコンが指す方位。**経路が分かるなら、そちらを指す。**
+    /// 自宅を直線で指すと川や街区の向こうを指しうる(2026-08-19 実測)。
+    /// 経路が無い(地図なし・圏外)ときだけ直線に落ちる。
+    ///
+    /// **鳴らす側と繰り上げの判定は必ずこれを共有する。** 基準が食い違うと、
+    /// 方向が変わっていないのに「変わった」と判定され続ける(下記 `advanceBeaconIfDirectionChanged`)
+    private func beaconBearing(at p: GeoPoint) -> (deg: Double, fromRoute: Bool)? {
+        guard let h = home else { return nil }
+        let route = routeField.flatMap { f in
             graph.flatMap {
                 f.nextBearingDeg(from: p, graph: $0,
                                  nodeToleranceM: params.route.nodeArrivalToleranceM)
             }
         }
-        let bearingHome = routeBearing ?? Geo.bearingDeg(from: p, to: h)
+        guard let route else { return (Geo.bearingDeg(from: p, to: h), false) }
+        return (route, true)
+    }
+
+    /// 定位の基準。顔の向きが取れればそれ、取れなければ進行方位
+    private func placementReference(_ travel: TravelDirectionFix) -> Double {
+        latestFacingBearing ?? travel.deg
+    }
+
+    private func playBeacon() {
+        guard let p = location.position, let h = home,
+              let bearing = beaconBearing(at: p) else { return }
+        let bearingHome = bearing.deg
         let fix = location.motionFix()
         guard let travel = currentTravel(fix) else {
             // 進行方向が不明なときは左右を付けない(誤った定位を出すより中央で鳴らす)。
@@ -532,8 +550,7 @@ final class WalkSessionController: ObservableObject {
         noteDirectionAvailable()
         // 定位の基準は「顔の向き」。取れないうちは進行方位で代用する。
         // 顔基準にすると、首を振っても音が世界に固定されて聞こえる
-        let reference = latestFacingBearing ?? travel.deg
-        let rel = Geo.angularDiffDeg(bearingHome, reference)
+        let rel = Geo.angularDiffDeg(bearingHome, placementReference(travel))
         let pan = SoundPlacement.pan(relativeBearingDeg: rel)
         let gain = beaconGain()
         synth?.play(.homeBeacon, relativeBearingDeg: rel, gain: gain)
@@ -548,7 +565,7 @@ final class WalkSessionController: ObservableObject {
         logToFile(String(format: "ビーコン 距離=%.0fm 指す方位=%.0f°(%@) 進行=%.0f°(%@) 顔=%@ 基準線=%@"
                          + " pan=%.2f(進行基準なら %.2f) 間隔=%.1fs 歩調=%@ 音量=%.2f [%@]",
                          Geo.distanceM(p, h), bearingHome,
-                         routeBearing == nil ? "自宅を直線" : "経路", travel.deg,
+                         bearing.fromRoute ? "経路" : "自宅を直線", travel.deg,
                          label(for: travel.source), facingLabel, baselineLabel, pan, travelPan,
                          beaconInterval(), cadenceLabel, gain, summary(of: fix)))
     }
@@ -819,14 +836,20 @@ final class WalkSessionController: ObservableObject {
     /// 角を曲がった直後は、次のビーコンを待たずに繰り上げて鳴らす。
     /// 遠距離では間隔が最大 5 秒あり、曲がってから 1〜2 音ぶん古い方向を聞かされるため
     /// (docs/03「ビーコンの距離・方向キュー」の実測課題)。
+    ///
+    /// **判定は鳴らす側と同じ方位・同じ基準で行う。**
+    /// 実測(2026-08-21)では、判定だけが自宅への直線方位を見ていたため、
+    /// 経路方位との 50〜60° のずれが「毎秒 方向が変わった」と読まれ、
+    /// 99 回の繰り上げのうち本物の方向変化は 4 回だけだった(残り 96% は空振り)。
+    /// ビーコンが設計の倍の頻度で鳴っていたことになる。
     private func advanceBeaconIfDirectionChanged(at p: GeoPoint, now: Date) {
         // 誘導が鳴っている間はビーコンを休んでいるので、繰り上げも行わない(音の裁定)
         guard turnGuidance == nil else { return }
-        guard let h = home, let last = lastBeacon else { return }
+        guard let last = lastBeacon, let bearing = beaconBearing(at: p) else { return }
         guard now.timeIntervalSince(last.at) >= params.audio.beaconMinGapSec else { return }
         let fix = location.motionFix(now: now)
         guard let travel = currentTravel(fix, now: now) else { return }
-        let rel = Geo.angularDiffDeg(Geo.bearingDeg(from: p, to: h), travel.deg)
+        let rel = Geo.angularDiffDeg(bearing.deg, placementReference(travel))
         let change = abs(Geo.angularDiffDeg(rel, last.relDeg))
         guard change >= params.audio.beaconDirectionChangeDeg else { return }
         logToFile(String(format: "ビーコン繰り上げ 方向が %.0f° 変化(%.0f° → %.0f°)",
@@ -897,6 +920,20 @@ final class WalkSessionController: ObservableObject {
                                     maxLookM: params.route.intersectionLookaheadM,
                                     nodeToleranceM: params.route.nodeArrivalToleranceM)
         else { return }
+        // **背後の角なら始めない。** 始めても 1 音目の判定で即座に止まるだけで、
+        // それを毎秒の位置更新のたびに繰り返す(実測 2026-08-21: 1 回の散歩で 6 件)。
+        // 同じ角を繰り返し記録しないよう、見送りはその角について 1 度だけ残す
+        let travel = currentTravel(location.motionFix())?.deg
+        if TurnGuidance.isBehind(corner: turn.corner, from: p, travelBearingDeg: travel,
+                                 closestM: turn.distanceM, p: guidanceParams) {
+            if lastBehindCorner != turn.corner {
+                lastBehindCorner = turn.corner
+                logToFile(String(format: "帰路の誘導を見送り(角が背後・角まで %.0fm)",
+                                 turn.distanceM))
+            }
+            return
+        }
+        lastBehindCorner = nil
         logToFile(String(format: "帰路の誘導を開始(角まで %.0fm)", turn.distanceM))
         // **帰路の音(homeBeacon)で案内する**(2026-08-21 の利用者判断)。
         // 帰る区間で音が 2 種類混ざると落ち着かない。組み立て(間隔・音量・頂点・終端)は
@@ -936,9 +973,7 @@ final class WalkSessionController: ObservableObject {
         let d = location.position.map { Geo.distanceM($0, point) } ?? .greatestFiniteMagnitude
         turnGuidance = TurnGuidance(corner: point, branchBearingDeg: branchBearingDeg,
                                     distanceM: d)
-        // 番号は「n 回目のイベント」として利用者が数える単位。ログにも図にも同じ番号を出す
-        guidanceNumber = summary?.startGuidance(at: point, bearingDeg: branchBearingDeg,
-                                                onReturn: state == .returning, now: Date())
+        guidanceNumber = nil
         fireGuidanceTick()
     }
 
@@ -946,7 +981,9 @@ final class WalkSessionController: ObservableObject {
         guard let g = turnGuidance else { return }
         turnGuidance = nil
         guidanceTimer?.invalidate()
-        summary?.finishGuidance(ending: reason)
+        // 1 音も鳴らなかった誘導は記録に残さない。**利用者に届いていないものは
+        // イベントではない**(番号が振られるのは最初の 1 音が鳴った時)
+        if guidanceNumber != nil { summary?.finishGuidance(ending: reason) }
         logToFile(String(format: "誘導終了%@(%@・最接近 %.0fm)",
                          guidanceLabel, reason, g.closestM))
         guidanceNumber = nil
@@ -979,6 +1016,13 @@ final class WalkSessionController: ObservableObject {
         let rel = reference.map { Geo.angularDiffDeg(step.targetBearingDeg, $0) }
         // **帰路は帰路の音で案内する**(2026-08-21 の利用者判断)。判断は Core に置く
         synth?.play(WalkMachine.guidanceEarcon(for: state), relativeBearingDeg: rel, gain: step.gain)
+        // 番号は「n 回目のイベント」として利用者が数える単位。**鳴った時に振る**ので、
+        // 図に出る番号と実際に聞こえた案内が 1 対 1 で対応する
+        if guidanceNumber == nil, let g = turnGuidance {
+            guidanceNumber = summary?.startGuidance(at: g.corner,
+                                                    bearingDeg: g.branchBearingDeg,
+                                                    onReturn: state == .returning, now: Date())
+        }
         // 誘導が鳴った時点で「方向のある音」は出せている。確認音はここで終わる
         noteReturnDirectionStarted()
         logToFile(String(format: "誘導%@ 角まで=%.0fm 鳴らす向き=%@ 音量=%.2f%@%@%@",
