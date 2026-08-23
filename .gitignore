@@ -11,3 +11,8 @@ maps/
 build-mapbuild/
 build-demo/
 build-demo-tool/
+.gradle/
+android/.gradle/
+android/.kotlin/
+android/build/
+android/*/build/
