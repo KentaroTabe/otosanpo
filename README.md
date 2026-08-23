@@ -16,6 +16,7 @@
 | `main` | 公開の基準。PR #1・#2 を取り込み済み | **最新の実装はまだ入っていない**(下記) |
 | **`feature/p1-experience`** | **方針 A(曲がる所を指す)の本流。いま試してもらうのはここ** | 開発中・実機テスト待ち |
 | `feature/music-spots` | 方針 C(離れたスポットの音楽に惹かれて歩く)。**計画のみで実装は無い** → [docs/08](docs/08_music_spots.md) | 保留 |
+| `feature/android` | Android 版。設計と Core(純粋ロジック)の移植 → [docs/10](docs/10_android.md) | 移植中 |
 | `feature/device-test-prep` | PR #1 の作業ブランチ。役目を終えた | 参照のみ |
 
 `main` は PR #2 までを取り込んでいるが、**それ以降の実装(約 4,000 行)がまだ入っていない**
