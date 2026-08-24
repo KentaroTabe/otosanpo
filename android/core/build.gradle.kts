@@ -4,6 +4,7 @@
 // 古い版だと新しい JDK の版番号を解釈できず、コンパイラが内部エラーで落ちる。
 plugins {
     kotlin("jvm") version "2.4.0"
+    kotlin("plugin.serialization") version "2.4.0"
 }
 
 repositories {
@@ -11,6 +12,9 @@ repositories {
 }
 
 dependencies {
+    // **JSON は iOS 版と同じファイルを読む**(config/parameters.json / otosanpo-map.json)。
+    // 鍵は snake_case のままで、命名規則の変換で受ける(数値の二重管理を避ける)
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     testImplementation(kotlin("test"))
 }
 

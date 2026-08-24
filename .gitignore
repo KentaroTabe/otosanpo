@@ -14,5 +14,6 @@ build-demo-tool/
 .gradle/
 android/.gradle/
 android/.kotlin/
+android/local.properties
 android/build/
 android/*/build/
