@@ -121,40 +121,57 @@ iOS 版で「純粋ロジックは外部環境なしでテストできる」よ�
 | 段 | 中身 | 検証 | 状態 |
 |---|---|---|---|
 | 0 | この設計書 | — | **済** |
-| 1 | `android/core` の移植(純粋ロジック) | JVM の単体テスト | **進行中(下記)** |
-| 2 | `parameters.json` の読み込みと共有 | JVM | |
-| 3 | 位置・センサ・音の配線(Foreground Service を含む) | 実機 | |
-| 4 | Compose の画面(設定・デバッグ・散歩の記録) | 実機 | |
-| 5 | 実機テスト 1 回 | 散歩 | |
-
-**段 1 と 2 は Android SDK が無くても進む。** 手元の環境には Gradle と Kotlin だけ入れた。
-段 3 以降は Android Studio と SDK が要る。
+| 1 | `android/core` の移植(純粋ロジック) | JVM の単体テスト(90 件) | **済** |
+| 2 | `parameters.json` の読み込みと共有 | 実ファイルを読むテスト | **済** |
+| 3 | 位置・センサ・音の配線(常駐サービスを含む) | **APK のビルドまで済**・実機は未 | **済(未検証)** |
+| 4 | 画面(設定・デバッグ・前回の散歩) | 同上 | **済(未検証)** |
+| 5 | 実機テスト 1 回 | 散歩 | 待ち |
 
 ```
-scripts/test_android.sh     # gradle -p android :core:test
+scripts/setup_android_sdk.sh   # 1 回だけ。SDK とライセンス
+scripts/test_android.sh        # core の単体テスト(SDK 不要)
+scripts/build_android.sh       # APK を作る
 ```
 
-### 段 1 の進み具合
+**段 1 と 2 は Android SDK が無くても動く。** 純粋ロジックを環境なしで検証できる作りを
+iOS 版から引き継いでいる。
 
-| 移植したもの | テスト |
+### ビルド環境で踏んだこと(記録)
+
+- **JDK を固定しない。** `jvmToolchain(17)` を書いたら「17 が無い」で止まった
+  (この Mac には 20 と Homebrew の 26 しか無い)
+- **Kotlin の版は AGP に合わせる。** `core` を 2.4.0 で作ると、AGP 9.3.1 に内蔵の
+  コンパイラ(2.2.0)がその成果物を読めない。**両方 2.2.0 に揃える**
+- **AGP 9 以降は `kotlin("android")` を足さない。** 組み込みなので、足すと止まる
+- **`:app` に kotlinx.serialization を持ち込まない。** 保存するのは自宅の 1 点・速度の
+  2 値・セルの一覧だけなので、行区切りのテキストで足りる。依存が減れば、
+  他人の環境でビルドが通らない可能性も減る
+
+### 移植したもの(Core・90 件全緑)
+
+`Geo` / `WalkMachine` / `ReturnBudget` / `SpeedEstimator` / `GaitMetrics` /
+`BeaconRhythm` / `SoundPlacement` / `ReturnAck` / `TurnGuidance` / `HeadTracker` /
+`AppParameters`(JSON)/ `VisitGrid` / `TravelDirection` / `ToneRenderer` /
+`WalkMap` / `WalkGraph` / `RouteField` / `ZoneMap` / `BranchSuggester` /
+`BearingSuggester` / `WalkSummary`。
+
+**テストも一緒に移し、期待値は iOS 版と同じ数字にした。** 片方だけ通る状態を作らない。
+移植の正しさは「同じ入力に同じ答えを返す」ことで担保する。
+
+**移していないもの: `HeadGestureDetector` / `HeadingFusion`。**
+Android にはヘッドフォンの頭部姿勢を取る公開 API が無く、入力源そのものが存在しない。
+
+### アプリ層(段 3・4)
+
+| ファイル | 役割 |
 |---|---|
-| `Geo`(距離・方位・線分への最近点) | 6 |
-| `WalkMachine` / `Earcon` / `WalkState` / `WalkEffect` | 7 |
-| `ReturnBudget`(経路 / 直線の 2 通り・許容半径・帰宅バイアス) | 6 |
-| `SpeedEstimator` / `GaitMetrics` | 8 |
-| `BeaconRhythm` / `SoundPlacement` / `ReturnAck` | 8 |
-| `TurnGuidance`(予告・頂点・片道ブレンド・終端・背後の打ち切り) | 12 |
-| `HeadTracker`(角速度の積分と減衰) | 6 |
-| **計** | **55 件・全緑** |
-
-まだ移していないもの(依存の少ない順):
-
-1. `AppParameters` の残りの節と **JSON の読み込み**(段 2)
-2. `ToneRenderer`(波形合成)/ `TravelDirection` / `HeadGestureDetector` / `HeadingFusion`
-3. `VisitGrid` / `WalkMap` / `WalkGraph` / `RouteField` / `ZoneMap` / `BranchSuggester` / `BearingSuggester`
-4. `WalkSummary`
-
-**テストも一緒に移す。期待値は iOS 版と同じ数字にする。** 片方だけ通る状態を作らない。
+| `WalkSession` | Effect の実行(タイマー・音・位置・保存)。iOS の `WalkSessionController` に対応 |
+| `LocationSource` | `LocationManager`。course / speed / 精度は iOS と 1 対 1 |
+| `StepCadence` | `TYPE_STEP_DETECTOR` の間隔から歩調を出す |
+| `EarconPlayer` | `AudioTrack`。**波形は Core が作る**ので iOS と同じ音 |
+| `Storage` | 設定・地図・自宅・履歴・速度・フィールドログ |
+| `WalkService` | 常駐サービス(位置と音を画面消灯中も続ける) |
+| `MainActivity` | 設定とデバッグの画面。**音量ボタンで「帰る / 延長」** |
 
 ### ビルド環境で踏んだこと(記録)
 

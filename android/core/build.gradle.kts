@@ -3,8 +3,8 @@
 // Kotlin は Gradle 本体に埋め込まれている版に合わせる(`gradle -version` の Kotlin 行)。
 // 古い版だと新しい JDK の版番号を解釈できず、コンパイラが内部エラーで落ちる。
 plugins {
-    kotlin("jvm") version "2.4.0"
-    kotlin("plugin.serialization") version "2.4.0"
+    kotlin("jvm") version "2.2.0"
+    kotlin("plugin.serialization") version "2.2.0"
 }
 
 repositories {

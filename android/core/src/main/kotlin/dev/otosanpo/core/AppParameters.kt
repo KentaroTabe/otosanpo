@@ -90,7 +90,14 @@ data class AppParameters(
         val targetMinDistanceRatio: Double,
         val targetReachedM: Double,
         val targetBiasWeight: Double,
-    )
+    ) {
+        /** ZoneMap に渡す設定値 */
+        fun zoneParams(): ZoneMap.Params = ZoneMap.Params(
+            zoneSizeM = zoneSizeM, minRoadM = zoneMinRoadM, sampleGrid = zoneSampleGrid,
+            minDistanceM = targetMinDistanceM, minDistanceRatio = targetMinDistanceRatio,
+            excludedFamiliarity = excludedFamiliarity
+        )
+    }
 
     @Serializable
     data class Location(

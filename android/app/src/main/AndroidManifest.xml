@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 位置情報。**送信はしない**(端末内にのみ保存する。docs/04) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- 歩調(歩数センサ)。ビーコンの間隔を歩みに同期させるためだけに使う -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <!-- ポケットに入れたまま案内を続けるための常駐 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <uses-feature android:name="android.hardware.location.gps" android:required="true" />
+
+    <application
+        android:name=".OtoSanpoApp"
+        android:label="音さんぽ"
+        android:icon="@android:drawable/ic_menu_compass"
+        android:theme="@android:style/Theme.DeviceDefault.Light"
+        android:allowBackup="false">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="音さんぽ">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 画面を消してポケットに入れても、位置更新と音を続けるための常駐サービス。
+             iOS の UIBackgroundModes に相当するが、Android は通知の常駐が要る -->
+        <service
+            android:name=".WalkService"
+            android:exported="false"
+            android:foregroundServiceType="location|mediaPlayback" />
+    </application>
+</manifest>

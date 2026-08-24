@@ -1,6 +1,22 @@
 // Android 版のビルド定義。
-// いまは `core`(純粋ロジック)だけ。**Android SDK 無しでビルドとテストができる**。
-// `services` と `app` は段 3 以降(docs/10)。
+// `core` は純粋ロジックで、**Android SDK 無しでもビルドとテストができる**(docs/10)。
+// `app` は画面・位置情報・音・常駐サービス。
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
 rootProject.name = "otosanpo-android"
 
 include(":core")
+include(":app")

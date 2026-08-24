@@ -124,8 +124,7 @@ class VisitGrid(
         this.odometerM = odometerM
     }
 
-    /** 保存形式(iOS 版の JSON とは別物。端末内にのみ置く) */
-    @kotlinx.serialization.Serializable
+    /** 保存の受け渡しに使う素の形(**保存の仕方は Services 側の責務**) */
     data class CellRecordEntry(
         val ix: Int, val iy: Int,
         val count: Double, val lastOdometerM: Double, val excluded: Boolean,
