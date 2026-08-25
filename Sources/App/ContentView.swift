@@ -155,6 +155,12 @@ struct ContentView: View {
             } message: {
                 Text(controller.alertMessage ?? "")
             }
+            // 出発の一言。**画面を見るのは開始の瞬間だけ**なので、ここで出して閉じてもらう
+            .alert(controller.greeting ?? "",
+                   isPresented: Binding(get: { controller.greeting != nil },
+                                        set: { if !$0 { controller.greeting = nil } })) {
+                Button("はい", role: .cancel) {}
+            }
         }
     }
 

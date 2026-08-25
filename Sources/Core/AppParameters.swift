@@ -12,6 +12,7 @@ public struct AppParameters: Codable, Equatable {
     public var audio: Audio
     public var location: Location
     public var summary: Summary
+    public var greeting: Greeting
 
     public struct Session: Codable, Equatable {
         public var defaultDurationMin: Double
@@ -141,6 +142,19 @@ public struct AppParameters: Codable, Equatable {
         public var mapMarginM: Double
         /// 経路図の最小の広さ [m]。ごく短い散歩でも図が破綻しないように
         public var mapMinSpanM: Double
+    }
+
+    /// 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない)
+    public struct Greeting: Codable, Equatable {
+        public var windows: [GreetingWindow]
+    }
+
+    public struct GreetingWindow: Codable, Equatable {
+        /// 開始の時(この時を含む)
+        public var fromHour: Int
+        /// 終了の時(この時を**含まない**)。`from` より小さければ真夜中をまたぐ
+        public var toHour: Int
+        public var message: String
     }
 
     /// 顔の向きの推定(HeadingFusion)。docs/03「頭の向きを定位に反映」

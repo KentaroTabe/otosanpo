@@ -20,6 +20,9 @@ final class WalkSessionController: ObservableObject {
     @Published private(set) var lastSummary: WalkSummary?
     /// 操作が通らなかったことを画面で知らせる(nil で非表示)
     @Published var alertMessage: String?
+    /// 出発の一言(nil で非表示)。**画面を見るのは開始の瞬間だけ**なので、ここに出す。
+    /// 文言と時間帯は config/parameters.json、選ぶのは Core(StartGreeting)
+    @Published var greeting: String?
 
     let params: AppParameters
 
@@ -204,6 +207,8 @@ final class WalkSessionController: ObservableObject {
         apply(.start)
         scheduleTimeUp()
         log("散歩を開始(\(Int(durationMin)) 分)")
+        // 出発の一言。時刻で変わる(深夜・早朝・日中)
+        greeting = StartGreeting.message(at: Date(), windows: params.greeting.windows)
     }
 
     func stopManually() {
