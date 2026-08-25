@@ -281,6 +281,10 @@ public struct AppParameters: Codable, Equatable {
         /// 最接近点からこれ以上遠ざかったら誘導を終える [m]。
         /// 通り過ぎた角を指し続けると混乱するだけなので、離れ始めたら諦める
         public var guidanceLeftBehindM: Double
+        /// 各 earcon の先頭に足す無音 [sec]。
+        /// 定位が目標の向きへ移り終わるのを待つため(docs/03「向きが滲む」)。
+        /// 0 で無効
+        public var earconLeadSilenceSec: Double
         public var earconGain: Double
         public var tones: Tones
 

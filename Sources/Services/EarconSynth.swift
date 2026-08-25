@@ -55,16 +55,17 @@ final class EarconSynth {
 
         let format = mono
         let gain = audio.earconGain
-        buffers[.suggestion] = Self.render(audio.tones.suggestion, format: format, gain: gain)
-        buffers[.timeUpPrompt] = Self.render(audio.tones.timeUpPrompt, format: format, gain: gain)
-        buffers[.returnAck] = Self.render(audio.tones.returnAck, format: format, gain: gain)
-        buffers[.homeBeacon] = Self.render(audio.tones.homeBeacon, format: format, gain: gain)
-        buffers[.arrival] = Self.render(audio.tones.arrival, format: format, gain: gain)
+        let lead = audio.earconLeadSilenceSec
+        buffers[.suggestion] = Self.render(audio.tones.suggestion, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.timeUpPrompt] = Self.render(audio.tones.timeUpPrompt, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.returnAck] = Self.render(audio.tones.returnAck, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.homeBeacon] = Self.render(audio.tones.homeBeacon, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.arrival] = Self.render(audio.tones.arrival, format: format, gain: gain, leadSilenceSec: lead)
         // ビーコンだけは「真後ろ」用の変種を持つ。周波数を下げて雑音成分を削り、
         // 耳介で高域が遮られた音(= 背後から来る音)に寄せる
         behindBuffers[.homeBeacon] = Self.render(
             Self.darken(audio.tones.homeBeacon, by: audio.behindDarkness),
-            format: format, gain: gain)
+            format: format, gain: gain, leadSilenceSec: lead)
 
         try Self.configureSession()
         try engine.start()
@@ -174,8 +175,13 @@ final class EarconSynth {
     /// **波形の作り方は Core(ToneRenderer)に置く** — 紹介用の書き出し(Sources/Demo)と
     /// 同じ音を鳴らすため。ここは容れ物を用意するだけ
     static func render(_ tone: AppParameters.ToneSpec, format: AVAudioFormat,
-                       gain: Double) -> AVAudioPCMBuffer? {
-        let samples = ToneRenderer.samples(tone, sampleRate: format.sampleRate, gain: gain)
+                       gain: Double, leadSilenceSec: Double = 0) -> AVAudioPCMBuffer? {
+        // **先頭に無音を足す。** 定位は再生ノードの値で付くが、その値は鳴り始めてから
+        // 目標へ滑らかに移る。前の音と向きが大きく違うと、その移動が音の頭に乗って
+        // 「鳴り出しは右、鳴り終わりは左」になる(2026-08-25 実測)
+        let samples = ToneRenderer.withLeadSilence(
+            ToneRenderer.samples(tone, sampleRate: format.sampleRate, gain: gain),
+            seconds: leadSilenceSec, sampleRate: format.sampleRate)
         guard !samples.isEmpty,
               let buf = AVAudioPCMBuffer(pcmFormat: format,
                                          frameCapacity: AVAudioFrameCount(samples.count)),

@@ -311,6 +311,8 @@ var rejected: [String: Int] = [:]
 var bestScores: [Double] = []
 var intersectionsSeen = 0
 var choices: [String] = []
+/// 予告の 1 音目が指した向きに、実際に道があったか
+var announceChecks: [(distanceM: Double, relativeDeg: Double, nearestRoadM: Double)] = []
 var lastChoiceAt: GeoPoint?
 
 // 誘導の再生。**進行方位を基準にしたときに左右がどれだけ付くか**を測る。
@@ -398,9 +400,37 @@ for f in inMap where f.state == "wandering" {
     case .suggest(let c):
         bestScores.append(c.score)
         lastChoiceAt = f.point
-        choices.append(String(format: "  %@ 交差点まで %.0fm / 分岐 %d 本 → 相対 %+.0f° (%@, 横断 %d) score=%.2f",
+        // **予告の 1 音目は「曲がる先の方位」を、いま立っている場所から鳴らす。**
+        // 角がまだ 30m 先にあると、その向きの先には道が無い(家や塀)。
+        // 利用者の「道の存在しない方向に向かっていた」はこれの疑いがあるので、
+        // その向きに実際の道があるかを地図で確かめる
+        //
+        // **「近くに道がある」では判定にならない。** 街区は 30〜50m 間隔なので、
+        // どの向きへ 10m 進んでも何らかの道の近くにはなる。いま立っている道自体も拾う。
+        // 「その向きに**進める**か」を見るには、**道の向きが指した向きと揃っている**
+        // ことまで要る。15m 以上先(いまの道では説明できない距離)で探す
+        var nearestRoadM = Double.greatestFiniteMagnitude
+        var step = 15.0
+        while step <= r.intersectionLookaheadM {
+            let q = Geo.destination(from: f.point, bearingDeg: c.branch.bearingDeg,
+                                    distanceM: step)
+            if let s = graph.snap(q, maxDistanceM: 10),
+               abs(Geo.angularDiffDeg(s.bearingDeg, c.branch.bearingDeg)) <= 35
+                || abs(Geo.angularDiffDeg(s.bearingDeg, c.branch.bearingDeg + 180)) <= 35 {
+                nearestRoadM = min(nearestRoadM, s.distanceM)
+            }
+            step += 5
+        }
+        announceChecks.append((distanceM: x.distanceM,
+                               relativeDeg: c.relativeBearingDeg,
+                               nearestRoadM: nearestRoadM))
+        let roadLabel = nearestRoadM <= 10
+            ? String(format: "予告の先に道あり(%.0fm)", nearestRoadM)
+            : "**予告の先に進める道なし**"
+        choices.append(String(format: "  %@ 交差点まで %.0fm / 分岐 %d 本 → 相対 %+.0f° (%@, 横断 %d) score=%.2f / %@",
                               clock.string(from: f.time), x.distanceM, x.branches.count,
-                              c.relativeBearingDeg, "\(c.branch.cls)", c.branch.crossCost, c.score))
+                              c.relativeBearingDeg, "\(c.branch.cls)", c.branch.crossCost,
+                              c.score, roadLabel))
         active = (TurnGuidance(corner: x.point, branchBearingDeg: c.branch.bearingDeg,
                                distanceM: x.distanceM), f.time, [])
     }
@@ -427,6 +457,22 @@ if !bestScores.isEmpty {
     // 土地を歩いているか」を見るための材料として出す
     print(String(format: "接近した交差点での最良スコアの分布: 最小 %.2f / 中央 %.2f / 最大 %.2f",
                  sorted.first!, sorted[sorted.count / 2], sorted.last!))
+}
+if !announceChecks.isEmpty {
+    // **予告の 1 音目は「角に着いてから踏み出す向き」を、いま立っている場所から鳴らす。**
+    // 角が遠いほど、その向きの先には道が無い(家や塀を指す)。
+    let noRoad = announceChecks.filter { !$0.nearestRoadM.isFinite || $0.nearestRoadM > 15 }
+    print(String(format: "\n予告(1 音目)の向きの先に道があるか: 道が無い %d / %d 件 (%.0f%%)",
+                 noRoad.count, announceChecks.count,
+                 Double(noRoad.count) / Double(announceChecks.count) * 100))
+    let farAndSide = announceChecks.filter { $0.distanceM >= 25 && abs($0.relativeDeg) >= 60 }
+    print(String(format: "  角が 25m 以上先で、かつ横 60° 以上を指した回: %d 件",
+                 farAndSide.count))
+    if !noRoad.isEmpty {
+        let avgD = noRoad.reduce(0) { $0 + $1.distanceM } / Double(noRoad.count)
+        let avgR = noRoad.reduce(0) { $0 + abs($1.relativeDeg) } / Double(noRoad.count)
+        print(String(format: "  道が無かった回の平均: 角まで %.0fm / 相対 %.0f°", avgD, avgR))
+    }
 }
 for line in choices.prefix(30) { print(line) }
 if choices.count > 30 { print("  (以下 \(choices.count - 30) 件省略)") }
@@ -772,6 +818,43 @@ if rotationPairs.isEmpty {
         sumDiff += abs(Geo.angularDiffDeg(b.rotationDeg, dCourse))
         if (b.rotationDeg > 0) == (dCourse > 0) { agree += 1 }
     }
+    // **まず「回転」と「Δyaw」を突き合わせる。**
+    // course を正解にすると「どちらも旋回を追えていない」としか言えないが、
+    // 回転(ジャイロの積分)と Δyaw(姿勢の変化)は、世界を追えているかとは無関係に
+    // **互いに一致するはず**である。どちらも「頭がどれだけ回ったか」を別経路で測ったもの。
+    // 一致しなければ、読んでいる軸か符号が違う。
+    var axisPairs = 0
+    var sumDyaw = 0.0, sumGap = 0.0, sumGapFlipped = 0.0, axisAgree = 0
+    for i in 1..<allPairs.count {
+        let a = allPairs[i - 1], b = allPairs[i]
+        let dt = b.time.timeIntervalSince(a.time)
+        guard dt > 0, dt <= 6, i < rotationPairs.count else { continue }
+        let dYaw = Geo.angularDiffDeg(b.yawDeg, a.yawDeg)
+        let rot = rotationPairs[min(i, rotationPairs.count - 1)].rotationDeg
+        guard abs(dYaw) >= 5 || abs(rot) >= 5 else { continue }
+        axisPairs += 1
+        sumDyaw += abs(dYaw)
+        sumGap += abs(Geo.angularDiffDeg(rot, dYaw))
+        sumGapFlipped += abs(Geo.angularDiffDeg(-rot, dYaw))
+        if (rot > 0) == (dYaw > 0) { axisAgree += 1 }
+    }
+    if axisPairs > 20 {
+        print("\n  ジャイロの軸と符号(回転 と Δyaw の突き合わせ・\(axisPairs) 区間)")
+        print(String(format: "    |Δyaw| %.1f° / |回転 − Δyaw| %.1f° / |−回転 − Δyaw| %.1f° / 符号一致 %.0f%%",
+                     sumDyaw / Double(axisPairs), sumGap / Double(axisPairs),
+                     sumGapFlipped / Double(axisPairs),
+                     100 * Double(axisAgree) / Double(axisPairs)))
+        let straight = sumGap / Double(axisPairs)
+        let flipped = sumGapFlipped / Double(axisPairs)
+        if min(straight, flipped) > sumDyaw / Double(axisPairs) * 0.5 {
+            print("    → 軸が違う。rotationRate.z は頭の鉛直軸ではない疑い")
+        } else if flipped < straight {
+            print("    → **符号が逆。head_rate_sign を反転させること**")
+        } else {
+            print("    → 軸も符号も合っている。ジャイロは頭の回転を取れている")
+        }
+    }
+
     print("\n  角速度の積分と course の比較(「回転」列・\(rotationPairs.count) 件)")
     if used == 0 {
         print("    曲がった区間がまだありません")
