@@ -9,7 +9,7 @@ final class StartGreetingTests: XCTestCase {
         AppParameters.GreetingWindow(fromHour: 22, toHour: 5,
                                      message: "深夜の散歩は是非背後にお気をつけて"),
         AppParameters.GreetingWindow(fromHour: 5, toHour: 7,
-                                     message: "早起きは3問の得"),
+                                     message: "早起きは三文の得"),
         AppParameters.GreetingWindow(fromHour: 7, toHour: 22,
                                      message: "さぁ歩き始めましょう"),
     ]
@@ -25,7 +25,7 @@ final class StartGreetingTests: XCTestCase {
     func testEarlyMorning() {
         for h in [5, 6] {
             XCTAssertEqual(StartGreeting.message(hour: h, windows: windows),
-                           "早起きは3問の得", "hour=\(h)")
+                           "早起きは三文の得", "hour=\(h)")
         }
     }
 
@@ -38,7 +38,7 @@ final class StartGreetingTests: XCTestCase {
 
     /// **境界は開始を含み、終了を含まない。** 5 時ちょうどは早朝、7 時ちょうどは日中
     func testBoundariesBelongToTheWindowThatStartsThere() {
-        XCTAssertEqual(StartGreeting.message(hour: 5, windows: windows), "早起きは3問の得")
+        XCTAssertEqual(StartGreeting.message(hour: 5, windows: windows), "早起きは三文の得")
         XCTAssertEqual(StartGreeting.message(hour: 7, windows: windows), "さぁ歩き始めましょう")
         XCTAssertEqual(StartGreeting.message(hour: 22, windows: windows),
                        "深夜の散歩は是非背後にお気をつけて")
