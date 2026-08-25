@@ -158,6 +158,37 @@ class Storage(private val context: Context) {
         try { fieldLog.delete() } catch (e: Exception) {}
     }
 
+    /**
+     * ログを「ダウンロード」へ複製する。**テスターが感想と一緒に返せるようにするため。**
+     *
+     * アプリの置き場(`Android/data/...`)は Android 11 以降、他のアプリから開けない。
+     * PC に USB で繋げば取り出せるが、それを頼むのは重い。`MediaStore` 経由で
+     * ダウンロードに置けば、標準のファイルアプリから共有できる。
+     *
+     * @return 置いたファイル名。失敗したら null
+     */
+    fun exportLogToDownloads(): String? {
+        val src = fieldLog
+        if (!src.exists()) return null
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val name = "otosanpo-field-log-$stamp.tsv"
+        return try {
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name)
+                put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/tab-separated-values")
+            }
+            val uri = context.contentResolver.insert(
+                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+            ) ?: return null
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                src.inputStream().use { it.copyTo(out) }
+            }
+            name
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     private val prefs = context.getSharedPreferences("otosanpo", Context.MODE_PRIVATE)
 
     private val isoFormatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US)

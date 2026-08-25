@@ -53,6 +53,25 @@
     "map_margin_m": 40,
     "map_min_span_m": 150
   },
+  "greeting": {
+    "windows": [
+      {
+        "from_hour": 22,
+        "to_hour": 5,
+        "message": "深夜の散歩は是非背後にお気をつけて"
+      },
+      {
+        "from_hour": 5,
+        "to_hour": 7,
+        "message": "早起きは3問の得"
+      },
+      {
+        "from_hour": 7,
+        "to_hour": 22,
+        "message": "さぁ歩き始めましょう"
+      }
+    ]
+  },
   "location": {
     "min_speed_for_course_m_per_s": 0.7,
     "max_course_accuracy_deg": 70,

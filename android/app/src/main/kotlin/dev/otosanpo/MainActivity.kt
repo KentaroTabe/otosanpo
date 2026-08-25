@@ -17,6 +17,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import dev.otosanpo.core.Earcon
+import dev.otosanpo.core.StartGreeting
 import dev.otosanpo.core.WalkState
 import kotlin.math.roundToInt
 
@@ -156,7 +157,7 @@ class MainActivity : Activity() {
 
         root.addView(heading("フィールドログ"))
         root.addView(label("端末内の TSV に追記します(送信しません)"))
-        root.addView(button("ログを書き出す") { shareLog() })
+        root.addView(button("ログをダウンロードへ書き出す") { shareLog() })
         root.addView(button("ログを消去") { session.clearLog(); refresh() })
 
         root.addView(heading("イベントログ"))
@@ -213,6 +214,7 @@ class MainActivity : Activity() {
                 return
             }
             WalkService.start(this)
+            showGreeting()
         } else {
             session.stopManually()
             WalkService.stop(this)
@@ -220,15 +222,30 @@ class MainActivity : Activity() {
         refresh()
     }
 
+    /**
+     * 出発の一言。**画面を見るのは開始の瞬間だけ**なので、ここに出す。
+     * 文言と時間帯は `config/parameters.json`(判断は Core の `StartGreeting`)
+     */
+    private fun showGreeting() {
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val message = StartGreeting.message(hour, session.params.greeting.windows) ?: return
+        android.app.AlertDialog.Builder(this)
+            .setMessage(message)
+            .setPositiveButton("はい") { d, _ -> d.dismiss() }
+            .show()
+    }
+
+    /**
+     * ログを「ダウンロード」へ複製する。**そこからなら標準のファイルアプリで共有できる。**
+     * アプリの置き場は Android 11 以降ほかのアプリから開けないので、そのままでは返せない
+     */
     private fun shareLog() {
-        val f = Storage(this).fieldLog
-        if (!f.exists()) {
-            toast("まだ記録がありません")
+        val name = Storage(this).exportLogToDownloads()
+        if (name == null) {
+            toast("書き出せませんでした(記録がまだ無いか、保存に失敗しました)")
             return
         }
-        // 端末内のファイルを他アプリへ渡すには FileProvider が要る。
-        // 入れていないので、置き場所を知らせて手で取り出してもらう
-        toast("ログの場所: ${f.absolutePath}")
+        toast("ダウンロードに保存しました: $name")
     }
 
     private fun toast(t: String) {

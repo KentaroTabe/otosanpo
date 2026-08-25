@@ -133,6 +133,8 @@ scripts/test_android.sh        # core の単体テスト(SDK 不要)
 scripts/build_android.sh       # APK を作る
 ```
 
+テスターに渡すときの手順は **docs/11**(Android 版のテスター手順書)。
+
 **段 1 と 2 は Android SDK が無くても動く。** 純粋ロジックを環境なしで検証できる作りを
 iOS 版から引き継いでいる。
 

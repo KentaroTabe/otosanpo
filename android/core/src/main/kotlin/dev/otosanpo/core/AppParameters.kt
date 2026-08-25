@@ -24,6 +24,7 @@ data class AppParameters(
     val gesture: Gesture,
     val audio: Audio,
     val summary: Summary,
+    val greeting: Greeting,
 ) {
     @Serializable
     data class Session(
@@ -212,6 +213,19 @@ data class AppParameters(
         val mapMarginM: Double,
         val mapMinSpanM: Double,
     )
+
+    /** 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない) */
+    @Serializable
+    data class Greeting(val windows: List<Window>) {
+        @Serializable
+        data class Window(
+            /** 開始の時(この時を含む) */
+            val fromHour: Int,
+            /** 終了の時(この時を**含まない**)。`from` より小さければ真夜中をまたぐ */
+            val toHour: Int,
+            val message: String,
+        )
+    }
 
     /** 誘導の設定値。Core は数値を持たないので、ここで束ねて渡す */
     fun guidanceParams(): TurnGuidance.Params = TurnGuidance.Params(
