@@ -31,6 +31,12 @@ targets:
       - path: Sources/Services
       - path: config/parameters.json
         buildPhase: resources
+      # アイコン。**App Store Connect はアイコンの無いビルドを受け付けない**ので、
+      # TestFlight へ上げるために要る。中身は仮(scripts/make_icon.py で作り直せる)
+      - path: Support/Assets.xcassets
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: Support/Info.plist
       properties:
