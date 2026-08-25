@@ -25,7 +25,7 @@ class StartGreetingTest {
     @Test
     fun `early morning`() {
         for (h in listOf(5, 6)) {
-            assertEquals("早起きは3問の得", StartGreeting.message(h, windows), "hour=$h")
+            assertEquals("早起きは三文の得", StartGreeting.message(h, windows), "hour=$h")
         }
     }
 
@@ -39,7 +39,7 @@ class StartGreetingTest {
     /** **境界は開始を含み、終了を含まない。** 5 時ちょうどは早朝、7 時ちょうどは日中 */
     @Test
     fun `boundaries belong to the window that starts there`() {
-        assertEquals("早起きは3問の得", StartGreeting.message(5, windows))
+        assertEquals("早起きは三文の得", StartGreeting.message(5, windows))
         assertEquals("さぁ歩き始めましょう", StartGreeting.message(7, windows))
         assertEquals("深夜の散歩は是非背後にお気をつけて", StartGreeting.message(22, windows))
     }

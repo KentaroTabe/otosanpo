@@ -46,7 +46,9 @@ class AppParametersTest {
         val g = load().guidanceParams()
         assertEquals(35.0, g.startDistanceM, 1e-9)
         assertEquals(10.0, g.peakBeforeM, 1e-9)
-        assertEquals(1, g.announceTones)
+        // **予告はやめた**(2026-08-26 の利用者判断)。1 音目で曲がる先を指すと、
+        // 角にまだ着いていないぶん「進めない向き」を指してしまう(実測 20 件中 15 件)
+        assertEquals(0, g.announceTones)
         assertEquals(100.0, g.abandonBehindDeg, 1e-9)
     }
 }
