@@ -182,8 +182,23 @@ scripts/show_teams.sh
 scripts/set_team.sh <TEAM_ID>
 ```
 
-> `show_teams.sh` は**証明書のあるチームしか出せない**。加入直後は出ないので、
-> Xcode で一度ビルドして証明書を作らせてから実行する。
+> **個人加入では Team ID が同じまま昇格する。** 「Team ID が変わっていない」ことは
+> 「切り替わっていない」根拠にならない(2026-08-26 にこれで判断を誤った)。
+>
+> **見分けるのはプロファイルの期限。** 有料チームの開発プロファイルは 1 年、
+> 無料は 7 日。加入前に作られたプロファイルが期限内だと**そのまま使い回される**ので、
+> 加入しても署名が無料のままになる。作り直すには消してからビルドする:
+>
+> ```bash
+> rm ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
+> ```
+>
+> ```bash
+> scripts/build_device.sh
+> ```
+>
+> **配布用の証明書(Apple Distribution)は先に作らなくてよい。** 開発ビルドでは
+> 作られず、Organizer の Distribute App の途中で Xcode が作る。
 
 3. App Store Connect でアプリのレコードを作る(バンドル ID は `dev.otosanpo.OtoSanpo`)
 

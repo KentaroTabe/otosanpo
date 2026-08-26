@@ -32,21 +32,40 @@ fi
 
 echo "アーカイブ成功: $ARCHIVE"
 
-# **アーカイブが通っても配布できるとは限らない。**
-# xcodebuild archive は開発用の署名でも成功する。TestFlight へ上げる段(Organizer の
-# Distribute App)で初めて配布用の証明書が要り、そこまで行ってから弾かれると分かりにくい。
-# 有料プログラムに入っていれば「Apple Distribution」の証明書があるので、ここで見る。
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Distribution"; then
-  echo "配布用の証明書: あり"
-  echo "Xcode で Window > Organizer を開き、Distribute App から TestFlight へ上げてください"
-else
-  echo
-  echo "警告: **配布用の証明書(Apple Distribution)がありません。**" >&2
-  echo "  このままでは Organizer の Distribute App で弾かれます。" >&2
-  echo "  有料プログラムの反映と Team ID の設定を確認してください:" >&2
-  echo "   1. developer.apple.com > Account > Membership details で Team ID を確認" >&2
-  echo "   2. Xcode > Settings > Accounts でその Apple ID を選び、チーム一覧に出るか確認" >&2
-  echo "      (出ない場合は加入処理がまだ完了していない。最大 48 時間かかることがある)" >&2
-  echo "   3. scripts/set_team.sh <TEAM_ID>" >&2
-  echo "   4. Xcode で一度ビルドすると配布用の証明書が作られる" >&2
+# **署名に使われたプロファイルを確かめる。**
+#
+# 2026-08-26 に踏んだ罠: 有料プログラムへの加入は済んでいたのに、**無料時代に作られた
+# プロファイルが期限内だったため使い回され**、アーカイブは成功するのに中身は
+# 7 日で切れる開発用の署名だった。Team ID は個人加入だと**同じまま昇格する**ので、
+# 「Team ID が変わっていない = 切り替わっていない」とは言えない。
+#
+# 見分け方は**期限**。有料チームの開発プロファイルは 1 年、無料は 7 日。
+PROFILE="$ARCHIVE/Products/Applications/OtoSanpo.app/embedded.mobileprovision"
+if [ -f "$PROFILE" ]; then
+  PLIST=$(security cms -D -i "$PROFILE" 2>/dev/null || true)
+  if [ -n "$PLIST" ]; then
+    TEAM=$(printf '%s' "$PLIST" | plutil -extract TeamName raw - 2>/dev/null || echo "?")
+    EXP=$(printf '%s' "$PLIST" | plutil -extract ExpirationDate raw - 2>/dev/null || echo "?")
+    echo "署名: $TEAM / 期限 $EXP"
+    LEFT=$(( ( $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$EXP" +%s 2>/dev/null || echo 0) \
+              - $(date +%s) ) / 86400 ))
+    if [ "$LEFT" -gt 0 ] && [ "$LEFT" -lt 60 ]; then
+      echo
+      echo "警告: プロファイルの残りが ${LEFT} 日しかありません。" >&2
+      echo "  **無料アカウント時代のものが使い回されている疑い**があります。" >&2
+      echo "  次で作り直してから、もう一度アーカイブしてください:" >&2
+      echo "    rm ~/Library/Developer/Xcode/UserData/Provisioning\\ Profiles/*.mobileprovision" >&2
+      echo "    scripts/build_device.sh" >&2
+      exit 1
+    fi
+  fi
+fi
+
+echo "Xcode で Window > Organizer を開き、Distribute App から TestFlight へ上げてください"
+# 配布用の証明書(Apple Distribution)は**この時点では無くてよい**。
+# 開発ビルドでは作られず、Organizer の Distribute App で Xcode が必要に応じて作る。
+# 先に作っておきたい場合は Xcode > Settings > Accounts > チーム >
+# Manage Certificates… > + > Apple Distribution。
+if ! security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Distribution"; then
+  echo "(配布用の証明書はまだ無いが、Distribute App の途中で作られる)"
 fi
