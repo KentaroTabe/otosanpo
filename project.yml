@@ -44,9 +44,19 @@ targets:
         # (iPad のマルチタスクに対応するには 4 方向すべての向きが要る)。
         # このアプリは iPhone 専用・縦向き固定なので、iPad を外すのが正しい
         TARGETED_DEVICE_FAMILY: "1"
+        # 表示上の版。**外部テストの Beta App Review はこの値が変わるたびに要る**ので、
+        # 中身の修正だけなら据え置き、ビルド番号(下)だけを上げる
+        MARKETING_VERSION: "1.0"
+        # scripts/archive.sh が配信のたびに日時で上書きする。ここの値は既定にすぎない
+        CURRENT_PROJECT_VERSION: "1"
     info:
       path: Support/Info.plist
       properties:
+        # **ビルド設定を参照する形で書く。** 数値を直書きすると archive.sh が
+        # 渡すビルド番号が効かず、毎回同じ番号になる。
+        # App Store Connect は同じ番号を 2 度受け付けないので、2 回目の配信で弾かれる
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIBackgroundModes: [audio, location]
