@@ -61,6 +61,9 @@ final class WalkSessionController: ObservableObject {
     private var returnStart: (distanceM: Double, at: Date)?
     /// ヘッドフォンの接続状態と、外している間に持ち越したプロンプト
     private var headphonesConnected = false
+    /// この散歩で一度でも AirPods を検出したか。
+    /// **持っていない人と、一時的に外した人を区別するために要る**(→ `run(.play)`)
+    private var headphonesEverConnected = false
     private var promptPending = false
     /// 直近のビーコンで鳴らした相対方位と時刻(方向が変わったら次を繰り上げるため)
     private var lastBeacon: (relDeg: Double, at: Date)?
@@ -183,6 +186,10 @@ final class WalkSessionController: ObservableObject {
         returnMetrics = nil
         returnStart = nil
         promptPending = false
+        // 開始時点の装着状態を取り込む。接続通知は「接続した瞬間」にしか来ないので、
+        // 起動前から着けていた場合に false のままになるのを防ぐ
+        headphonesConnected = motion.isAvailable
+        headphonesEverConnected = headphonesConnected
         lastBeacon = nil
         headingFusion.reset()
         latestCourseBearing = nil
@@ -299,10 +306,22 @@ final class WalkSessionController: ObservableObject {
         }
     }
 
+    // MARK: - 時間到来への応答
+
+    /// 残りの延長回数。画面に出して「押しても延びない」を防ぐ
+    var extensionsLeft: Int {
+        max(0, params.session.maxExtensions - extensionsUsed)
+    }
+
+    /// 帰路を始める。**AirPods を着けていない人が画面から答えるための入り口。**
+    /// うなずきと同じイベントを流すので、どちらで答えても挙動と記録は変わらない
+    func answerReturnNow() { apply(.nod) }
+
+    /// もう少し歩く(延長)。首振りと同じイベントを流す
+    func answerExtend() { apply(.shake) }
+
     // デバッグ用(シミュレータ・モーション非対応時の代替)
     func debugTimeUp() { apply(.timeUp) }
-    func debugNod() { apply(.nod) }
-    func debugShake() { apply(.shake) }
 
     // MARK: - イベント適用
 
@@ -322,7 +341,10 @@ final class WalkSessionController: ObservableObject {
         case .play(let earcon):
             // 会話などで AirPods を外している間はプロンプトを鳴らさず、再装着時に鳴らし直す。
             // 応答待ちのまま待つ挙動は変えない(docs/01「応答待ち中に外している間は…」)
-            if earcon == .timeUpPrompt, !headphonesConnected {
+            // **保留してよいのは「着けていた人が外した」場合だけ**(→ PromptDelivery)
+            if earcon == .timeUpPrompt,
+               PromptDelivery.shouldHold(connected: headphonesConnected,
+                                         hasEverConnected: headphonesEverConnected) {
                 promptPending = true
                 log("ヘッドフォン未装着のためプロンプトを保留します")
                 return
@@ -700,6 +722,7 @@ final class WalkSessionController: ObservableObject {
 
     private func onHeadphoneConnectionChange(_ connected: Bool) {
         headphonesConnected = connected
+        if connected { headphonesEverConnected = true }
         log(connected ? "ヘッドフォンを検出しました" : "ヘッドフォンが外れました")
         // 再装着すると姿勢の基準が引き直され、yaw が不連続に跳ぶ。
         // 段階 8 の実測では装着直後に yaw 振幅 203.7° が記録されており、
