@@ -41,6 +41,10 @@ public struct AppParameters: Codable, Equatable {
         /// 直線距離を歩く距離に直す係数。**経路データがあるときは使わない**。
         /// 実測は 1.09〜1.70 に散らばり、固定値ではどちら側にも外れる(docs/03)
         public var detourFactor: Double
+        /// 経路長を信用する上限。直線距離の何倍までを「ありうる遠回り」とみなすか。
+        /// これを超えた経路長はスナップの誤りを疑い、この倍数で頭を押さえる
+        /// (2026-08-27 の実測: 通常は 95% が 1.68 倍以内、跳ねた時だけ 2.5〜3.06 倍)
+        public var routeStraightMaxRatio: Double
         public var returnReserveMin: Double
         public var softZoneRatio: Double
         /// 散歩 1 回ぶんの平均速度をどれだけ取り込むか [0..1]

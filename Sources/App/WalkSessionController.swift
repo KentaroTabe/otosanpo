@@ -1182,13 +1182,16 @@ final class WalkSessionController: ObservableObject {
     }
 
     /// 自宅までの距離。**経路データがあれば実際に歩く距離**、無ければ直線距離。
-    /// 直線 × 迂回率は川や私有地を突っ切った値になるので、取れるなら使わない
+    /// 直線 × 迂回率は川や私有地を突っ切った値になるので、取れるなら使わない。
+    ///
+    /// 経路長が直線距離に対して大きすぎる場合は上限で頭を押さえる。
+    /// スナップが幹線の反対側に乗ると、実際には歩かない迂回路の長さが返るため
+    /// (→ `ReturnBudget.distance`)
     private func homeDistance(from p: GeoPoint) -> ReturnBudget.Distance? {
         guard let h = home else { return nil }
-        if let f = routeField, let graph, let m = f.pathLengthM(from: p, graph: graph) {
-            return .route(m)
-        }
-        return .straight(Geo.distanceM(p, h))
+        let routeM = routeField.flatMap { f in graph.flatMap { f.pathLengthM(from: p, graph: $0) } }
+        return ReturnBudget.distance(routeM: routeM, straightM: Geo.distanceM(p, h),
+                                     p: params.budget)
     }
 
     /// 「今帰り始めれば設定時間ちょうどに着く」瞬間にプロンプトを発火する。
