@@ -14,7 +14,8 @@ configFiles:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    TARGETED_DEVICE_FAMILY: "1"
+    # TARGETED_DEVICE_FAMILY はここに書いても効かない(ターゲット側の既定値が勝つ)。
+    # 実体は OtoSanpo ターゲットの settings にある
     GENERATE_INFOPLIST_FILE: NO
     CODE_SIGN_STYLE: Automatic
     # DEVELOPMENT_TEAM はここに書かない(ここの値が xcconfig を上書きしてしまうため)
@@ -37,6 +38,12 @@ targets:
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # **ここ(ターゲット)に書く。** プロジェクト階層に書いても、XcodeGen が
+        # ターゲット階層へ入れる既定値(1,2)に上書きされる。
+        # iPad が混ざると App Store Connect の検証で弾かれる
+        # (iPad のマルチタスクに対応するには 4 方向すべての向きが要る)。
+        # このアプリは iPhone 専用・縦向き固定なので、iPad を外すのが正しい
+        TARGETED_DEVICE_FAMILY: "1"
     info:
       path: Support/Info.plist
       properties:
