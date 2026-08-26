@@ -16,24 +16,54 @@ object ReturnBudget {
         /** 経路グラフで測った実際に歩く距離 [m]。迂回率を掛けない */
         data class Route(val meters: Double) : Distance
 
+        /**
+         * 経路長が直線距離に対して大きすぎたので、上限で頭を押さえた値 [m]。
+         * スナップの誤りを疑っている状態(→ [ReturnBudget.distance])
+         */
+        data class CappedRoute(val meters: Double) : Distance
+
         /** 直線距離 [m]。経路データが無い / 圏外のときの代替。迂回率を掛ける */
         data class Straight(val meters: Double) : Distance
 
         /** 帰路の見積もりに使う「歩く距離」[m] */
         fun walkingM(p: AppParameters.Budget): Double = when (this) {
             is Route -> meters
+            is CappedRoute -> meters
             is Straight -> meters * p.detourFactor
         }
 
         val label: String get() = when (this) {
             is Route -> "経路"
+            is CappedRoute -> "経路(上限)"
             is Straight -> "直線"
         }
 
         val rawM: Double get() = when (this) {
             is Route -> meters
+            is CappedRoute -> meters
             is Straight -> meters
         }
+    }
+
+    /**
+     * 見積もりに使う距離を選ぶ。経路長が取れないときは直線距離に落ちる。
+     *
+     * **経路長は稀に大きく跳ねる。** スナップが幹線の反対側や別の道に乗ると、
+     * 実際には歩かない迂回路の長さが返る。2026-08-27 の iOS 実測では 42 秒間だけ
+     * 直線の 2.5〜3.06 倍を示し、**その最初の 1 サンプルで帰宅プロンプトが撃たれた**
+     * (30 分の設定に対し 4 分 20 秒で「帰りどき」。推定 24.3 分に対し実測 9.9 分)。
+     *
+     * 跳ねていない間の比は 中央 1.42 / 95% 1.68 で、跳ねとの間が空いている。
+     * **直線距離の倍数で頭を押さえれば、跳ねだけを削れる。**
+     *
+     * 捨てて直線 × 迂回率に戻すのではなく上限で抑えるのは、川や線路の向こうのように
+     * **本当に大回りが要る場所**があるため。捨てるとそこで過小評価になり、
+     * 帰りが間に合わなくなる。
+     */
+    fun distance(routeM: Double?, straightM: Double, p: AppParameters.Budget): Distance {
+        if (routeM == null) return Distance.Straight(straightM)
+        val cap = straightM * p.routeStraightMaxRatio
+        return if (routeM <= cap) Distance.Route(routeM) else Distance.CappedRoute(cap)
     }
 
     /** 推定した帰宅所要時間 [min]。速度は実測から渡す(設定値は初期値に格下げ) */

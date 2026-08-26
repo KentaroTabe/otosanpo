@@ -105,6 +105,10 @@ iOS 版で「純粋ロジックは外部環境なしでテストできる」よ�
 - JSON の鍵は snake_case のまま。Kotlin 側は `@SerialName` で受ける
 - 経路データ(`otosanpo-map.json`)も同じ形式。`WalkMap` の Kotlin 版が同じ鍵で読む
 
+**鍵を足したら Kotlin 側にも足す。** Kotlin は `ignoreUnknownKeys = true` なので、
+足しただけでは**落ちずに黙って無視される**。iOS だけ直って Android が古い挙動のまま、
+という食い違いに気づけないので、パラメータの追加は必ず両方で行う。
+
 ## 採らなかった案
 
 - **Kotlin Multiplatform で Core を 1 つにする。** 理想ではあるが、既存の Swift Core を
@@ -181,6 +185,15 @@ Android にはヘッドフォンの頭部姿勢を取る公開 API が無く、�
   (この Mac には 20 と Homebrew の 26 しか無い)。手元にある JDK で動く形にした
 - **Kotlin プラグインは Gradle 本体の埋め込み版に合わせる。** 古い版(2.1.0)は
   新しい JDK の版番号を解釈できず、コンパイラが内部エラーで落ちた
+- `android/local.properties`(SDK の場所)は gitignore 対象なので消えることがある。
+  「SDK location not found」で止まったら `scripts/setup_android_sdk.sh` を流し直す。
+  SDK 本体が既にあれば数秒で終わる
+
+### iOS 側の修正を取り込んだもの
+
+| 取り込み | 内容 |
+|---|---|
+| 2026-08-27 | **経路長の跳ねを直線距離で抑える**(`route_straight_max_ratio`)。iOS の実測で、経路長が 42 秒だけ直線の 2.9 倍に跳ね、その 1 サンプルで帰宅プロンプトが撃たれた。`ReturnBudget.distance` と `Distance.CappedRoute` を Kotlin にも入れ、テストも同じ数字で移した(→ docs/03「経路長の跳ねを直線距離で抑える」) |
 
 ## 判断待ち(こちらでは決めない)
 

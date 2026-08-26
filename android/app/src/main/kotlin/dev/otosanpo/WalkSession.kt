@@ -627,15 +627,19 @@ class WalkSession(
                                        params.budget.walkingSpeedMPerMin,
                                        params.budget.speedLimits)
 
-    /** 自宅までの距離。**経路データがあれば実際に歩く距離**、無ければ直線距離 */
+    /**
+     * 自宅までの距離。**経路データがあれば実際に歩く距離**、無ければ直線距離。
+     *
+     * 経路長が直線距離に対して大きすぎる場合は上限で頭を押さえる。
+     * スナップが幹線の反対側に乗ると、実際には歩かない迂回路の長さが返るため
+     * (→ [ReturnBudget.distance])
+     */
     private fun homeDistance(p: GeoPoint): ReturnBudget.Distance? {
         val h = home ?: return null
         val g = graph
         val f = routeField
-        if (g != null && f != null) {
-            f.pathLengthM(p, g)?.let { return ReturnBudget.Distance.Route(it) }
-        }
-        return ReturnBudget.Distance.Straight(Geo.distanceM(p, h))
+        val routeM = if (g != null && f != null) f.pathLengthM(p, g) else null
+        return ReturnBudget.distance(routeM, Geo.distanceM(p, h), params.budget)
     }
 
     /** 「今帰り始めれば設定時間ちょうどに着く」瞬間に発火する */

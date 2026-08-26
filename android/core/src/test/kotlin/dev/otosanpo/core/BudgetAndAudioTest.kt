@@ -8,7 +8,8 @@ import kotlin.test.assertTrue
 
 private val budget = AppParameters.Budget(
     walkingSpeedMPerMin = 70.0, minMovingSpeedMPerS = 0.5, pathSegmentMinM = 10.0,
-    maxAccuracyForMetricsM = 20.0, detourFactor = 1.3, returnReserveMin = 3.0,
+    maxAccuracyForMetricsM = 20.0, detourFactor = 1.3, routeStraightMaxRatio = 2.0,
+    returnReserveMin = 3.0,
     softZoneRatio = 0.7, speedEwmaWeight = 0.4, speedMinSamples = 60,
     speedMinMPerMin = 45.0, speedMaxMPerMin = 90.0
 )
@@ -44,6 +45,65 @@ class ReturnBudgetTest {
         assertFalse(ReturnBudget.shouldPromptReturn(20.0, d, 70.0, budget))
         assertTrue(ReturnBudget.shouldPromptReturn(13.0, d, 70.0, budget))
         assertTrue(ReturnBudget.shouldPromptReturn(5.0, d, 70.0, budget))
+    }
+
+    // 経路長の跳ねを直線距離で抑える(2026-08-27 の iOS 実測に合わせる)
+
+    /** ふつうの遠回りはそのまま通す。実測の比は中央 1.42 / 95% 1.68 */
+    @Test
+    fun `ordinary detour passes through`() {
+        assertEquals(ReturnBudget.Distance.Route(760.0),
+                     ReturnBudget.distance(760.0, 450.0, budget))
+    }
+
+    /**
+     * **跳ねた経路長は上限で頭を押さえる。**
+     * 実測値: 直線 543m に対し経路 1587m(2.92 倍)が 42 秒間だけ出た
+     */
+    @Test
+    fun `spiked route is capped`() {
+        assertEquals(ReturnBudget.Distance.CappedRoute(1086.0),
+                     ReturnBudget.distance(1587.0, 543.0, budget))
+    }
+
+    /**
+     * この修正が効くことの本体。**同じ場面で帰宅プロンプトが撃たれなくなる。**
+     * 実測: 残り 26 分・65m/min・予備 3 分のところへ経路 1587m が出て発火した
+     */
+    @Test
+    fun `spike no longer fires the prompt`() {
+        val spiked = ReturnBudget.distance(1587.0, 543.0, budget)
+        assertFalse(ReturnBudget.shouldPromptReturn(26.0, spiked, 65.0, budget))
+        // 抑えなければ発火していた(iOS で実際に起きたこと)
+        assertTrue(ReturnBudget.shouldPromptReturn(
+            26.0, ReturnBudget.Distance.Route(1587.0), 65.0, budget))
+    }
+
+    /**
+     * 抑えた後でも、直線 × 迂回率より大きい値が残る。
+     * 川や線路の向こうで本当に大回りが要る場所を、過小評価にしないため
+     */
+    @Test
+    fun `capped estimate stays above the straight line guess`() {
+        val capped = ReturnBudget.estimatedReturnMin(
+            ReturnBudget.distance(1587.0, 543.0, budget), 65.0, budget)
+        val byStraight = ReturnBudget.estimatedReturnMin(
+            ReturnBudget.Distance.Straight(543.0), 65.0, budget)
+        assertTrue(capped > byStraight)
+    }
+
+    /** 経路データが無ければ直線距離に落ちる(圏外・地図未読込) */
+    @Test
+    fun `falls back to straight without route data`() {
+        assertEquals(ReturnBudget.Distance.Straight(543.0),
+                     ReturnBudget.distance(null, 543.0, budget))
+    }
+
+    /** 上限ちょうどは通す(境界) */
+    @Test
+    fun `exactly at the cap is still trusted`() {
+        assertEquals(ReturnBudget.Distance.Route(1086.0),
+                     ReturnBudget.distance(1086.0, 543.0, budget))
     }
 
     @Test
