@@ -200,7 +200,24 @@ scripts/set_team.sh <TEAM_ID>
 > **配布用の証明書(Apple Distribution)は先に作らなくてよい。** 開発ビルドでは
 > 作られず、Organizer の Distribute App の途中で Xcode が作る。
 
-3. App Store Connect でアプリのレコードを作る(バンドル ID は `dev.otosanpo.OtoSanpo`)
+3. **App Store Connect でアプリのレコードを作る。**
+   これが無いと Transporter が
+   「適切なアプリケーションレコードが見つかりませんでした」で弾く(2026-08-26 に遭遇)。
+
+   マイ App > 「+」> 新規 App
+
+   | 項目 | 値 |
+   |---|---|
+   | プラットフォーム | iOS |
+   | 名前 | **App Store 全体で一意**である必要がある。後から変更できる |
+   | プライマリ言語 | 日本語 |
+   | バンドル ID | `dev.otosanpo.OtoSanpo` |
+   | SKU | 任意の一意な文字列(ストアには出ない) |
+
+   > バンドル ID がドロップダウンに出ない場合は、開発者ポータルの Identifiers に
+   > 登録されていない。**自動署名でプロファイルが発行できていれば登録済み**なので、
+   > 通常は出る(確かめるには .ipa の中の profile の
+   > `Entitlements.application-identifier` を見る)。
 
 ## 配るたび
 
@@ -208,8 +225,17 @@ scripts/set_team.sh <TEAM_ID>
 scripts/archive.sh
 ```
 
-アーカイブができたら **Xcode > Window > Organizer > Distribute App** で TestFlight へ。
-**アップロードはスクリプトでは行わない**(外向きの操作と認証情報が要るため、人が行う)。
+```bash
+scripts/export_ipa.sh
+```
+
+できた `build/export/OtoSanpo.ipa` を **Transporter**(Mac App Store の無料アプリ)へ
+ドラッグして配信する。処理に数分〜1 時間かかってから TestFlight タブに現れる。
+
+> **Organizer の文言は版によって変わる**ので手順書には書かない
+> (Xcode 26.6 で配布まわりが以前と違っていた)。`.ipa` + Transporter は変化に強い。
+>
+> **アップロードはスクリプトでは行わない**(外向きの操作と認証情報が要るため、人が行う)。
 
 - **内部テスター(最大 100 人)は審査なし**で配れる。知り合い数人ならこれが最短
 - 外部テスター(最大 10,000 人)は初回に Beta App Review がある
