@@ -1,5 +1,9 @@
 .DS_Store
 Support/Signing.xcconfig
+# 配る側(開発者)の手順。docs/09 の本文はテスターにそのまま渡せる状態に保ち、
+# 配布・署名・審査の手順はここへ分けて手元にだけ置く。
+# **手元にしか無い = 失うと復元できない。**
+docs/09_distribution_private.md
 logs/
 build/
 DerivedData/

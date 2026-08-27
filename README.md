@@ -104,7 +104,10 @@ project.yml              XcodeGen 定義(*.xcodeproj は生成物)
 | [06 設計方針と実験計画](docs/06_design_plan.md) | 4 本の柱・案内音の 3 方針・判断待ち |
 | [07 人に紹介する道具](docs/07_introducing.md) | 音を書き出して聴かせる |
 | [08 方針 C: スポットの音楽](docs/08_music_spots.md) | 計画のみ(`feature/music-spots`) |
-| [09 テスターの手順書](docs/09_tester_guide.md) | **試してくれる方はここから** |
+| [09 テスターの手順書](docs/09_tester_guide.md) | **試してくれる方はここから**(そのまま渡せる) |
+
+配る側(署名・配信・審査)の手順は `docs/09_distribution_private.md` に分けてあり、
+**gitignore 対象なのでここには無い**。手順書をそのまま共有できる状態に保つため。
 
 経路データは OpenStreetMap 由来。ODbL の下で提供されている。
 © OpenStreetMap contributors
