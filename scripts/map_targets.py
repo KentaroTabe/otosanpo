@@ -143,9 +143,11 @@ def prefectures(conn, radius_m: float, build_list: bool, limit):
 
 
 def cities(conn, radius_m: float, build_list: bool, min_population: int, limit):
+    # **national_capital を忘れない。** 東京都はこの種別で入っており、
+    # city だけで絞ると日本最大の都市が丸ごと落ちる(2026-08-28 に踏んだ)
     rows = conn.execute(
         "SELECT name, population, geom FROM gis_osm_places_free"
-        " WHERE fclass IN ('city', 'town') AND name IS NOT NULL"
+        " WHERE fclass IN ('city', 'town', 'national_capital') AND name IS NOT NULL"
         " AND population >= ? ORDER BY population DESC",
         (min_population,),
     ).fetchall()
