@@ -12,6 +12,9 @@ xcuserdata/
 field-logs/
 build-replay/
 maps/
+# 地方の元データ(Geofabrik の GeoPackage)の置き場。1 つ 1〜2 GB あるので
+# **絶対にコミットしない。** 公開配布物なので、失っても落とし直せる
+DL/
 build-mapbuild/
 build-demo/
 build-demo-tool/
