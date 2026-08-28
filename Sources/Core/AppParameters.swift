@@ -12,6 +12,7 @@ public struct AppParameters: Codable, Equatable {
     public var audio: Audio
     public var location: Location
     public var summary: Summary
+    public var greeting: Greeting
 
     public struct Session: Codable, Equatable {
         public var defaultDurationMin: Double
@@ -40,6 +41,10 @@ public struct AppParameters: Codable, Equatable {
         /// 直線距離を歩く距離に直す係数。**経路データがあるときは使わない**。
         /// 実測は 1.09〜1.70 に散らばり、固定値ではどちら側にも外れる(docs/03)
         public var detourFactor: Double
+        /// 経路長を信用する上限。直線距離の何倍までを「ありうる遠回り」とみなすか。
+        /// これを超えた経路長はスナップの誤りを疑い、この倍数で頭を押さえる
+        /// (2026-08-27 の実測: 通常は 95% が 1.68 倍以内、跳ねた時だけ 2.5〜3.06 倍)
+        public var routeStraightMaxRatio: Double
         public var returnReserveMin: Double
         public var softZoneRatio: Double
         /// 散歩 1 回ぶんの平均速度をどれだけ取り込むか [0..1]
@@ -143,6 +148,19 @@ public struct AppParameters: Codable, Equatable {
         public var mapMinSpanM: Double
     }
 
+    /// 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない)
+    public struct Greeting: Codable, Equatable {
+        public var windows: [GreetingWindow]
+    }
+
+    public struct GreetingWindow: Codable, Equatable {
+        /// 開始の時(この時を含む)
+        public var fromHour: Int
+        /// 終了の時(この時を**含まない**)。`from` より小さければ真夜中をまたぐ
+        public var toHour: Int
+        public var message: String
+    }
+
     /// 顔の向きの推定(HeadingFusion)。docs/03「頭の向きを定位に反映」
     public struct Heading: Codable, Equatable {
         /// 顔の向きを定位の基準に使うか。false なら従来どおり進行方位だけを使う
@@ -155,6 +173,28 @@ public struct AppParameters: Codable, Equatable {
         public var minSamples: Int
         /// yaw と course の対をログに残す間隔 [sec]。回転の向きが揃っているかの判定材料
         public var logIntervalSec: Double
+        /// **角速度から推定した頭の向きを定位に使うか。** false なら記録だけして動作に影響しない。
+        /// 姿勢(yaw)を使う `useHeadOrientation` とは別系統(そちらは 2026-08-19 に不成立)
+        public var useGyroHeadOffset: Bool
+        /// 角速度の推定が 0 へ戻る半減期 [sec]。絶対基準を持たないのでドリフトは時間で消す
+        public var headOffsetHalfLifeSec: Double
+        /// 角速度の推定として認める首の相対角の上限 [deg]
+        public var headOffsetMaxDeg: Double
+        /// これ未満の角速度は 0 とみなす [deg/sec]。ジャイロの雑音と偏りを捨てる
+        public var headRateDeadbandDegPerSec: Double
+        /// 角速度の向きを「右が正」に合わせる符号(+1 / −1)。**机上テストで確かめる**
+        public var headRateSign: Double
+        /// サンプルの間隔がこれを超えたら積分しない [sec](再装着・中断のあと)
+        public var headRateMaxGapSec: Double
+
+        /// HeadTracker に渡す設定値
+        public var headTracker: HeadTracker.Params {
+            HeadTracker.Params(halfLifeSec: headOffsetHalfLifeSec,
+                               maxOffsetDeg: headOffsetMaxDeg,
+                               deadbandDegPerSec: headRateDeadbandDegPerSec,
+                               sign: headRateSign, maxGapSec: headRateMaxGapSec)
+        }
+
         /// yaw の回転の向きを方位に合わせる符号(+1 / −1)。
         /// **符号を直しても顔の向きは推定できない**(2026-08-19 実測)。
         /// yaw は旋回そのものを追えておらず、|Δraw| が |Δcourse| とほぼ同じだった。
@@ -245,6 +285,10 @@ public struct AppParameters: Codable, Equatable {
         /// 最接近点からこれ以上遠ざかったら誘導を終える [m]。
         /// 通り過ぎた角を指し続けると混乱するだけなので、離れ始めたら諦める
         public var guidanceLeftBehindM: Double
+        /// 各 earcon の先頭に足す無音 [sec]。
+        /// 定位が目標の向きへ移り終わるのを待つため(docs/03「向きが滲む」)。
+        /// 0 で無効
+        public var earconLeadSilenceSec: Double
         public var earconGain: Double
         public var tones: Tones
 

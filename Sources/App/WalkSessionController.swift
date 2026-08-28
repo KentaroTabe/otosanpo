@@ -20,6 +20,9 @@ final class WalkSessionController: ObservableObject {
     @Published private(set) var lastSummary: WalkSummary?
     /// 操作が通らなかったことを画面で知らせる(nil で非表示)
     @Published var alertMessage: String?
+    /// 出発の一言(nil で非表示)。**画面を見るのは開始の瞬間だけ**なので、ここに出す。
+    /// 文言と時間帯は config/parameters.json、選ぶのは Core(StartGreeting)
+    @Published var greeting: String?
 
     let params: AppParameters
 
@@ -58,6 +61,9 @@ final class WalkSessionController: ObservableObject {
     private var returnStart: (distanceM: Double, at: Date)?
     /// ヘッドフォンの接続状態と、外している間に持ち越したプロンプト
     private var headphonesConnected = false
+    /// この散歩で一度でも AirPods を検出したか。
+    /// **持っていない人と、一時的に外した人を区別するために要る**(→ `run(.play)`)
+    private var headphonesEverConnected = false
     private var promptPending = false
     /// 直近のビーコンで鳴らした相対方位と時刻(方向が変わったら次を繰り上げるため)
     private var lastBeacon: (relDeg: Double, at: Date)?
@@ -85,6 +91,13 @@ final class WalkSessionController: ObservableObject {
     private var target: ZoneMap.Target?
     /// 顔の向きの推定。定位の基準を進行方位から「顔の向き」へ寄せる
     private var headingFusion = HeadingFusion()
+    /// 角速度から頭の向きを推定する別系統(HeadTracker)。既定では記録だけ
+    private var headTracker = HeadTracker()
+    /// 机上で頭の追従を確かめている最中か(散歩とは独立に回す)
+    @Published private(set) var headCheckActive = false
+    /// 机上テストの現在値。画面に出して符号と追従を目で確かめる
+    @Published private(set) var headCheckLine = ""
+    private var headCheckTimer: Timer?
     /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
     private var latestCourseBearing: Double?
     /// 推定した顔の絶対方位。nil なら進行方位をそのまま使う
@@ -173,6 +186,10 @@ final class WalkSessionController: ObservableObject {
         returnMetrics = nil
         returnStart = nil
         promptPending = false
+        // 開始時点の装着状態を取り込む。接続通知は「接続した瞬間」にしか来ないので、
+        // 起動前から着けていた場合に false のままになるのを防ぐ
+        headphonesConnected = motion.isAvailable
+        headphonesEverConnected = headphonesConnected
         lastBeacon = nil
         headingFusion.reset()
         latestCourseBearing = nil
@@ -197,6 +214,8 @@ final class WalkSessionController: ObservableObject {
         apply(.start)
         scheduleTimeUp()
         log("散歩を開始(\(Int(durationMin)) 分)")
+        // 出発の一言。時刻で変わる(深夜・早朝・日中)
+        greeting = StartGreeting.message(at: Date(), windows: params.greeting.windows)
     }
 
     func stopManually() {
@@ -241,10 +260,68 @@ final class WalkSessionController: ObservableObject {
             + "・エンジン\(synth.isRunning ? "稼働" : "停止"))")
     }
 
+    // MARK: - 頭の追従の机上テスト
+
+    /// **歩かずに「頭の向きが音に乗るか」を確かめる。**
+    ///
+    /// 始めた瞬間に向いていた方向へ音を置き続ける。首を右に向ければ音は左へ動くのが正しい。
+    /// 動かない・逆に動くなら `head_rate_sign` か配線が違う。
+    ///
+    /// これを机上に置く理由: 姿勢(yaw)を使った系統は 2026-08-19 に散歩 1 回を丸ごと潰した
+    /// (左右が壊れた)。**符号と手応えは、散歩を使わずに決められる。**
+    func startHeadCheck() {
+        guard state == .idle || state == .arrived else {
+            alertMessage = "散歩中は確認できません。終了してからお試しください。"
+            return
+        }
+        ensureSynth()
+        headTracker.reset()
+        motion.start()
+        headCheckActive = true
+        headCheckLine = "正面を向いたまま始めてください(音は正面から鳴ります)"
+        log("頭の追従の確認を開始(首を右に向けると音は左へ動くのが正しい)")
+        fireHeadCheckTick()
+    }
+
+    func stopHeadCheck() {
+        headCheckTimer?.invalidate()
+        headCheckTimer = nil
+        headCheckActive = false
+        headCheckLine = ""
+        if state == .idle || state == .arrived { motion.stop() }
+        log("頭の追従の確認を終了")
+    }
+
+    private func fireHeadCheckTick() {
+        headCheckTimer?.invalidate()
+        guard headCheckActive else { return }
+        // 音源は「始めた時に向いていた方向」に固定。頭から見た相対方位はその逆符号になる
+        let offset = headTracker.offsetDeg
+        synth?.play(.homeBeacon, relativeBearingDeg: -offset)
+        headCheckLine = String(format: "首の向き %+.0f°(右が正)→ 音は %+.0f° に鳴る",
+                               offset, -offset)
+        headCheckTimer = Timer.scheduledTimer(withTimeInterval: params.audio.guidanceIntervalSec,
+                                              repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.fireHeadCheckTick() }
+        }
+    }
+
+    // MARK: - 時間到来への応答
+
+    /// 残りの延長回数。画面に出して「押しても延びない」を防ぐ
+    var extensionsLeft: Int {
+        max(0, params.session.maxExtensions - extensionsUsed)
+    }
+
+    /// 帰路を始める。**AirPods を着けていない人が画面から答えるための入り口。**
+    /// うなずきと同じイベントを流すので、どちらで答えても挙動と記録は変わらない
+    func answerReturnNow() { apply(.nod) }
+
+    /// もう少し歩く(延長)。首振りと同じイベントを流す
+    func answerExtend() { apply(.shake) }
+
     // デバッグ用(シミュレータ・モーション非対応時の代替)
     func debugTimeUp() { apply(.timeUp) }
-    func debugNod() { apply(.nod) }
-    func debugShake() { apply(.shake) }
 
     // MARK: - イベント適用
 
@@ -264,7 +341,10 @@ final class WalkSessionController: ObservableObject {
         case .play(let earcon):
             // 会話などで AirPods を外している間はプロンプトを鳴らさず、再装着時に鳴らし直す。
             // 応答待ちのまま待つ挙動は変えない(docs/01「応答待ち中に外している間は…」)
-            if earcon == .timeUpPrompt, !headphonesConnected {
+            // **保留してよいのは「着けていた人が外した」場合だけ**(→ PromptDelivery)
+            if earcon == .timeUpPrompt,
+               PromptDelivery.shouldHold(connected: headphonesConnected,
+                                         hasEverConnected: headphonesEverConnected) {
                 promptPending = true
                 log("ヘッドフォン未装着のためプロンプトを保留します")
                 return
@@ -450,7 +530,7 @@ final class WalkSessionController: ObservableObject {
         if let s = BearingSuggester.suggest(position: p, headingDeg: heading, home: h,
                                             grid: grid, homewardBias: bias,
                                             route: params.route) {
-            let reference = latestFacingBearing ?? heading
+            let reference = placementReference(heading)
             let rel = Geo.angularDiffDeg(s.absoluteBearingDeg, reference)
             synth?.play(.suggestion, relativeBearingDeg: rel)
             lastSuggestionPoint = p
@@ -528,9 +608,15 @@ final class WalkSessionController: ObservableObject {
         return (route, true)
     }
 
-    /// 定位の基準。顔の向きが取れればそれ、取れなければ進行方位
-    private func placementReference(_ travel: TravelDirectionFix) -> Double {
-        latestFacingBearing ?? travel.deg
+    /// 定位の基準。顔の向きが取れればそれ、取れなければ進行方位。
+    ///
+    /// 角速度からの推定(HeadTracker)を使う設定なら、進行方位に首のぶんを足す。
+    /// **既定は false**。姿勢の yaw を使った系統は 2026-08-19 に左右を壊した前科があるので、
+    /// 別系統であっても、机上で確かめるまでは動作に入れない(docs/08)
+    private func placementReference(_ travelDeg: Double) -> Double {
+        if let facing = latestFacingBearing { return facing }
+        guard params.heading.useGyroHeadOffset else { return travelDeg }
+        return Geo.normalizeDeg(travelDeg + headTracker.offsetDeg)
     }
 
     private func playBeacon() {
@@ -550,7 +636,7 @@ final class WalkSessionController: ObservableObject {
         noteDirectionAvailable()
         // 定位の基準は「顔の向き」。取れないうちは進行方位で代用する。
         // 顔基準にすると、首を振っても音が世界に固定されて聞こえる
-        let rel = Geo.angularDiffDeg(bearingHome, placementReference(travel))
+        let rel = Geo.angularDiffDeg(bearingHome, placementReference(travel.deg))
         let pan = SoundPlacement.pan(relativeBearingDeg: rel)
         let gain = beaconGain()
         synth?.play(.homeBeacon, relativeBearingDeg: rel, gain: gain)
@@ -636,6 +722,7 @@ final class WalkSessionController: ObservableObject {
 
     private func onHeadphoneConnectionChange(_ connected: Bool) {
         headphonesConnected = connected
+        if connected { headphonesEverConnected = true }
         log(connected ? "ヘッドフォンを検出しました" : "ヘッドフォンが外れました")
         // 再装着すると姿勢の基準が引き直され、yaw が不連続に跳ぶ。
         // 段階 8 の実測では装着直後に yaw 振幅 203.7° が記録されており、
@@ -651,13 +738,20 @@ final class WalkSessionController: ObservableObject {
     private func updateFacingBearing(_ s: HeadSample) {
         guard let course = latestCourseBearing else { return }
         // yaw と course の対を一定間隔で残す。角を曲がれば両方が同じだけ回るので、
-        // 回転の向きが揃っているかを後から自動判定できる(再生ツールが読む)
+        // 回転の向きが揃っているかを後から自動判定できる(再生ツールが読む)。
+        //
+        // **角速度の積分も併せて残す**(2026-08-21)。姿勢の yaw は旋回を追えていなかったが、
+        // ジャイロそのものが追えていないのかは別の問題。`回転` は減衰なしの積分なので、
+        // 角を曲がった区間で `Δcourse` と一致するかを見れば、ジャイロの可否が判定できる
         let now = Date()
         if state == .wandering || state == .returning,
            lastHeadingLogAt == nil
             || now.timeIntervalSince(lastHeadingLogAt!) >= params.heading.logIntervalSec {
             lastHeadingLogAt = now
-            logToFile(String(format: "頭向き yaw=%.1f° course=%.1f°", s.yawDeg, course))
+            let heading = s.headingDeg.map { String(format: "%.1f", $0) } ?? "-"
+            logToFile(String(format: "頭向き yaw=%.1f° course=%.1f° 回転=%.1f° 推定=%.1f° heading=%@",
+                             s.yawDeg, course, headTracker.takeRotation(),
+                             headTracker.offsetDeg, heading))
         }
         guard params.heading.useHeadOrientation else { return }
         let p = HeadingFusion.Params(baselineAlpha: params.heading.baselineAlpha,
@@ -675,6 +769,8 @@ final class WalkSessionController: ObservableObject {
         // 再装着で yaw の基準が引き直されるため、顔の向きの基準線も作り直す
         headingFusion.reset()
         latestFacingBearing = nil
+        // 角速度の積分も捨てる。外していた間の回転は分からない
+        headTracker.reset()
         diagCount = 0
         diagPitchMin = .infinity
         diagPitchMax = -.infinity
@@ -687,6 +783,11 @@ final class WalkSessionController: ObservableObject {
 
     private func onHeadSample(_ s: HeadSample) {
         accumulateMotionDiagnostics(s)
+        // **角速度から頭の向きを推定する。** 既定では記録するだけで動作に影響しない
+        // (`use_gyro_head_offset`)。姿勢の yaw を使う系統とは別物(docs/08)
+        headTracker.ingest(yawRateDegPerSec: s.yawRateDegPerSec, time: s.time,
+                           p: params.heading.headTracker)
+        if headCheckActive { return }
         updateFacingBearing(s)
 
         if state == .promptingReturn {
@@ -849,7 +950,7 @@ final class WalkSessionController: ObservableObject {
         guard now.timeIntervalSince(last.at) >= params.audio.beaconMinGapSec else { return }
         let fix = location.motionFix(now: now)
         guard let travel = currentTravel(fix, now: now) else { return }
-        let rel = Geo.angularDiffDeg(bearing.deg, placementReference(travel))
+        let rel = Geo.angularDiffDeg(bearing.deg, placementReference(travel.deg))
         let change = abs(Geo.angularDiffDeg(rel, last.relDeg))
         guard change >= params.audio.beaconDirectionChangeDeg else { return }
         logToFile(String(format: "ビーコン繰り上げ 方向が %.0f° 変化(%.0f° → %.0f°)",
@@ -1012,8 +1113,7 @@ final class WalkSessionController: ObservableObject {
         }
 
         // 定位の基準は顔の向き。取れないうちは進行方位で代用する
-        let reference = latestFacingBearing ?? travel
-        let rel = reference.map { Geo.angularDiffDeg(step.targetBearingDeg, $0) }
+        let rel = travel.map { Geo.angularDiffDeg(step.targetBearingDeg, placementReference($0)) }
         // **帰路は帰路の音で案内する**(2026-08-21 の利用者判断)。判断は Core に置く
         synth?.play(WalkMachine.guidanceEarcon(for: state), relativeBearingDeg: rel, gain: step.gain)
         // 番号は「n 回目のイベント」として利用者が数える単位。**鳴った時に振る**ので、
@@ -1082,13 +1182,16 @@ final class WalkSessionController: ObservableObject {
     }
 
     /// 自宅までの距離。**経路データがあれば実際に歩く距離**、無ければ直線距離。
-    /// 直線 × 迂回率は川や私有地を突っ切った値になるので、取れるなら使わない
+    /// 直線 × 迂回率は川や私有地を突っ切った値になるので、取れるなら使わない。
+    ///
+    /// 経路長が直線距離に対して大きすぎる場合は上限で頭を押さえる。
+    /// スナップが幹線の反対側に乗ると、実際には歩かない迂回路の長さが返るため
+    /// (→ `ReturnBudget.distance`)
     private func homeDistance(from p: GeoPoint) -> ReturnBudget.Distance? {
         guard let h = home else { return nil }
-        if let f = routeField, let graph, let m = f.pathLengthM(from: p, graph: graph) {
-            return .route(m)
-        }
-        return .straight(Geo.distanceM(p, h))
+        let routeM = routeField.flatMap { f in graph.flatMap { f.pathLengthM(from: p, graph: $0) } }
+        return ReturnBudget.distance(routeM: routeM, straightM: Geo.distanceM(p, h),
+                                     p: params.budget)
     }
 
     /// 「今帰り始めれば設定時間ちょうどに着く」瞬間にプロンプトを発火する。

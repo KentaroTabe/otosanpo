@@ -4,11 +4,20 @@ public struct HeadSample: Equatable {
     public var time: TimeInterval
     public var pitchDeg: Double
     public var yawDeg: Double
+    /// 鉛直軸まわりの角速度 [deg/sec]。**ジャイロの生値**。
+    /// 姿勢(yaw)が旋回を追えていなかったため、こちらを頭の向きの推定に使う(HeadTracker)
+    public var yawRateDegPerSec: Double
+    /// CoreMotion が返す磁北基準の方位 [deg]。
+    /// AirPods は参照枠を選べないので**有効値が来るかは未確認**。来るなら絶対方位が取れる
+    public var headingDeg: Double?
 
-    public init(time: TimeInterval, pitchDeg: Double, yawDeg: Double) {
+    public init(time: TimeInterval, pitchDeg: Double, yawDeg: Double,
+                yawRateDegPerSec: Double = 0, headingDeg: Double? = nil) {
         self.time = time
         self.pitchDeg = pitchDeg
         self.yawDeg = yawDeg
+        self.yawRateDegPerSec = yawRateDegPerSec
+        self.headingDeg = headingDeg
     }
 }
 

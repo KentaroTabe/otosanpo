@@ -8,6 +8,30 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             Form {
+                // **時間到来の応答。** うなずき・首振りはモーション対応の AirPods を
+                // 着けている人しか使えないので、着けていない人が答えられる道を画面にも用意する。
+                // 一番上に置くのは、ポケットから出して開いた人が最初に見る場所だから
+                if controller.state == .promptingReturn {
+                    Section("時間になりました") {
+                        Text("そろそろ帰りますか?")
+                            .font(.title3.bold())
+                        Button("帰る") { controller.answerReturnNow() }
+                        if controller.extensionsLeft > 0 {
+                            Button("もう少し歩く(あと \(controller.extensionsLeft) 回)") {
+                                controller.answerExtend()
+                            }
+                        } else {
+                            Text("延長の上限に達しています")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("AirPods を着けている場合は、うなずく=帰る / "
+                             + "首を横に振る=もう少し歩く でも答えられます")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("設定") {
                     if controller.home == nil {
                         LabeledContent("自宅", value: "未設定")
@@ -69,10 +93,30 @@ struct ContentView: View {
                     }
                 }
 
+                // 歩かずに符号と手応えを決めるための机上テスト。
+                // 姿勢(yaw)の系統は散歩 1 回を丸ごと潰した前科があるので、
+                // 角速度の系統は先にここで確かめる(docs/08)
+                Section("頭の追従の確認(机上・AirPods 装着)") {
+                    if controller.headCheckActive {
+                        Text(controller.headCheckLine)
+                            .font(.caption.monospaced())
+                        Text("正面を向いた時の方向に音が置かれています。"
+                             + "首を右に向けると音は左へ動くのが正しい動作です")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("確認を終了", role: .destructive) { controller.stopHeadCheck() }
+                    } else {
+                        Button("頭の追従を確認する") { controller.startHeadCheck() }
+                        Text("歩かずに確認できます。動かない・逆に動く場合は "
+                             + "head_rate_sign を反転させてください")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("デバッグ(シミュレータ・モーション非対応時の代替)") {
                     Button("時間到来を発火") { controller.debugTimeUp() }
-                    Button("うなずきを発火(帰路開始)") { controller.debugNod() }
-                    Button("首振りを発火(延長)") { controller.debugShake() }
+                    // 帰る / 延長はデバッグ専用ではなくなったので、上の「時間になりました」に移した
                 }
 
                 Section("earcon の試聴") {
@@ -133,6 +177,12 @@ struct ContentView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(controller.alertMessage ?? "")
+            }
+            // 出発の一言。**画面を見るのは開始の瞬間だけ**なので、ここで出して閉じてもらう
+            .alert(controller.greeting ?? "",
+                   isPresented: Binding(get: { controller.greeting != nil },
+                                        set: { if !$0 { controller.greeting = nil } })) {
+                Button("はい", role: .cancel) {}
             }
         }
     }

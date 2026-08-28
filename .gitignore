@@ -1,6 +1,13 @@
 .DS_Store
 Support/Signing.xcconfig
+# 配る側(開発者)の手順。docs/09 の本文はテスターにそのまま渡せる状態に保ち、
+# 配布・署名・審査の手順はここへ分けて手元にだけ置く。
+# **手元にしか無い = 失うと復元できない。**
+docs/09_distribution_private.md
 logs/
+# 相手に渡すもの(APK など)の置き場。どの枝にも属さないので、
+# ブランチを切り替えても消えない
+dist/
 build/
 DerivedData/
 *.xcodeproj
@@ -8,6 +15,21 @@ xcuserdata/
 field-logs/
 build-replay/
 maps/
+# 地方の元データ(Geofabrik の GeoPackage)の置き場。1 つ 1〜2 GB あるので
+# **絶対にコミットしない。** 公開配布物なので、失っても落とし直せる
+DL/
 build-mapbuild/
 build-demo/
 build-demo-tool/
+# Android のビルド生成物と機械固有の設定。
+# **2026-08-25 に .gradle 一式と local.properties を誤ってコミットしていた**
+# (392e793)。無視の指定が feature/android 側にしか無かったため、
+# develop で git add したときに拾われた。**両方の枝に置く**
+.gradle/
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/app/src/main/assets/parameters.json
+android/app/src/main/assets/otosanpo-map.json
+android/build/
+android/*/build/
