@@ -5,6 +5,9 @@ Support/Signing.xcconfig
 # **手元にしか無い = 失うと復元できない。**
 docs/09_distribution_private.md
 logs/
+# 相手に渡すもの(APK など)の置き場。どの枝にも属さないので、
+# ブランチを切り替えても消えない
+dist/
 build/
 DerivedData/
 *.xcodeproj
