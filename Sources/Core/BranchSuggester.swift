@@ -63,26 +63,28 @@ public enum BranchSuggester {
                               travelBearingDeg: Double,
                               position: GeoPoint, home: GeoPoint,
                               grid: VisitGrid, homewardBias: Double,
-                              target: GeoPoint? = nil,
-                              route: AppParameters.Route, now: Date) -> Choice? {
+                              target: GeoPoint? = nil, graph: WalkGraph? = nil,
+                              route: AppParameters.Route) -> Choice? {
         if case .suggest(let c) = decide(intersection: intersection,
                                          travelBearingDeg: travelBearingDeg,
                                          position: position, home: home, grid: grid,
                                          homewardBias: homewardBias, target: target,
-                                         route: route, now: now) {
+                                         graph: graph, route: route) {
             return c
         }
         return nil
     }
 
-    /// - Parameter target: 向かっている地帯(ZoneMap が選ぶ)。
-    ///   局所の選択に広域の向きを与える。帰宅バイアスが立つにつれ効き目は畳まれる
+    /// - Parameters:
+    ///   - target: 向かっている地帯(ZoneMap が選ぶ)。
+    ///     局所の選択に広域の向きを与える。帰宅バイアスが立つにつれ効き目は畳まれる
+    ///   - graph: 与えると**新鮮さをその道に沿って測る**。無ければ扇形で代用する
     public static func decide(intersection: UpcomingIntersection,
                               travelBearingDeg: Double,
                               position: GeoPoint, home: GeoPoint,
                               grid: VisitGrid, homewardBias: Double,
-                              target: GeoPoint? = nil,
-                              route: AppParameters.Route, now: Date) -> Decision {
+                              target: GeoPoint? = nil, graph: WalkGraph? = nil,
+                              route: AppParameters.Route) -> Decision {
         let homeBearing = Geo.bearingDeg(from: position, to: home)
         let targetBearing = target.map { Geo.bearingDeg(from: position, to: $0) }
         // 行き先の寄与は帰宅バイアスの裏返し。**帰宅が常に優先**なので、
@@ -96,8 +98,16 @@ public enum BranchSuggester {
             // 来た道(ほぼ真後ろ)は候補にしない。折り返しは困惑とストレスの元(docs/04)
             if abs(rel) >= route.branchBackwardDeg { continue }
 
-            let fam = grid.sectorFamiliarity(from: intersection.point, bearingDeg: b.bearingDeg,
-                                             params: route, now: now)
+            // **その道に沿って測る。** 扇形だと、そこから行けない別の道や
+            // 道でない場所まで混ざる(docs/04)
+            let samples = graph?.samplesAlong(branch: b, from: intersection.nodeIndex,
+                                              withinM: route.sectorRadiusM,
+                                              stepM: route.cellSizeM) ?? []
+            let fam = samples.isEmpty
+                ? grid.sectorFamiliarity(from: intersection.point, bearingDeg: b.bearingDeg,
+                                         params: route)
+                : grid.averageFamiliarity(at: samples,
+                                          excludedFamiliarity: route.excludedFamiliarity)
             let novelty = 1.0 / (1.0 + fam)
             let angleToHome = abs(Geo.angularDiffDeg(b.bearingDeg, homeBearing)) / 180.0
             // 横断コストと道の種別は、どちらも「その道へ入る負担」として引く

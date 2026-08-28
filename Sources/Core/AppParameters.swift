@@ -11,6 +11,8 @@ public struct AppParameters: Codable, Equatable {
     public var gesture: Gesture
     public var audio: Audio
     public var location: Location
+    public var summary: Summary
+    public var greeting: Greeting
 
     public struct Session: Codable, Equatable {
         public var defaultDurationMin: Double
@@ -39,6 +41,10 @@ public struct AppParameters: Codable, Equatable {
         /// 直線距離を歩く距離に直す係数。**経路データがあるときは使わない**。
         /// 実測は 1.09〜1.70 に散らばり、固定値ではどちら側にも外れる(docs/03)
         public var detourFactor: Double
+        /// 経路長を信用する上限。直線距離の何倍までを「ありうる遠回り」とみなすか。
+        /// これを超えた経路長はスナップの誤りを疑い、この倍数で頭を押さえる
+        /// (2026-08-27 の実測: 通常は 95% が 1.68 倍以内、跳ねた時だけ 2.5〜3.06 倍)
+        public var routeStraightMaxRatio: Double
         public var returnReserveMin: Double
         public var softZoneRatio: Double
         /// 散歩 1 回ぶんの平均速度をどれだけ取り込むか [0..1]
@@ -59,7 +65,8 @@ public struct AppParameters: Codable, Equatable {
 
     public struct Route: Codable, Equatable {
         public var cellSizeM: Double
-        public var visitHalfLifeDays: Double
+        /// 通過の重みが半分になるまでに歩く距離 [m]。**減衰の時計は日数ではなく歩いた総距離**
+        public var visitHalfLifeM: Double
         public var sectorWidthDeg: Double
         public var sectorRadiusM: Double
         public var suggestionMinScore: Double
@@ -74,6 +81,9 @@ public struct AppParameters: Codable, Equatable {
         public var mapIndexCellSizeM: Double
         /// この距離より離れた点は道に乗せない [m]。水平精度(実測 3〜5 m)より大きく取る
         public var snapMaxDistanceM: Double
+        /// 経路上の節点に「着いた」とみなす距離 [m]。
+        /// 真上に立つと、そこへ向かう方位が雑音で暴れるため
+        public var nodeArrivalToleranceM: Double
         /// 前方この距離以内の交差点を「これから曲がる場所」として扱う [m]
         public var intersectionLookaheadM: Double
         /// 進行方向との差がこれ以内の分岐は「直進」とみなす [deg]
@@ -95,6 +105,9 @@ public struct AppParameters: Codable, Equatable {
         public var zoneSampleGrid: Int
         /// 行き先として認める現在地からの最短距離 [m]。すぐ隣は行き先にならない
         public var targetMinDistanceM: Double
+        /// 上の距離を、行ける範囲に対する比でも抑える。
+        /// 固定値だけだと短い散歩で行き先を 1 つも選べなくなる(2026-08-19 実測)
+        public var targetMinDistanceRatio: Double
         /// 行き先にこの距離まで近づいたら、次の行き先を選び直す [m]
         public var targetReachedM: Double
         /// 分岐スコアで行き先の向きをどれだけ重んじるか。
@@ -105,6 +118,7 @@ public struct AppParameters: Codable, Equatable {
         public var zoneParams: ZoneMap.Params {
             ZoneMap.Params(zoneSizeM: zoneSizeM, minRoadM: zoneMinRoadM,
                            sampleGrid: zoneSampleGrid, minDistanceM: targetMinDistanceM,
+                           minDistanceRatio: targetMinDistanceRatio,
                            excludedFamiliarity: excludedFamiliarity)
         }
     }
@@ -123,6 +137,30 @@ public struct AppParameters: Codable, Equatable {
         public var allowCompassFallback: Bool
     }
 
+    /// 散歩の記録(WalkSummary)。**開発中の振り返り用**の画面に効く
+    public struct Summary: Codable, Equatable {
+        /// 経路として残す点の上限。超えたら 1 つおきに間引き、以後の間隔を 2 倍にする。
+        /// 長い散歩でも記録が伸び続けないようにするための上限
+        public var maxTrackPoints: Int
+        /// 経路図の余白 [m]。端のイベントが枠に貼り付かないように
+        public var mapMarginM: Double
+        /// 経路図の最小の広さ [m]。ごく短い散歩でも図が破綻しないように
+        public var mapMinSpanM: Double
+    }
+
+    /// 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない)
+    public struct Greeting: Codable, Equatable {
+        public var windows: [GreetingWindow]
+    }
+
+    public struct GreetingWindow: Codable, Equatable {
+        /// 開始の時(この時を含む)
+        public var fromHour: Int
+        /// 終了の時(この時を**含まない**)。`from` より小さければ真夜中をまたぐ
+        public var toHour: Int
+        public var message: String
+    }
+
     /// 顔の向きの推定(HeadingFusion)。docs/03「頭の向きを定位に反映」
     public struct Heading: Codable, Equatable {
         /// 顔の向きを定位の基準に使うか。false なら従来どおり進行方位だけを使う
@@ -135,6 +173,28 @@ public struct AppParameters: Codable, Equatable {
         public var minSamples: Int
         /// yaw と course の対をログに残す間隔 [sec]。回転の向きが揃っているかの判定材料
         public var logIntervalSec: Double
+        /// **角速度から推定した頭の向きを定位に使うか。** false なら記録だけして動作に影響しない。
+        /// 姿勢(yaw)を使う `useHeadOrientation` とは別系統(そちらは 2026-08-19 に不成立)
+        public var useGyroHeadOffset: Bool
+        /// 角速度の推定が 0 へ戻る半減期 [sec]。絶対基準を持たないのでドリフトは時間で消す
+        public var headOffsetHalfLifeSec: Double
+        /// 角速度の推定として認める首の相対角の上限 [deg]
+        public var headOffsetMaxDeg: Double
+        /// これ未満の角速度は 0 とみなす [deg/sec]。ジャイロの雑音と偏りを捨てる
+        public var headRateDeadbandDegPerSec: Double
+        /// 角速度の向きを「右が正」に合わせる符号(+1 / −1)。**机上テストで確かめる**
+        public var headRateSign: Double
+        /// サンプルの間隔がこれを超えたら積分しない [sec](再装着・中断のあと)
+        public var headRateMaxGapSec: Double
+
+        /// HeadTracker に渡す設定値
+        public var headTracker: HeadTracker.Params {
+            HeadTracker.Params(halfLifeSec: headOffsetHalfLifeSec,
+                               maxOffsetDeg: headOffsetMaxDeg,
+                               deadbandDegPerSec: headRateDeadbandDegPerSec,
+                               sign: headRateSign, maxGapSec: headRateMaxGapSec)
+        }
+
         /// yaw の回転の向きを方位に合わせる符号(+1 / −1)。
         /// **符号を直しても顔の向きは推定できない**(2026-08-19 実測)。
         /// yaw は旋回そのものを追えておらず、|Δraw| が |Δcourse| とほぼ同じだった。
@@ -160,10 +220,32 @@ public struct AppParameters: Codable, Equatable {
         public var suggestionMinIntervalSec: Double
         public var returnAckRepeatIntervalSec: Double
         public var returnAckDurationSec: Double
-        public var beaconIntervalNearSec: Double
-        public var beaconIntervalFarSec: Double
+        /// 何歩に 1 回ビーコンを鳴らすか。**間隔は歩調に同期させる**
+        /// (2026-08-16 の要望「歩くペースに合わせた頻度でなる」)
+        public var beaconStepsPerTone: Double
+        /// 間隔の下限・上限 [sec]。歩調が極端なときに暴れないよう挟む
+        public var beaconIntervalMinSec: Double
+        public var beaconIntervalMaxSec: Double
+        /// 歩調が取れないときの間隔 [sec]
+        public var beaconIntervalFallbackSec: Double
+        /// 歩調をこの秒数まで有効とみなす。立ち止まると更新が来なくなるため
+        public var beaconCadenceMaxAgeSec: Double
+        /// ビーコンの音量 [0..1]。**距離は音量で表す**(間隔は歩調に取られるため)
+        public var beaconGainFar: Double
+        public var beaconGainNear: Double
+        /// 音量が最大・最小になる自宅までの距離 [m]
         public var beaconNearDistanceM: Double
         public var beaconFarDistanceM: Double
+
+        /// BeaconRhythm に渡す設定値
+        public var beaconRhythm: BeaconRhythm.Params {
+            BeaconRhythm.Params(
+                stepsPerTone: beaconStepsPerTone, minIntervalSec: beaconIntervalMinSec,
+                maxIntervalSec: beaconIntervalMaxSec,
+                fallbackIntervalSec: beaconIntervalFallbackSec,
+                gainFar: beaconGainFar, gainNear: beaconGainNear,
+                nearDistanceM: beaconNearDistanceM, farDistanceM: beaconFarDistanceM)
+        }
         /// 相対方位がこれ以上変わったら、次のビーコンを待たずに繰り上げて鳴らす [deg]。
         /// 角を曲がってから最大 5 秒待たせないため
         public var beaconDirectionChangeDeg: Double
@@ -190,11 +272,23 @@ public struct AppParameters: Codable, Equatable {
         /// 曲がり終えた後、音量を落としながら鳴らす音の数。
         /// 「イベントが終わりかけている」ことを音で伝える
         public var guidanceClosingTones: Int
+        /// 冒頭に「曲がる先」を指す音の数。0 で無効。
+        /// 角を指す設計上、遠い時点では角は真正面にある。**1 音目は前の音が無いので、
+        /// それ単独で「どちらへ曲がるか」を伝える必要がある**(2026-08-20 の指摘)
+        public var guidanceAnnounceTones: Int
+        /// 角への方位が進行方向からこれ以上離れたら、従わなかったとみなして誘導を止める [deg]。
+        /// **90° を超えるとは、幾何的にその角から遠ざかっているということ。**
+        /// 背後の角を指し続けるのは「戻れ」と言っているのと同じで、それは叱っている
+        public var guidanceAbandonBehindDeg: Double
         /// 角からこの距離以上離れたら誘導を終える [m](通過後は間隔が開いて自然に消える)
         public var guidanceEndDistanceM: Double
         /// 最接近点からこれ以上遠ざかったら誘導を終える [m]。
         /// 通り過ぎた角を指し続けると混乱するだけなので、離れ始めたら諦める
         public var guidanceLeftBehindM: Double
+        /// 各 earcon の先頭に足す無音 [sec]。
+        /// 定位が目標の向きへ移り終わるのを待つため(docs/03「向きが滲む」)。
+        /// 0 で無効
+        public var earconLeadSilenceSec: Double
         public var earconGain: Double
         public var tones: Tones
 

@@ -40,6 +40,17 @@ public enum WalkEffect: Equatable {
 
 /// 状態遷移の純粋 reducer。副作用(タイマー・音・位置)は Controller が Effect を実行する。
 public enum WalkMachine {
+    /// 曲がり角の誘導に使う earcon。
+    ///
+    /// **帰路は帰路の音で案内する**(2026-08-21 の利用者判断)。
+    /// 帰路で誘導(suggestion)とビーコン(homeBeacon)が交互に鳴ると、
+    /// 同じ「帰る」区間なのに音が 2 種類混ざって落ち着かない。
+    /// 帰路の音を 1 種類に揃え、**指す先が角か自宅かの違いは間隔と音量が担う**
+    /// (誘導は 1.2 秒の連続音、ビーコンは歩調に同期した間欠音)。
+    public static func guidanceEarcon(for state: WalkState) -> Earcon {
+        state == .returning ? .homeBeacon : .suggestion
+    }
+
     /// - Parameter plannedDurationMin: この散歩の設定時間。延長量はこれに比例する
     ///   (`extension_ratio`。固定分だと 30 分の散歩と 90 分の散歩で延長の意味が変わる)
     public static func reduce(state: WalkState, event: WalkEvent,

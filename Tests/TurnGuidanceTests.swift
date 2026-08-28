@@ -29,6 +29,51 @@ final class TurnGuidanceTests: XCTestCase {
         return nil
     }
 
+    // MARK: - 1 音目は「どちらへ曲がるか」を告げる
+
+    /// **1 音目だけは曲がる先を指す。**
+    /// 角を指す設計上、遠い時点では角は真正面にある(実測: 35m 地点で始まる回の
+    /// 1 音目は −10° / +18° / −12° / −11°)。前の音が無い 1 音目は、それ単独で
+    /// 「どちらへ曲がるか」を伝える必要がある(2026-08-20 の指摘)
+    func testFirstToneAnnouncesTheTurnDirection() {
+        var g = guidance()
+        guard let first = play(&g, at: approach(35), travel: 0) else { return XCTFail("鳴らない") }
+        XCTAssertTrue(first.isAnnouncing)
+        XCTAssertEqual(first.targetBearingDeg, branchDeg, accuracy: 1, "曲がる先(東)を指す")
+
+        // 2 音目からは従来どおり角を指す。「音の鳴る方に歩けば角に着く」は保たれる
+        guard let second = play(&g, at: approach(34), travel: 0) else { return XCTFail("鳴らない") }
+        XCTAssertFalse(second.isAnnouncing)
+        XCTAssertLessThan(abs(Geo.angularDiffDeg(second.targetBearingDeg, 0)), 10,
+                          "角(北)寄りを指す")
+        XCTAssertGreaterThan(abs(Geo.angularDiffDeg(second.targetBearingDeg, branchDeg)), 45,
+                             "曲がる先(東)からは離れている")
+    }
+
+    /// 予告は 1 回だけ。角へ近づいてから鳴り直したりしない
+    func testAnnouncementHappensOnlyOnce() {
+        var g = guidance()
+        for d in stride(from: 35.0, through: 12.0, by: -1.0) {
+            guard let s = play(&g, at: approach(d), travel: 0) else {
+                return XCTFail("鳴り止んだ(角まで \(d)m)")
+            }
+            XCTAssertEqual(s.isAnnouncing, d == 35.0, "予告は 1 音目だけ")
+        }
+    }
+
+    /// 予告を切れば、従来どおり 1 音目から角を指す
+    func testAnnouncementCanBeDisabled() {
+        let noAnnounce = TurnGuidance.Params(
+            startDistanceM: 35, peakBeforeM: 10, intervalSec: 1.2,
+            gainFar: 0.3, gainNear: 1.0, endDistanceM: 45, leftBehindM: 12,
+            turnedWithinDeg: 25, closingTones: 3, announceTones: 0)
+        var g = guidance()
+        guard case .play(let s) = g.next(position: approach(35), travelBearingDeg: 0,
+                                         p: noAnnounce) else { return XCTFail("鳴らない") }
+        XCTAssertFalse(s.isAnnouncing)
+        XCTAssertEqual(s.targetBearingDeg, 0, accuracy: 3)
+    }
+
     // MARK: - 距離は音量で、間隔は固定で
 
     func testIntervalIsConstantAndGainRisesTowardTheCorner() {
@@ -72,6 +117,8 @@ final class TurnGuidanceTests: XCTestCase {
 
     func testPointsAtCornerWhenFarAndAtBranchWhenNear() {
         var g = guidance()
+        // 1 音目は予告(曲がる先)なので、その次から見る
+        _ = play(&g, at: approach(35), travel: 0)
         guard let far = play(&g, at: approach(35), travel: 0) else { return XCTFail("鳴らない") }
         XCTAssertEqual(far.targetBearingDeg, 0, accuracy: 1, "遠いうちは角そのもの(北)を指す")
 
@@ -129,6 +176,70 @@ final class TurnGuidanceTests: XCTestCase {
             return XCTFail("鳴らない")
         }
         XCTAssertFalse(s.isClosing)
+    }
+
+    // MARK: - 従わなかったら止める(叱らない)
+
+    /// **角が背後に回ったら止める。**
+    /// 角への方位が進行方向から 90° を超えるとは、その角から遠ざかっているということ。
+    /// 指し続けるのは「戻れ」と言っているのと同じで、それは叱っている。
+    /// 実測(2026-08-20)では 242 発中 30 発が、断った後に鳴っていた
+    func testStopsOnceTheCornerIsBehind() {
+        var g = guidance(at: 30)
+        _ = play(&g, at: approach(30), travel: 0)
+        // 角の脇を通り過ぎて東へ向かった。角は西寄り後方(相対 -135°)になる
+        let past = Geo.destination(from: corner, bearingDeg: 135, distanceM: 20)
+        XCTAssertEqual(g.next(position: past, travelBearingDeg: 90, p: p),
+                       .finished(.declined))
+    }
+
+    /// **角まで寄った後は対象外。** 曲がっている最中は角が背後に来るのが当たり前で、
+    /// そこは「曲がり終えた」の判定と終端の音が受け持つ
+    func testDoesNotAbandonWhileTurningAtTheCorner() {
+        var g = guidance()
+        for d in stride(from: 35.0, through: 4.0, by: -1.0) {
+            _ = play(&g, at: approach(d), travel: 0)
+        }
+        // 角を東へ抜けた直後。角は背後だが、最接近 4m まで寄っているので打ち切らない
+        let past = Geo.destination(from: corner, bearingDeg: 90, distanceM: 10)
+        guard case .play(let s) = g.next(position: past, travelBearingDeg: branchDeg, p: p) else {
+            return XCTFail("曲がり終えた直後に打ち切ってはいけない")
+        }
+        XCTAssertTrue(s.isClosing, "終端の音として続く")
+    }
+
+    /// 接近中(角が前方)なら止めない
+    func testKeepsGoingWhileTheCornerIsAhead() {
+        var g = guidance()
+        _ = play(&g, at: approach(35), travel: 0)
+        XCTAssertNotNil(play(&g, at: approach(30), travel: 0))
+        XCTAssertNotNil(play(&g, at: approach(20), travel: 0))
+    }
+
+    /// **始める前にも同じ判定を通せる。**
+    /// 実測(2026-08-21)では、背後の角に対して誘導を始めては 1 音も鳴らさずに止める、
+    /// という空振りが 1 回の散歩で 6 件あった(毎秒の位置更新のたびに同じ角を選び直していた)
+    func testIsBehindAnswersTheSameQuestionBeforeStarting() {
+        let past = Geo.destination(from: corner, bearingDeg: 135, distanceM: 20)
+        XCTAssertTrue(TurnGuidance.isBehind(corner: corner, from: past, travelBearingDeg: 90,
+                                            closestM: 20, p: p))
+        // 前方の角は始めてよい
+        XCTAssertFalse(TurnGuidance.isBehind(corner: corner, from: approach(30),
+                                             travelBearingDeg: 0, closestM: 30, p: p))
+        // 角の手前まで寄っていれば対象外(曲がっている最中は背後になるのが当たり前)
+        XCTAssertFalse(TurnGuidance.isBehind(corner: corner, from: past, travelBearingDeg: 90,
+                                             closestM: p.peakBeforeM, p: p))
+        // 進行方向が取れないうちは判定しない
+        XCTAssertFalse(TurnGuidance.isBehind(corner: corner, from: past, travelBearingDeg: nil,
+                                             closestM: 20, p: p))
+    }
+
+    /// 進行方向が取れないうちは判定しない(誤って打ち切らない)
+    func testDoesNotAbandonWithoutATravelBearing() {
+        var g = guidance(at: 30)
+        _ = play(&g, at: approach(30), travel: nil)
+        let past = Geo.destination(from: corner, bearingDeg: 135, distanceM: 20)
+        XCTAssertNotNil(play(&g, at: past, travel: nil))
     }
 
     // MARK: - 曲がらなかった場合

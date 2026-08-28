@@ -15,13 +15,21 @@ final class WalkSessionController: ObservableObject {
     /// ヘッドフォンモーションの受信状況。検出できない原因の切り分けに使う
     @Published private(set) var motionStatusLine = "ヘッドフォンモーション: 未開始"
     @Published private(set) var eventLog: [String] = []
+    /// 直近の散歩の記録(経路・距離・時間・番号を振ったイベント)。
+    /// 歩いている最中は書き留められないので、帰ってから振り返るために残す
+    @Published private(set) var lastSummary: WalkSummary?
     /// 操作が通らなかったことを画面で知らせる(nil で非表示)
     @Published var alertMessage: String?
+    /// 出発の一言(nil で非表示)。**画面を見るのは開始の瞬間だけ**なので、ここに出す。
+    /// 文言と時間帯は config/parameters.json、選ぶのは Core(StartGreeting)
+    @Published var greeting: String?
 
     let params: AppParameters
 
     private let location = LocationService()
     private let motion = HeadphoneMotionService()
+    /// 歩調。ビーコンを歩みに同期させるためだけに使う(AirPods を外していても取れる)
+    private let pedometer = PedometerService()
     private let fieldLog = FieldLog()
     private var synth: EarconSynth?
     private var grid: VisitGrid
@@ -47,18 +55,28 @@ final class WalkSessionController: ObservableObject {
     private var returnDirectionStarted = false
     /// 散歩全体と帰路それぞれの歩行実測。予算模型の係数を実測から決めるための計測
     private var walkMetrics = GaitMetrics()
+    /// 積算歩行距離の時計を進めた地点(この散歩の経路長のうち、既に反映した分)
+    private var odometerBaseM: Double = 0
     private var returnMetrics: GaitMetrics?
     private var returnStart: (distanceM: Double, at: Date)?
     /// ヘッドフォンの接続状態と、外している間に持ち越したプロンプト
     private var headphonesConnected = false
+    /// この散歩で一度でも AirPods を検出したか。
+    /// **持っていない人と、一時的に外した人を区別するために要る**(→ `run(.play)`)
+    private var headphonesEverConnected = false
     private var promptPending = false
     /// 直近のビーコンで鳴らした相対方位と時刻(方向が変わったら次を繰り上げるため)
     private var lastBeacon: (relDeg: Double, at: Date)?
+    /// 記録中の散歩。終了時に閉じて `lastSummary` へ移す
+    private var summary: WalkSummary?
+    /// 進行中の誘導に振った番号。ログの行と経路図の印を突き合わせるために添える。
+    /// **最初の 1 音が鳴った時に振る**(鳴らずに終わった誘導は番号を持たない)
+    private var guidanceNumber: Int?
+    /// 背後なので見送った角。同じ角の見送りを毎秒記録しないために持つ
+    private var lastBehindCorner: GeoPoint?
     /// 進行中の曲がり角誘導。1 つの曲がるイベントに対して、角へ近づくほど音量が上がる
     /// 連続音を出し、曲がり終えたら数音かけて閉じる。判断は Core(TurnGuidance)が持つ
     private var turnGuidance: TurnGuidance?
-    /// 誘導に使う音。散策は suggestion、帰路は homeBeacon(音だけを変える)
-    private var turnGuidanceEarcon: Earcon = .suggestion
     private var guidanceTimer: Timer?
     /// 経路データ。Documents に置かれていれば読む。無ければグリッドのみで動く
     private var graph: WalkGraph?
@@ -73,6 +91,13 @@ final class WalkSessionController: ObservableObject {
     private var target: ZoneMap.Target?
     /// 顔の向きの推定。定位の基準を進行方位から「顔の向き」へ寄せる
     private var headingFusion = HeadingFusion()
+    /// 角速度から頭の向きを推定する別系統(HeadTracker)。既定では記録だけ
+    private var headTracker = HeadTracker()
+    /// 机上で頭の追従を確かめている最中か(散歩とは独立に回す)
+    @Published private(set) var headCheckActive = false
+    /// 机上テストの現在値。画面に出して符号と追従を目で確かめる
+    @Published private(set) var headCheckLine = ""
+    private var headCheckTimer: Timer?
     /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
     private var latestCourseBearing: Double?
     /// 推定した顔の絶対方位。nil なら進行方位をそのまま使う
@@ -91,13 +116,14 @@ final class WalkSessionController: ObservableObject {
         self.params = params
         durationMin = params.session.defaultDurationMin
         grid = GridStore.load(cellSizeM: params.route.cellSizeM,
-                              halfLifeDays: params.route.visitHalfLifeDays)
+                              halfLifeM: params.route.visitHalfLifeM)
         detector = HeadGestureDetector(params: params.gesture)
         shadowDetector = HeadGestureDetector(params: params.gesture)
         home = HomeStore.load()
         graph = MapStore.load(cellSizeM: params.route.mapIndexCellSizeM)
         speed = SpeedStore.load()
         zones = graph.map { ZoneMap(map: $0.map, zoneSizeM: params.route.zoneSizeM) }
+        lastSummary = SummaryStore.load()
 
         location.$position
             .sink { [weak self] p in
@@ -156,9 +182,14 @@ final class WalkSessionController: ObservableObject {
         lastGoodCourse = nil
         shadowDetector = HeadGestureDetector(params: params.gesture)
         walkMetrics = GaitMetrics()
+        odometerBaseM = 0
         returnMetrics = nil
         returnStart = nil
         promptPending = false
+        // 開始時点の装着状態を取り込む。接続通知は「接続した瞬間」にしか来ないので、
+        // 起動前から着けていた場合に false のままになるのを防ぐ
+        headphonesConnected = motion.isAvailable
+        headphonesEverConnected = headphonesConnected
         lastBeacon = nil
         headingFusion.reset()
         latestCourseBearing = nil
@@ -166,18 +197,25 @@ final class WalkSessionController: ObservableObject {
         lastSuggestionAt = nil
         lastHeadingLogAt = nil
         turnGuidance = nil
+        guidanceNumber = nil
         target = nil
         guidanceTimer?.invalidate()
+        summary = WalkSummary(startedAt: Date(), home: home)
         buildRouteField()
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
         motion.start()
+        pedometer.start()
+        log("歩調: 利用可能=\(PedometerService.isAvailable ? "はい" : "いいえ")"
+            + " 許可=\(pedometer.authorizationLabel)")
         log("ヘッドフォンモーション: 利用可能=\(motion.isAvailable ? "はい" : "いいえ")"
             + " 許可=\(motion.authorizationLabel) 更新中=\(motion.isActive ? "はい" : "いいえ")")
         apply(.start)
         scheduleTimeUp()
         log("散歩を開始(\(Int(durationMin)) 分)")
+        // 出発の一言。時刻で変わる(深夜・早朝・日中)
+        greeting = StartGreeting.message(at: Date(), windows: params.greeting.windows)
     }
 
     func stopManually() {
@@ -222,10 +260,68 @@ final class WalkSessionController: ObservableObject {
             + "・エンジン\(synth.isRunning ? "稼働" : "停止"))")
     }
 
+    // MARK: - 頭の追従の机上テスト
+
+    /// **歩かずに「頭の向きが音に乗るか」を確かめる。**
+    ///
+    /// 始めた瞬間に向いていた方向へ音を置き続ける。首を右に向ければ音は左へ動くのが正しい。
+    /// 動かない・逆に動くなら `head_rate_sign` か配線が違う。
+    ///
+    /// これを机上に置く理由: 姿勢(yaw)を使った系統は 2026-08-19 に散歩 1 回を丸ごと潰した
+    /// (左右が壊れた)。**符号と手応えは、散歩を使わずに決められる。**
+    func startHeadCheck() {
+        guard state == .idle || state == .arrived else {
+            alertMessage = "散歩中は確認できません。終了してからお試しください。"
+            return
+        }
+        ensureSynth()
+        headTracker.reset()
+        motion.start()
+        headCheckActive = true
+        headCheckLine = "正面を向いたまま始めてください(音は正面から鳴ります)"
+        log("頭の追従の確認を開始(首を右に向けると音は左へ動くのが正しい)")
+        fireHeadCheckTick()
+    }
+
+    func stopHeadCheck() {
+        headCheckTimer?.invalidate()
+        headCheckTimer = nil
+        headCheckActive = false
+        headCheckLine = ""
+        if state == .idle || state == .arrived { motion.stop() }
+        log("頭の追従の確認を終了")
+    }
+
+    private func fireHeadCheckTick() {
+        headCheckTimer?.invalidate()
+        guard headCheckActive else { return }
+        // 音源は「始めた時に向いていた方向」に固定。頭から見た相対方位はその逆符号になる
+        let offset = headTracker.offsetDeg
+        synth?.play(.homeBeacon, relativeBearingDeg: -offset)
+        headCheckLine = String(format: "首の向き %+.0f°(右が正)→ 音は %+.0f° に鳴る",
+                               offset, -offset)
+        headCheckTimer = Timer.scheduledTimer(withTimeInterval: params.audio.guidanceIntervalSec,
+                                              repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.fireHeadCheckTick() }
+        }
+    }
+
+    // MARK: - 時間到来への応答
+
+    /// 残りの延長回数。画面に出して「押しても延びない」を防ぐ
+    var extensionsLeft: Int {
+        max(0, params.session.maxExtensions - extensionsUsed)
+    }
+
+    /// 帰路を始める。**AirPods を着けていない人が画面から答えるための入り口。**
+    /// うなずきと同じイベントを流すので、どちらで答えても挙動と記録は変わらない
+    func answerReturnNow() { apply(.nod) }
+
+    /// もう少し歩く(延長)。首振りと同じイベントを流す
+    func answerExtend() { apply(.shake) }
+
     // デバッグ用(シミュレータ・モーション非対応時の代替)
     func debugTimeUp() { apply(.timeUp) }
-    func debugNod() { apply(.nod) }
-    func debugShake() { apply(.shake) }
 
     // MARK: - イベント適用
 
@@ -245,7 +341,10 @@ final class WalkSessionController: ObservableObject {
         case .play(let earcon):
             // 会話などで AirPods を外している間はプロンプトを鳴らさず、再装着時に鳴らし直す。
             // 応答待ちのまま待つ挙動は変えない(docs/01「応答待ち中に外している間は…」)
-            if earcon == .timeUpPrompt, !headphonesConnected {
+            // **保留してよいのは「着けていた人が外した」場合だけ**(→ PromptDelivery)
+            if earcon == .timeUpPrompt,
+               PromptDelivery.shouldHold(connected: headphonesConnected,
+                                         hasEverConnected: headphonesEverConnected) {
                 promptPending = true
                 log("ヘッドフォン未装着のためプロンプトを保留します")
                 return
@@ -287,6 +386,9 @@ final class WalkSessionController: ObservableObject {
             sessionEnd = Date().addingTimeInterval((reserveMin + minutes) * 60)
             promptTimer?.invalidate()
             scheduleTimeUp()
+            if let p = location.position {
+                summary?.addMark(.extended, at: p, onReturn: false, now: Date())
+            }
             log(String(format: "延長 +%.0f 分(帰宅ぶん %.0f 分を別に確保)(%d/%d 回)",
                        minutes, reserveMin, extensionsUsed, params.session.maxExtensions))
 
@@ -298,6 +400,7 @@ final class WalkSessionController: ObservableObject {
             returnMetrics = GaitMetrics()
             if let p = location.position, let h = home {
                 returnStart = (distanceM: Geo.distanceM(p, h), at: Date())
+                summary?.addMark(.returnStart, at: p, onReturn: true, now: Date())
             }
             log("帰路開始に同意")
             // **同意した瞬間から案内を始める。** 確認音が終わるのを待たない。
@@ -320,7 +423,10 @@ final class WalkSessionController: ObservableObject {
         case .endSession:
             if !commuteLearning { location.stop() }
             motion.stop()
+            pedometer.stop()
             GridStore.save(grid)
+            // 終わり方は 2 つ(到着・手動終了)あるが、どちらもこの効果を通る
+            finishSummary()
             sessionEnd = nil
         }
     }
@@ -384,15 +490,16 @@ final class WalkSessionController: ObservableObject {
         if let graph, graph.map.covers(p) {
             guard let x = graph.upcomingIntersection(
                 from: p, bearingDeg: heading,
-                withinM: params.route.intersectionLookaheadM) else {
+                withinM: params.route.intersectionLookaheadM,
+                snapMaxDistanceM: params.route.snapMaxDistanceM) else {
                 logToFile("提案なし(前方に交差点なし) [\(context)]")
                 return
             }
             let decision = BranchSuggester.decide(intersection: x, travelBearingDeg: heading,
                                                   position: p, home: h, grid: grid,
                                                   homewardBias: bias,
-                                                  target: target?.zone.center,
-                                                  route: params.route, now: Date())
+                                                  target: target?.zone.center, graph: graph,
+                                                  route: params.route)
             guard case .suggest(let c) = decision else {
                 if case .silent(let why, let best) = decision {
                     // 最良候補も残す。「惜しかったのか、遠く及ばなかったのか」が
@@ -422,8 +529,8 @@ final class WalkSessionController: ObservableObject {
 
         if let s = BearingSuggester.suggest(position: p, headingDeg: heading, home: h,
                                             grid: grid, homewardBias: bias,
-                                            route: params.route, now: Date()) {
-            let reference = latestFacingBearing ?? heading
+                                            route: params.route) {
+            let reference = placementReference(heading)
             let rel = Geo.angularDiffDeg(s.absoluteBearingDeg, reference)
             synth?.play(.suggestion, relativeBearingDeg: rel)
             lastSuggestionPoint = p
@@ -483,46 +590,86 @@ final class WalkSessionController: ObservableObject {
         }
     }
 
+    /// ビーコンが指す方位。**経路が分かるなら、そちらを指す。**
+    /// 自宅を直線で指すと川や街区の向こうを指しうる(2026-08-19 実測)。
+    /// 経路が無い(地図なし・圏外)ときだけ直線に落ちる。
+    ///
+    /// **鳴らす側と繰り上げの判定は必ずこれを共有する。** 基準が食い違うと、
+    /// 方向が変わっていないのに「変わった」と判定され続ける(下記 `advanceBeaconIfDirectionChanged`)
+    private func beaconBearing(at p: GeoPoint) -> (deg: Double, fromRoute: Bool)? {
+        guard let h = home else { return nil }
+        let route = routeField.flatMap { f in
+            graph.flatMap {
+                f.nextBearingDeg(from: p, graph: $0,
+                                 nodeToleranceM: params.route.nodeArrivalToleranceM)
+            }
+        }
+        guard let route else { return (Geo.bearingDeg(from: p, to: h), false) }
+        return (route, true)
+    }
+
+    /// 定位の基準。顔の向きが取れればそれ、取れなければ進行方位。
+    ///
+    /// 角速度からの推定(HeadTracker)を使う設定なら、進行方位に首のぶんを足す。
+    /// **既定は false**。姿勢の yaw を使った系統は 2026-08-19 に左右を壊した前科があるので、
+    /// 別系統であっても、机上で確かめるまでは動作に入れない(docs/08)
+    private func placementReference(_ travelDeg: Double) -> Double {
+        if let facing = latestFacingBearing { return facing }
+        guard params.heading.useGyroHeadOffset else { return travelDeg }
+        return Geo.normalizeDeg(travelDeg + headTracker.offsetDeg)
+    }
+
     private func playBeacon() {
-        guard let p = location.position, let h = home else { return }
-        let bearingHome = Geo.bearingDeg(from: p, to: h)
+        guard let p = location.position, let h = home,
+              let bearing = beaconBearing(at: p) else { return }
+        let bearingHome = bearing.deg
         let fix = location.motionFix()
         guard let travel = currentTravel(fix) else {
             // 進行方向が不明なときは左右を付けない(誤った定位を出すより中央で鳴らす)。
             // 中央で鳴った回数を数えられないと「左右が付かなすぎる」を測れないため記録する
             noteDirectionUnavailable(fix)
-            synth?.play(.homeBeacon)
-            logToFile(String(format: "ビーコン(中央) 距離=%.0fm [%@]",
-                             Geo.distanceM(p, h), summary(of: fix)))
+            synth?.play(.homeBeacon, gain: beaconGain())
+            logToFile(String(format: "ビーコン(中央) 距離=%.0fm 音量=%.2f [%@]",
+                             Geo.distanceM(p, h), beaconGain(), summary(of: fix)))
             return
         }
         noteDirectionAvailable()
         // 定位の基準は「顔の向き」。取れないうちは進行方位で代用する。
         // 顔基準にすると、首を振っても音が世界に固定されて聞こえる
-        let reference = latestFacingBearing ?? travel.deg
-        let rel = Geo.angularDiffDeg(bearingHome, reference)
+        let rel = Geo.angularDiffDeg(bearingHome, placementReference(travel.deg))
         let pan = SoundPlacement.pan(relativeBearingDeg: rel)
-        synth?.play(.homeBeacon, relativeBearingDeg: rel)
+        let gain = beaconGain()
+        synth?.play(.homeBeacon, relativeBearingDeg: rel, gain: gain)
         lastBeacon = (relDeg: rel, at: Date())
         noteReturnDirectionStarted()
         // 顔基準に切り替えた影響を後から評価できるよう、顔の向きと進行方位の両方を残す
         let facingLabel = latestFacingBearing.map { String(format: "%.0f°", $0) } ?? "-"
         let baselineLabel = headingFusion.baselineDeg.map { String(format: "%.0f°", $0) } ?? "-"
         let travelPan = sin(Geo.angularDiffDeg(bearingHome, travel.deg) * .pi / 180)
-        logToFile(String(format: "ビーコン 距離=%.0fm 自宅方位=%.0f° 進行=%.0f°(%@) 顔=%@ 基準線=%@ pan=%.2f"
-                         + "(進行基準なら %.2f) 間隔=%.1fs [%@]",
-                         Geo.distanceM(p, h), bearingHome, travel.deg,
+        // 歩調も残す。間隔が歩みに乗っているかを後から確かめられるようにする
+        let cadenceLabel = currentCadence.map { String(format: "%.2f歩/s", $0) } ?? "-"
+        logToFile(String(format: "ビーコン 距離=%.0fm 指す方位=%.0f°(%@) 進行=%.0f°(%@) 顔=%@ 基準線=%@"
+                         + " pan=%.2f(進行基準なら %.2f) 間隔=%.1fs 歩調=%@ 音量=%.2f [%@]",
+                         Geo.distanceM(p, h), bearingHome,
+                         bearing.fromRoute ? "経路" : "自宅を直線", travel.deg,
                          label(for: travel.source), facingLabel, baselineLabel, pan, travelPan,
-                         beaconInterval(), summary(of: fix)))
+                         beaconInterval(), cadenceLabel, gain, summary(of: fix)))
     }
 
+    /// いま使える歩調 [歩/秒]。立ち止まると更新が来なくなるので鮮度で切る
+    private var currentCadence: Double? {
+        pedometer.cadence(maxAgeSec: params.audio.beaconCadenceMaxAgeSec)
+    }
+
+    /// ビーコンの間隔。**歩調に同期する**(距離ではなく)
     private func beaconInterval() -> TimeInterval {
-        let a = params.audio
-        guard let p = location.position, let h = home else { return a.beaconIntervalFarSec }
-        let d = Geo.distanceM(p, h)
-        let span = a.beaconFarDistanceM - a.beaconNearDistanceM
-        let t = span > 0 ? min(1, max(0, (d - a.beaconNearDistanceM) / span)) : 0
-        return a.beaconIntervalNearSec + t * (a.beaconIntervalFarSec - a.beaconIntervalNearSec)
+        BeaconRhythm.intervalSec(cadenceStepsPerSec: currentCadence, p: params.audio.beaconRhythm)
+    }
+
+    /// ビーコンの音量。**距離はここで表す**(間隔は歩調に取られるため)
+    private func beaconGain() -> Double {
+        guard let p = location.position, let h = home else { return params.audio.beaconGainFar }
+        return BeaconRhythm.gain(distanceM: Geo.distanceM(p, h), p: params.audio.beaconRhythm)
     }
 
     // MARK: - 入力ハンドラ
@@ -544,15 +691,23 @@ final class WalkSessionController: ObservableObject {
             // 純粋ロジックの変更は、歩き直さずに記録したログの再生で検証できる
             // (scripts/replay_log.sh)。docs/05「検証の方針」
             logToFile("fix [\(summary(of: fix))]")
+            // **馴染み度の減衰の時計は「歩いた総距離」**(docs/04)。歩いた分だけ進める。
+            // 経路長は揺れを除いた実距離なので、そのまま時計に使える
+            grid.advance(byM: walkMetrics.pathLengthM - odometerBaseM)
+            odometerBaseM = walkMetrics.pathLengthM
+            // 経路図の線。**間引きの基準は経路長と同じ**にして、図と距離が食い違わないようにする
+            summary?.add(p, minSegmentM: params.budget.pathSegmentMinM,
+                         maxPoints: params.summary.maxTrackPoints)
         }
         if commuteLearning {
-            grid.markExcluded(at: p, date: now)
+            grid.markExcluded(at: p)
         } else if state == .wandering || state == .returning {
-            grid.recordVisit(at: p, date: now)
+            grid.recordVisit(at: p)
         }
         if state == .returning, let h = home,
            Geo.distanceM(p, h) <= params.session.arrivalRadiusM {
             logReturnMeasurements(now: now)
+            summary?.addMark(.arrival, at: p, onReturn: true, now: now)
             apply(.reachedHome)
             log("到着しました")
         } else if state == .returning {
@@ -567,6 +722,7 @@ final class WalkSessionController: ObservableObject {
 
     private func onHeadphoneConnectionChange(_ connected: Bool) {
         headphonesConnected = connected
+        if connected { headphonesEverConnected = true }
         log(connected ? "ヘッドフォンを検出しました" : "ヘッドフォンが外れました")
         // 再装着すると姿勢の基準が引き直され、yaw が不連続に跳ぶ。
         // 段階 8 の実測では装着直後に yaw 振幅 203.7° が記録されており、
@@ -582,13 +738,20 @@ final class WalkSessionController: ObservableObject {
     private func updateFacingBearing(_ s: HeadSample) {
         guard let course = latestCourseBearing else { return }
         // yaw と course の対を一定間隔で残す。角を曲がれば両方が同じだけ回るので、
-        // 回転の向きが揃っているかを後から自動判定できる(再生ツールが読む)
+        // 回転の向きが揃っているかを後から自動判定できる(再生ツールが読む)。
+        //
+        // **角速度の積分も併せて残す**(2026-08-21)。姿勢の yaw は旋回を追えていなかったが、
+        // ジャイロそのものが追えていないのかは別の問題。`回転` は減衰なしの積分なので、
+        // 角を曲がった区間で `Δcourse` と一致するかを見れば、ジャイロの可否が判定できる
         let now = Date()
         if state == .wandering || state == .returning,
            lastHeadingLogAt == nil
             || now.timeIntervalSince(lastHeadingLogAt!) >= params.heading.logIntervalSec {
             lastHeadingLogAt = now
-            logToFile(String(format: "頭向き yaw=%.1f° course=%.1f°", s.yawDeg, course))
+            let heading = s.headingDeg.map { String(format: "%.1f", $0) } ?? "-"
+            logToFile(String(format: "頭向き yaw=%.1f° course=%.1f° 回転=%.1f° 推定=%.1f° heading=%@",
+                             s.yawDeg, course, headTracker.takeRotation(),
+                             headTracker.offsetDeg, heading))
         }
         guard params.heading.useHeadOrientation else { return }
         let p = HeadingFusion.Params(baselineAlpha: params.heading.baselineAlpha,
@@ -606,6 +769,8 @@ final class WalkSessionController: ObservableObject {
         // 再装着で yaw の基準が引き直されるため、顔の向きの基準線も作り直す
         headingFusion.reset()
         latestFacingBearing = nil
+        // 角速度の積分も捨てる。外していた間の回転は分からない
+        headTracker.reset()
         diagCount = 0
         diagPitchMin = .infinity
         diagPitchMax = -.infinity
@@ -618,6 +783,11 @@ final class WalkSessionController: ObservableObject {
 
     private func onHeadSample(_ s: HeadSample) {
         accumulateMotionDiagnostics(s)
+        // **角速度から頭の向きを推定する。** 既定では記録するだけで動作に影響しない
+        // (`use_gyro_head_offset`)。姿勢の yaw を使う系統とは別物(docs/08)
+        headTracker.ingest(yawRateDegPerSec: s.yawRateDegPerSec, time: s.time,
+                           p: params.heading.headTracker)
+        if headCheckActive { return }
         updateFacingBearing(s)
 
         if state == .promptingReturn {
@@ -767,14 +937,20 @@ final class WalkSessionController: ObservableObject {
     /// 角を曲がった直後は、次のビーコンを待たずに繰り上げて鳴らす。
     /// 遠距離では間隔が最大 5 秒あり、曲がってから 1〜2 音ぶん古い方向を聞かされるため
     /// (docs/03「ビーコンの距離・方向キュー」の実測課題)。
+    ///
+    /// **判定は鳴らす側と同じ方位・同じ基準で行う。**
+    /// 実測(2026-08-21)では、判定だけが自宅への直線方位を見ていたため、
+    /// 経路方位との 50〜60° のずれが「毎秒 方向が変わった」と読まれ、
+    /// 99 回の繰り上げのうち本物の方向変化は 4 回だけだった(残り 96% は空振り)。
+    /// ビーコンが設計の倍の頻度で鳴っていたことになる。
     private func advanceBeaconIfDirectionChanged(at p: GeoPoint, now: Date) {
         // 誘導が鳴っている間はビーコンを休んでいるので、繰り上げも行わない(音の裁定)
         guard turnGuidance == nil else { return }
-        guard let h = home, let last = lastBeacon else { return }
+        guard let last = lastBeacon, let bearing = beaconBearing(at: p) else { return }
         guard now.timeIntervalSince(last.at) >= params.audio.beaconMinGapSec else { return }
         let fix = location.motionFix(now: now)
         guard let travel = currentTravel(fix, now: now) else { return }
-        let rel = Geo.angularDiffDeg(Geo.bearingDeg(from: p, to: h), travel.deg)
+        let rel = Geo.angularDiffDeg(bearing.deg, placementReference(travel.deg))
         let change = abs(Geo.angularDiffDeg(rel, last.relDeg))
         guard change >= params.audio.beaconDirectionChangeDeg else { return }
         logToFile(String(format: "ビーコン繰り上げ 方向が %.0f° 変化(%.0f° → %.0f°)",
@@ -817,17 +993,21 @@ final class WalkSessionController: ObservableObject {
             reason = "予算の外に出た"
         }
         guard let reason else { return }
-        guard let next = zones.chooseTarget(from: p, home: h, allowedRadiusM: allowedRadiusM,
-                                            grid: grid, now: Date(),
+        // **選ぶ半径は捨てる半径より内側にする。** 許容半径は時間とともに縮むので、
+        // 予算いっぱいの地帯を選ぶと数秒で「予算の外」になって消える
+        // (2026-08-19 実測: 許容 369m のとき 363m 先を選び、9 秒で失効した)
+        let pickRadius = allowedRadiusM * params.budget.softZoneRatio
+        guard let next = zones.chooseTarget(from: p, home: h, allowedRadiusM: pickRadius,
+                                            grid: grid,
                                             p: params.route.zoneParams) else {
             if target != nil { logToFile("行き先を選べません(\(reason))") }
             target = nil
             return
         }
         target = next
-        log(String(format: "行き先: %.0fm 先 方位 %.0f°(新鮮さ %.2f・道 %.0fm・%@)",
+        log(String(format: "行き先: %.0fm 先 方位 %.0f°(新鮮さ %.2f・道 %.0fm・%@・選定半径 %.0fm)",
                    next.distanceM, Geo.bearingDeg(from: p, to: next.zone.center),
-                   next.novelty, next.zone.roadLengthM, reason))
+                   next.novelty, next.zone.roadLengthM, reason, pickRadius))
     }
 
     /// 帰路でも、経路上の次の角へ誘導音を張る。
@@ -838,12 +1018,28 @@ final class WalkSessionController: ObservableObject {
         guard turnGuidance == nil, let f = routeField, let graph else { return }
         guard let turn = f.nextTurn(from: p, graph: graph,
                                     straightWithinDeg: params.route.branchStraightDeg,
-                                    maxLookM: params.route.intersectionLookaheadM) else { return }
+                                    maxLookM: params.route.intersectionLookaheadM,
+                                    nodeToleranceM: params.route.nodeArrivalToleranceM)
+        else { return }
+        // **背後の角なら始めない。** 始めても 1 音目の判定で即座に止まるだけで、
+        // それを毎秒の位置更新のたびに繰り返す(実測 2026-08-21: 1 回の散歩で 6 件)。
+        // 同じ角を繰り返し記録しないよう、見送りはその角について 1 度だけ残す
+        let travel = currentTravel(location.motionFix())?.deg
+        if TurnGuidance.isBehind(corner: turn.corner, from: p, travelBearingDeg: travel,
+                                 closestM: turn.distanceM, p: guidanceParams) {
+            if lastBehindCorner != turn.corner {
+                lastBehindCorner = turn.corner
+                logToFile(String(format: "帰路の誘導を見送り(角が背後・角まで %.0fm)",
+                                 turn.distanceM))
+            }
+            return
+        }
+        lastBehindCorner = nil
         logToFile(String(format: "帰路の誘導を開始(角まで %.0fm)", turn.distanceM))
-        // **帰路の誘導は音だけを変える。** 間隔・頂点・終端は散策時とまったく同じ
-        // (2026-08-19 の利用者判断)。ビーコンと同じ音色なので「帰っている」感は保たれる
-        startTurnGuidance(at: turn.corner, branchBearingDeg: turn.branchBearingDeg,
-                          earcon: .homeBeacon)
+        // **帰路の音(homeBeacon)で案内する**(2026-08-21 の利用者判断)。
+        // 帰る区間で音が 2 種類混ざると落ち着かない。組み立て(間隔・音量・頂点・終端)は
+        // 散策とまったく同じ TurnGuidance のままで、変わるのは音色だけ
+        startTurnGuidance(at: turn.corner, branchBearingDeg: turn.branchBearingDeg)
     }
 
     /// 帰路で方向のある音を鳴らせたことを記録する。確認音を止める合図(ReturnAck)
@@ -865,20 +1061,20 @@ final class WalkSessionController: ObservableObject {
             endDistanceM: a.guidanceEndDistanceM,
             leftBehindM: a.guidanceLeftBehindM,
             turnedWithinDeg: params.route.branchStraightDeg,
-            closingTones: a.guidanceClosingTones)
+            closingTones: a.guidanceClosingTones,
+            announceTones: a.guidanceAnnounceTones,
+            abandonBehindDeg: a.guidanceAbandonBehindDeg)
     }
 
     /// 角へ近づくほど音量が上がる連続音。遠いうちは角そのものを指し、
     /// 手前で曲がる先を指し切り、曲がり終えたら数音かけて閉じる(判断は TurnGuidance)。
     ///
-    /// 散策と帰路で**変えるのは音だけ**(散策 = suggestion / 帰路 = homeBeacon)。
-    /// 間隔・頂点・終端の作りは共通で、語彙も 5 種のまま。
-    private func startTurnGuidance(at point: GeoPoint, branchBearingDeg: Double,
-                                   earcon: Earcon = .suggestion) {
+    /// 音色は状態で決まる(`WalkMachine.guidanceEarcon`)。組み立て方は散策も帰路も同じ。
+    private func startTurnGuidance(at point: GeoPoint, branchBearingDeg: Double) {
         let d = location.position.map { Geo.distanceM($0, point) } ?? .greatestFiniteMagnitude
         turnGuidance = TurnGuidance(corner: point, branchBearingDeg: branchBearingDeg,
                                     distanceM: d)
-        turnGuidanceEarcon = earcon
+        guidanceNumber = nil
         fireGuidanceTick()
     }
 
@@ -886,7 +1082,17 @@ final class WalkSessionController: ObservableObject {
         guard let g = turnGuidance else { return }
         turnGuidance = nil
         guidanceTimer?.invalidate()
-        logToFile(String(format: "誘導終了(%@・最接近 %.0fm)", reason, g.closestM))
+        // 1 音も鳴らなかった誘導は記録に残さない。**利用者に届いていないものは
+        // イベントではない**(番号が振られるのは最初の 1 音が鳴った時)
+        if guidanceNumber != nil { summary?.finishGuidance(ending: reason) }
+        logToFile(String(format: "誘導終了%@(%@・最接近 %.0fm)",
+                         guidanceLabel, reason, g.closestM))
+        guidanceNumber = nil
+    }
+
+    /// ログに添える誘導の番号(経路図の印と同じ番号)
+    private var guidanceLabel: String {
+        guidanceNumber.map { " #\($0)" } ?? ""
     }
 
     private func fireGuidanceTick() {
@@ -907,15 +1113,23 @@ final class WalkSessionController: ObservableObject {
         }
 
         // 定位の基準は顔の向き。取れないうちは進行方位で代用する
-        let reference = latestFacingBearing ?? travel
-        let rel = reference.map { Geo.angularDiffDeg(step.targetBearingDeg, $0) }
-        synth?.play(turnGuidanceEarcon, relativeBearingDeg: rel, gain: step.gain)
+        let rel = travel.map { Geo.angularDiffDeg(step.targetBearingDeg, placementReference($0)) }
+        // **帰路は帰路の音で案内する**(2026-08-21 の利用者判断)。判断は Core に置く
+        synth?.play(WalkMachine.guidanceEarcon(for: state), relativeBearingDeg: rel, gain: step.gain)
+        // 番号は「n 回目のイベント」として利用者が数える単位。**鳴った時に振る**ので、
+        // 図に出る番号と実際に聞こえた案内が 1 対 1 で対応する
+        if guidanceNumber == nil, let g = turnGuidance {
+            guidanceNumber = summary?.startGuidance(at: g.corner,
+                                                    bearingDeg: g.branchBearingDeg,
+                                                    onReturn: state == .returning, now: Date())
+        }
         // 誘導が鳴った時点で「方向のある音」は出せている。確認音はここで終わる
         noteReturnDirectionStarted()
-        logToFile(String(format: "誘導 角まで=%.0fm 鳴らす向き=%@ 音量=%.2f%@%@",
-                         step.distanceM,
+        logToFile(String(format: "誘導%@ 角まで=%.0fm 鳴らす向き=%@ 音量=%.2f%@%@%@",
+                         guidanceLabel, step.distanceM,
                          rel.map { String(format: "%+.0f°", $0) } ?? "-",
                          step.gain,
+                         step.isAnnouncing ? " 予告" : "",
                          step.isClosing ? " 終端" : "",
                          state == .returning ? " 帰路" : ""))
         guidanceTimer?.invalidate()
@@ -968,13 +1182,16 @@ final class WalkSessionController: ObservableObject {
     }
 
     /// 自宅までの距離。**経路データがあれば実際に歩く距離**、無ければ直線距離。
-    /// 直線 × 迂回率は川や私有地を突っ切った値になるので、取れるなら使わない
+    /// 直線 × 迂回率は川や私有地を突っ切った値になるので、取れるなら使わない。
+    ///
+    /// 経路長が直線距離に対して大きすぎる場合は上限で頭を押さえる。
+    /// スナップが幹線の反対側に乗ると、実際には歩かない迂回路の長さが返るため
+    /// (→ `ReturnBudget.distance`)
     private func homeDistance(from p: GeoPoint) -> ReturnBudget.Distance? {
         guard let h = home else { return nil }
-        if let f = routeField, let graph, let m = f.pathLengthM(from: p, graph: graph) {
-            return .route(m)
-        }
-        return .straight(Geo.distanceM(p, h))
+        let routeM = routeField.flatMap { f in graph.flatMap { f.pathLengthM(from: p, graph: $0) } }
+        return ReturnBudget.distance(routeM: routeM, straightM: Geo.distanceM(p, h),
+                                     p: params.budget)
     }
 
     /// 「今帰り始めれば設定時間ちょうどに着く」瞬間にプロンプトを発火する。
@@ -1032,6 +1249,25 @@ final class WalkSessionController: ObservableObject {
         logToFile(String(format: "速度の推定を更新 %@ → %.0fm/min(%d 回目・設定値 %.0f)",
                          before.map { String(format: "%.0f", $0) } ?? "なし",
                          speed.mPerMin ?? 0, speed.walks, params.budget.walkingSpeedMPerMin))
+    }
+
+    // MARK: - 散歩の記録
+
+    /// 記録を閉じて保存する。距離は計測側(GaitMetrics)の値をそのまま使う
+    private func finishSummary() {
+        guard var s = summary else { return }
+        s.finish(at: Date(), pathLengthM: walkMetrics.pathLengthM)
+        summary = nil
+        guidanceNumber = nil
+        lastSummary = s
+        SummaryStore.save(s)
+        log(String(format: "記録: %.0fm・%.0f 分・イベント %d 件",
+                   s.pathLengthM, s.durationSec / 60, s.guidanceEvents.count))
+    }
+
+    /// 経路図の下地になる道。地図が無ければ空(経路と印だけの図になる)
+    func roadSegments(in frame: MapFrame) -> [RoadSegment] {
+        graph?.roadSegments(in: frame) ?? []
     }
 
     /// 進行方向の解決と、有効だった course の保持をまとめて行う。

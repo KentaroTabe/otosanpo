@@ -32,18 +32,43 @@ enum GridStore {
         return dir.appendingPathComponent("visit_grid.json")
     }
 
-    static func load(cellSizeM: Double, halfLifeDays: Double) -> VisitGrid {
+    static func load(cellSizeM: Double, halfLifeM: Double) -> VisitGrid {
         guard let url = try? fileURL(),
               let data = try? Data(contentsOf: url),
-              let grid = try? JSONDecoder().decode(VisitGrid.self, from: data) else {
-            return VisitGrid(cellSizeM: cellSizeM, halfLifeDays: halfLifeDays)
+              var grid = try? JSONDecoder().decode(VisitGrid.self, from: data) else {
+            return VisitGrid(cellSizeM: cellSizeM, halfLifeM: halfLifeM)
         }
+        // 設定ファイルを正とする(保存された値は読み込み時点のもので、古くなりうる)。
+        // 積算距離と各セルの記録はそのまま引き継ぐ
+        grid.cellSizeM = cellSizeM
+        grid.halfLifeM = halfLifeM
         return grid
     }
 
     static func save(_ grid: VisitGrid) {
         guard let url = try? fileURL(),
               let data = try? JSONEncoder().encode(grid) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
+/// 直近の散歩の記録の永続化。VisitGrid と同じく**端末内にのみ保存**する。
+/// アプリを閉じても前回の経路図を開けるようにするため(開発中の振り返り用)
+enum SummaryStore {
+    static func fileURL() throws -> URL {
+        let dir = try FileManager.default.url(for: .applicationSupportDirectory,
+                                              in: .userDomainMask,
+                                              appropriateFor: nil, create: true)
+        return dir.appendingPathComponent("walk_summary.json")
+    }
+
+    static func load() -> WalkSummary? {
+        guard let url = try? fileURL(), let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(WalkSummary.self, from: data)
+    }
+
+    static func save(_ s: WalkSummary) {
+        guard let url = try? fileURL(), let data = try? JSONEncoder().encode(s) else { return }
         try? data.write(to: url, options: .atomic)
     }
 }

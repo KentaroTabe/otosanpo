@@ -65,7 +65,7 @@ final class RouteFieldTests: XCTestCase {
         let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
         // (0,100) から自宅へ帰るには、まず東へ 100m 進んで角(100,100)で南へ曲がる
         let turn = f?.nextTurn(from: at(0, 100), graph: g,
-                               straightWithinDeg: 25, maxLookM: 200)
+                               straightWithinDeg: 25, maxLookM: 200, nodeToleranceM: 8)
         XCTAssertEqual(turn?.corner.latitude ?? 0, lat(100), accuracy: 0.0001)
         XCTAssertEqual(turn?.corner.longitude ?? 0, lon(100), accuracy: 0.0001)
         // 角から踏み出す向きは南(180°)
@@ -78,7 +78,7 @@ final class RouteFieldTests: XCTestCase {
         let g = uShape()
         let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
         XCTAssertNil(f?.nextTurn(from: at(0, 100), graph: g,
-                                 straightWithinDeg: 25, maxLookM: 35))
+                                 straightWithinDeg: 25, maxLookM: 35, nodeToleranceM: 8))
     }
 
     /// 経路が真っ直ぐなら曲がる場所は無い
@@ -90,7 +90,63 @@ final class RouteFieldTests: XCTestCase {
         let g = WalkGraph(map: map, cellSizeM: 50)
         let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
         XCTAssertNil(f?.nextTurn(from: at(200, 0), graph: g,
-                                 straightWithinDeg: 25, maxLookM: 300))
+                                 straightWithinDeg: 25, maxLookM: 300, nodeToleranceM: 8))
+    }
+
+    // MARK: - いま進むべき向き(ビーコンが指す方位)
+
+    /// **自宅の直線方向ではなく、道に沿った向きを指す。**
+    /// コの字の道では、自宅は真南でも進むべきは西(角を回ってから南)
+    func testNextBearingFollowsTheRoadNotTheStraightLine() {
+        let g = uShape()
+        let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
+        let end = at(0, 100)
+        // 自宅は真南(180°)にある
+        XCTAssertEqual(Geo.bearingDeg(from: end, to: at(0, 0)), 180, accuracy: 2)
+        // だが進むべきは東(角 (100,100) へ向かう)
+        XCTAssertEqual(f?.nextBearingDeg(from: end, graph: g, nodeToleranceM: 8) ?? -1,
+                       90, accuracy: 3)
+    }
+
+    /// 節点の手前ではその節点へ向かう。角を曲がる前に曲がった先を指さない
+    func testPointsAtTheNextNodeWhileApproachingIt() {
+        let g = uShape()
+        let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
+        // 角 (100,100) の 30m 手前(西側)
+        let p = at(70, 100)
+        XCTAssertEqual(f?.nextBearingDeg(from: p, graph: g, nodeToleranceM: 8) ?? -1,
+                       90, accuracy: 3)
+    }
+
+    /// **背後の節点を指さない。**
+    /// 線分の手前寄りに居ると幾何的な最寄りは背後の端点になる。そこを指すと「戻れ」になる。
+    /// 経路上で自宅に近いほうの端点を選ばなければならない
+    func testNeverPointsBackwardWhenTheNearestNodeIsBehind() {
+        let g = uShape()
+        let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
+        // 終点 (0,100) から東へ 20m。線分 (0,100)〜(100,100) の手前寄りなので、
+        // 幾何的な最寄り端点は背後の (0,100)
+        let p = at(20, 100)
+        XCTAssertLessThan(Geo.distanceM(p, at(0, 100)), Geo.distanceM(p, at(100, 100)),
+                          "前提: 幾何的には背後の端点のほうが近い")
+        // それでも指すのは東(自宅へ向かう側)
+        XCTAssertEqual(f?.nextBearingDeg(from: p, graph: g, nodeToleranceM: 8) ?? -1,
+                       90, accuracy: 3)
+    }
+
+    /// 経路長も、背後の節点を経由した値にならない
+    func testPathLengthUsesTheForwardEndpoint() {
+        let g = uShape()
+        let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
+        // (20,100) から自宅までは 80 + 100 + 100 = 280m。
+        // 背後の端点 (0,100) を使うと 20 + 300 = 320m になってしまう
+        XCTAssertEqual(f?.pathLengthM(from: at(20, 100), graph: g) ?? -1, 280, accuracy: 5)
+    }
+
+    func testReturnsNilOffTheMapForBearing() {
+        let g = uShape()
+        let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
+        XCTAssertNil(f?.nextBearingDeg(from: at(0, 500), graph: g, nodeToleranceM: 8))
     }
 
     // MARK: - 経路の選び方
@@ -117,7 +173,7 @@ final class RouteFieldTests: XCTestCase {
         let f = RouteField(graph: g, goal: at(0, 0), snapMaxDistanceM: 25, weights: weights)
         // 南回り(2 を通る)を選ぶ = 最初の角は (0,100)
         let turn = f?.nextTurn(from: at(100, 100), graph: g,
-                               straightWithinDeg: 25, maxLookM: 300)
+                               straightWithinDeg: 25, maxLookM: 300, nodeToleranceM: 8)
         XCTAssertEqual(turn?.corner.longitude ?? 0, lon(100), accuracy: 0.0001)
         XCTAssertEqual(turn?.corner.latitude ?? 0, lat(0), accuracy: 0.0001)
         // 実距離は重みを掛けない 200m のまま(時間の見積もりに使うため)

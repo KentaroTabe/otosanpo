@@ -74,7 +74,7 @@ final class SpeedEstimatorTests: XCTestCase {
 final class ReturnDistanceTests: XCTestCase {
     private let budget = AppParameters.Budget(
         walkingSpeedMPerMin: 70, minMovingSpeedMPerS: 0.5, pathSegmentMinM: 10,
-        maxAccuracyForMetricsM: 20, detourFactor: 1.3,
+        maxAccuracyForMetricsM: 20, detourFactor: 1.3, routeStraightMaxRatio: 2.0,
         returnReserveMin: 3, softZoneRatio: 0.7,
         speedEwmaWeight: 0.4, speedMinSamples: 60,
         speedMinMPerMin: 45, speedMaxMPerMin: 90)
@@ -104,6 +104,54 @@ final class ReturnDistanceTests: XCTestCase {
                                                        speedMPerMin: 70, p: budget))
         XCTAssertTrue(ReturnBudget.shouldPromptReturn(remainingMin: 13, distance: .route(700),
                                                       speedMPerMin: 70, p: budget))
+    }
+
+    // MARK: - 経路長の跳ねを直線距離で抑える(2026-08-27 の実測)
+
+    /// ふつうの遠回りはそのまま通す。実測の比は中央 1.42 / 95% 1.68
+    func testOrdinaryDetourPassesThrough() {
+        XCTAssertEqual(ReturnBudget.distance(routeM: 760, straightM: 450, p: budget),
+                       .route(760))
+    }
+
+    /// **跳ねた経路長は上限で頭を押さえる。**
+    /// 実測値: 直線 543m に対し経路 1587m(2.92 倍)が 42 秒間だけ出た
+    func testSpikedRouteIsCapped() {
+        XCTAssertEqual(ReturnBudget.distance(routeM: 1587, straightM: 543, p: budget),
+                       .cappedRoute(1086))
+    }
+
+    /// この修正が効くことの本体。**同じ場面で帰宅プロンプトが撃たれなくなる。**
+    /// 実測: 残り 26 分・65m/min・予備 3 分のところへ経路 1587m が出て発火した
+    func testSpikeNoLongerFiresThePrompt() {
+        let spiked = ReturnBudget.distance(routeM: 1587, straightM: 543, p: budget)
+        XCTAssertFalse(ReturnBudget.shouldPromptReturn(remainingMin: 26, distance: spiked,
+                                                       speedMPerMin: 65, p: budget))
+        // 抑えなければ発火していた(この回に実際に起きたこと)
+        XCTAssertTrue(ReturnBudget.shouldPromptReturn(remainingMin: 26, distance: .route(1587),
+                                                      speedMPerMin: 65, p: budget))
+    }
+
+    /// 抑えた後でも、直線 × 迂回率より大きい値が残る。
+    /// 川や線路の向こうで本当に大回りが要る場所を、過小評価にしないため
+    func testCappedEstimateStaysAboveTheStraightLineGuess() {
+        let capped = ReturnBudget.estimatedReturnMin(
+            ReturnBudget.distance(routeM: 1587, straightM: 543, p: budget),
+            speedMPerMin: 65, p: budget)
+        let byStraight = ReturnBudget.estimatedReturnMin(.straight(543), speedMPerMin: 65, p: budget)
+        XCTAssertGreaterThan(capped, byStraight)
+    }
+
+    /// 経路データが無ければ直線距離に落ちる(圏外・地図未読込)
+    func testFallsBackToStraightWithoutRouteData() {
+        XCTAssertEqual(ReturnBudget.distance(routeM: nil, straightM: 543, p: budget),
+                       .straight(543))
+    }
+
+    /// 上限ちょうどは通す(境界)
+    func testExactlyAtTheCapIsStillTrusted() {
+        XCTAssertEqual(ReturnBudget.distance(routeM: 1086, straightM: 543, p: budget),
+                       .route(1086))
     }
 
     /// 曲がりくねった経路では、直線の推測より早く帰り始める

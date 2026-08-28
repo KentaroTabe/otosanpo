@@ -74,6 +74,16 @@ NR == 1 && $1 == "time" { next }
     d = numafter(msg, "距離=")
     iv = numafter(msg, "間隔=")
     pan = numafter(msg, "pan=")
+    # 歩調に同期しているか(2026-08-19 実装)。取れなかった回も数える
+    if (index(msg, "歩調=-") > 0) {
+      nNoCadence++
+    } else if (index(msg, "歩調=") > 0) {
+      cad = numafter(msg, "歩調=")
+      nCadence++
+      cadSum += cad
+      if (nCadence == 1 || cad > cadMax) cadMax = cad
+      if (nCadence == 1 || cad < cadMin) cadMin = cad
+    }
     if (nBeacon == 1 || d > beaconMaxD) beaconMaxD = d
     if (nBeacon == 1 || d < beaconMinD) beaconMinD = d
     beaconSumIv += iv
@@ -223,6 +233,10 @@ END {
   printf "  中央で鳴らした(左右なし)=%d 回\n", nBeaconCenter
   printf "  ビーコン=%d 回 / 自宅まで 最遠=%.0fm 最近=%.0fm / 平均間隔=%.1fs / 左右の切替=%d 回\n",
          nBeacon, beaconMaxD, beaconMinD, (nBeacon ? beaconSumIv / nBeacon : 0), nPanFlip
+  if (nCadence > 0 || nNoCadence > 0) {
+    printf "  歩調: 取得 %d 回(最小 %.2f / 平均 %.2f / 最大 %.2f 歩/s)/ 取得できず %d 回\n",
+           nCadence, cadMin, (nCadence ? cadSum / nCadence : 0), cadMax, nNoCadence
+  }
   printf "  以下は %d 回に 1 行の間引き\n", beaconStride
   dump(beacons, nBeaconShown, 30)
 }

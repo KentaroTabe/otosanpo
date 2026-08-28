@@ -55,10 +55,17 @@ final class HeadphoneMotionService: NSObject, CMHeadphoneMotionManagerDelegate {
         guard wantsUpdates, manager.isDeviceMotionAvailable, !manager.isDeviceMotionActive else { return }
         manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
             guard let m = motion else { return }
+            // 姿勢に加えて**角速度(ジャイロの生値)**も渡す。姿勢の yaw は旋回を追えて
+            // いなかった(2026-08-19 実測)一方、角速度は基準を持たないので飛びに強い。
+            // heading は参照枠を選べない都合で有効値が来ないかもしれないため、
+            // 負値(CoreMotion の「無効」表現)は nil にして記録側で見分けられるようにする
+            let heading = m.heading
             let sample = HeadSample(
                 time: m.timestamp,
                 pitchDeg: m.attitude.pitch * 180 / .pi,
-                yawDeg: m.attitude.yaw * 180 / .pi
+                yawDeg: m.attitude.yaw * 180 / .pi,
+                yawRateDegPerSec: m.rotationRate.z * 180 / .pi,
+                headingDeg: heading >= 0 ? heading : nil
             )
             self?.onSample?(sample)
         }

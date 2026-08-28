@@ -28,7 +28,9 @@ public struct RouteField: Sendable {
     }
 
     public let goal: GeoPoint
-    /// 節点 → 自宅までの実距離 [m]。到達できない節点は `.infinity`
+    /// 節点 → 自宅までの**重み付き**距離。経路の選び方(どちらへ進むか)はこれで決める
+    private let cost: [Double]
+    /// 節点 → 自宅までの実距離 [m]。時間の見積もりはこれで行う。到達できない節点は `.infinity`
     private let metres: [Double]
     /// 節点 → 自宅へ向かう次の節点。-1 は「次が無い(自宅そのものか到達不能)」
     private let next: [Int]
@@ -109,18 +111,63 @@ public struct RouteField: Sendable {
             }
         }
 
+        self.cost = cost
         self.metres = metres
         self.next = next
         self.reachableNodes = metres.reduce(0) { $0 + ($1.isFinite ? 1 : 0) }
     }
 
+    /// いま乗っている線分の端点のうち、**そこを通ると自宅までが最短になるほう**。
+    ///
+    /// 幾何的に最寄りの端点を使ってはいけない。線分の手前寄りに居れば最寄りは
+    /// **背後の端点**になり、そこを指すと「戻れ」と言うことになる。
+    /// 「そこまで歩く距離 + そこから自宅までのコスト」で選べば、実際に通る側が出る。
+    ///
+    /// **実距離ではなく重み付きコストで比べる。** 経路そのものは重みで選んでいるので、
+    /// 実距離で比べると Dijkstra の選択と食い違い、長さが同じ別の道へ入り込む。
+    private func forwardNode(from p: GeoPoint, graph: WalkGraph) -> Int? {
+        guard let s = graph.snap(p, maxDistanceM: snapMaxDistanceM) else { return nil }
+        let way = graph.map.ways[s.wayIndex]
+        var best: (node: Int, total: Double)?
+        for n in [way.n[s.segmentIndex], way.n[s.segmentIndex + 1]] {
+            guard cost.indices.contains(n), cost[n].isFinite,
+                  let q = graph.map.point(n) else { continue }
+            let total = Geo.distanceM(p, q) + cost[n]
+            if best == nil || total < best!.total { best = (n, total) }
+        }
+        return best?.node
+    }
+
     /// 現在地から自宅までの**実際に歩く距離** [m]。道に乗らない場所では nil。
     /// 直線距離 × 迂回率の推測と違い、川や私有地を突っ切らない。
     public func pathLengthM(from p: GeoPoint, graph: WalkGraph) -> Double? {
-        guard let node = graph.nearestNode(to: p, maxDistanceM: snapMaxDistanceM),
-              metres.indices.contains(node), metres[node].isFinite,
+        guard let node = forwardNode(from: p, graph: graph),
               let np = graph.map.point(node) else { return nil }
         return Geo.distanceM(p, np) + metres[node]
+    }
+
+    /// **いま進むべき向き**(経路の次の一歩の方位)。
+    ///
+    /// ビーコンはこれを指す。自宅を直線で指すと、川や街区や私有地の向こうを指しうる
+    /// (2026-08-19 実測で帰路に 1 回)。**道の上を指していれば「音の鳴る方に歩く」が成り立つ。**
+    /// 曲がり角の誘導が受け持つのは角の手前だけなので、その間を埋めるのはこちら。
+    ///
+    /// - Parameter nodeToleranceM: この距離まで近づいた節点は「着いた」とみなし、
+    ///   その先を指す。真上に立つと方位が暴れるため
+    public func nextBearingDeg(from p: GeoPoint, graph: WalkGraph,
+                               nodeToleranceM: Double) -> Double? {
+        guard let node = forwardNode(from: p, graph: graph),
+              let here = graph.map.point(node) else { return nil }
+        // まだ手前の節点に着いていなければ、まずそこへ向かう。
+        // 目の前の節点を飛ばして次を指すと、曲がる前に曲がった先を指すことになる
+        if Geo.distanceM(p, here) > nodeToleranceM {
+            return Geo.bearingDeg(from: p, to: here)
+        }
+        guard next[node] >= 0, let np = graph.map.point(next[node]) else {
+            // 自宅そのもの(次が無い)。自宅を直接指す
+            return Geo.bearingDeg(from: p, to: goal)
+        }
+        return Geo.bearingDeg(from: here, to: np)
     }
 
     /// 経路上で**次に曲がる地点**と、そこで踏み出す向き。
@@ -129,18 +176,20 @@ public struct RouteField: Sendable {
     /// 直進が続く間は辿り続け、向きが `straightWithinDeg` を超えて変わる節点を「角」とする。
     /// `maxLookM` まで探して見つからなければ nil(まだ曲がる場所は無い)。
     public func nextTurn(from p: GeoPoint, graph: WalkGraph,
-                        straightWithinDeg: Double, maxLookM: Double)
+                        straightWithinDeg: Double, maxLookM: Double,
+                        nodeToleranceM: Double)
         -> (corner: GeoPoint, branchBearingDeg: Double, distanceM: Double)? {
-        guard let start = graph.nearestNode(to: p, maxDistanceM: snapMaxDistanceM),
-              metres.indices.contains(start), metres[start].isFinite else { return nil }
+        // 幾何的な最寄りではなく**経路上で先にある端点**から辿る。
+        // 背後の節点から始めると、来た道を 1 歩戻ってから数えることになる
+        guard let start = forwardNode(from: p, graph: graph) else { return nil }
 
         var current = start
-        var currentPoint = graph.map.point(start)
-        guard var here = currentPoint else { return nil }
+        guard var here = graph.map.point(start) else { return nil }
         var travelled = Geo.distanceM(p, here)
-        // 最初の一歩の向きは「現在地から最寄り節点へ」ではなく、そこから先へ進む向きで測る。
-        // 現在地と節点が数 m しか離れていないと、前者は雑音になる
-        var incoming: Double?
+        // **最初の節点そのものが角**でありうるので、そこへ向かう向きを入りの向きとする。
+        // ただし節点が目の前(数 m)なら、その向きは雑音でしかないので使わない
+        var incoming: Double? = travelled >= nodeToleranceM
+            ? Geo.bearingDeg(from: p, to: here) : nil
 
         while travelled <= maxLookM {
             let n = next[current]
@@ -155,7 +204,6 @@ public struct RouteField: Sendable {
             incoming = outgoing
             current = n
             here = np
-            currentPoint = np
         }
         return nil
     }

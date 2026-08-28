@@ -55,16 +55,17 @@ final class EarconSynth {
 
         let format = mono
         let gain = audio.earconGain
-        buffers[.suggestion] = Self.render(audio.tones.suggestion, format: format, gain: gain)
-        buffers[.timeUpPrompt] = Self.render(audio.tones.timeUpPrompt, format: format, gain: gain)
-        buffers[.returnAck] = Self.render(audio.tones.returnAck, format: format, gain: gain)
-        buffers[.homeBeacon] = Self.render(audio.tones.homeBeacon, format: format, gain: gain)
-        buffers[.arrival] = Self.render(audio.tones.arrival, format: format, gain: gain)
+        let lead = audio.earconLeadSilenceSec
+        buffers[.suggestion] = Self.render(audio.tones.suggestion, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.timeUpPrompt] = Self.render(audio.tones.timeUpPrompt, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.returnAck] = Self.render(audio.tones.returnAck, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.homeBeacon] = Self.render(audio.tones.homeBeacon, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.arrival] = Self.render(audio.tones.arrival, format: format, gain: gain, leadSilenceSec: lead)
         // ビーコンだけは「真後ろ」用の変種を持つ。周波数を下げて雑音成分を削り、
         // 耳介で高域が遮られた音(= 背後から来る音)に寄せる
         behindBuffers[.homeBeacon] = Self.render(
             Self.darken(audio.tones.homeBeacon, by: audio.behindDarkness),
-            format: format, gain: gain)
+            format: format, gain: gain, leadSilenceSec: lead)
 
         try Self.configureSession()
         try engine.start()
@@ -142,14 +143,9 @@ final class EarconSynth {
         abs(Geo.angularDiffDeg(deg, 0)) > thresholdDeg
     }
 
-    /// 音色を暗くする(周波数を下げ、雑音成分を削る)。
-    /// `darkness` 0 で変化なし、1 で最も暗い
+    /// 音色を暗くする(Core の実装を使う。紹介用の書き出しと同じ音にするため)
     static func darken(_ tone: AppParameters.ToneSpec, by darkness: Double) -> AppParameters.ToneSpec {
-        let d = max(0, min(1, darkness))
-        var out = tone
-        out.freqsHz = tone.freqsHz.map { $0 * (1 - 0.5 * d) }
-        out.noiseMix = tone.noiseMix * (1 - d)
-        return out
+        ToneRenderer.darken(tone, by: darkness)
     }
 
     /// - Parameter gain: 相対音量 [0..1]。曲がり角の誘導が「角までの近さ」を音量で表すため
@@ -175,45 +171,24 @@ final class EarconSynth {
         }
     }
 
-    /// 周波数列を Hann 窓エンベロープのサイン波ブリップとしてレンダリングする
-    static func render(_ tone: AppParameters.ToneSpec, format: AVAudioFormat, gain: Double) -> AVAudioPCMBuffer? {
-        let sr = format.sampleRate
-        let blipFrames = Int(tone.blipSec * sr)
-        let gapFrames = Int(tone.gapSec * sr)
-        let count = tone.freqsHz.count
-        guard count > 0, blipFrames > 0 else { return nil }
-        let total = count * blipFrames + max(0, count - 1) * gapFrames
-        guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(total)),
+    /// Core が作った標本列を AVAudioPCMBuffer に載せる。
+    /// **波形の作り方は Core(ToneRenderer)に置く** — 紹介用の書き出し(Sources/Demo)と
+    /// 同じ音を鳴らすため。ここは容れ物を用意するだけ
+    static func render(_ tone: AppParameters.ToneSpec, format: AVAudioFormat,
+                       gain: Double, leadSilenceSec: Double = 0) -> AVAudioPCMBuffer? {
+        // **先頭に無音を足す。** 定位は再生ノードの値で付くが、その値は鳴り始めてから
+        // 目標へ滑らかに移る。前の音と向きが大きく違うと、その移動が音の頭に乗って
+        // 「鳴り出しは右、鳴り終わりは左」になる(2026-08-25 実測)
+        let samples = ToneRenderer.withLeadSilence(
+            ToneRenderer.samples(tone, sampleRate: format.sampleRate, gain: gain),
+            seconds: leadSilenceSec, sampleRate: format.sampleRate)
+        guard !samples.isEmpty,
+              let buf = AVAudioPCMBuffer(pcmFormat: format,
+                                         frameCapacity: AVAudioFrameCount(samples.count)),
               let ch = buf.floatChannelData else { return nil }
-        buf.frameLength = AVAudioFrameCount(total)
+        buf.frameLength = AVAudioFrameCount(samples.count)
         // モノラル 1 チャンネル。定位は再生時に位置(またはパン)で付ける
-        let out = ch[0]
-
-        // 雑音は再現性のために自前の線形合同法で作る(同じ設定なら毎回同じ音になる)
-        var seed: UInt64 = 0x9E3779B97F4A7C15
-        func nextNoise() -> Double {
-            seed = seed &* 6364136223846793005 &+ 1442695040888963407
-            return Double(Int64(bitPattern: seed >> 11)) / Double(1 << 52) - 1.0
-        }
-        let mix = max(0, min(1, tone.noiseMix))
-
-        var idx = 0
-        for (i, f) in tone.freqsHz.enumerated() {
-            for n in 0..<blipFrames {
-                let t = Double(n) / sr
-                let env = 0.5 * (1 - cos(2 * .pi * Double(n) / Double(blipFrames)))
-                let tonal = sin(2 * .pi * f * t)
-                let v = tonal * (1 - mix) + nextNoise() * mix
-                out[idx] = Float(v * env * gain)
-                idx += 1
-            }
-            if i < count - 1 {
-                for _ in 0..<gapFrames {
-                    out[idx] = 0
-                    idx += 1
-                }
-            }
-        }
+        for (i, s) in samples.enumerated() { ch[0][i] = s }
         return buf
     }
 }

@@ -40,6 +40,19 @@ public struct Branch: Equatable {
     }
 }
 
+/// 経路図に描く道の 1 線分。
+public struct RoadSegment: Equatable {
+    public let a: GeoPoint
+    public let b: GeoPoint
+    public let cls: WayClass
+
+    public init(a: GeoPoint, b: GeoPoint, cls: WayClass) {
+        self.a = a
+        self.b = b
+        self.cls = cls
+    }
+}
+
 /// 進行方向の先にある交差点。
 public struct UpcomingIntersection: Equatable {
     public let nodeIndex: Int
@@ -182,39 +195,148 @@ public struct WalkGraph: @unchecked Sendable {
         branches(at: node).count >= 3
     }
 
-    /// 進行方向の前方 `withinM` 以内にある、最も近い交差点。
-    /// 「曲がれる地点」でだけ提案するために使う(タイマー駆動をやめる)。
-    /// 前方の判定は `forwardHalfAngleDeg` の扇形で行う。
+    /// いま乗っている道を前方へ辿って、最初に出会う交差点。
+    ///
+    /// **空間的に近いだけの節点は拾わない。** 以前は周囲を走査して
+    /// 「前方 35 m・±60° にある交差点」を選んでいたが、それだと
+    /// **隣の通りの交差点**が選ばれる。街区の幅は 30〜50 m しかないので、
+    /// 前方の扇形には日常的に別の通りが入る。そこを指せば街区を突っ切る向き —
+    /// 利用者の報告「私有地と思われる場所に向かおうとする」がこれ
+    /// (2026-08-19 実測で 3 回)。
+    ///
+    /// 道を辿って探せば、返る交差点は**必ずいまの道の延長上にある**。
     public func upcomingIntersection(from p: GeoPoint, bearingDeg: Double, withinM: Double,
-                                     forwardHalfAngleDeg: Double = 60) -> UpcomingIntersection? {
-        var best: UpcomingIntersection?
-        // 前方 withinM を覆うセル範囲だけ見る
-        let c = cell(p)
-        let reach = max(1, Int((withinM / cellSizeM).rounded(.up)))
-        var seen = Set<Int>()
-        for dx in -reach...reach {
-            for dy in -reach...reach {
-                for entry in buckets[key(c.x + dx, c.y + dy)] ?? [] {
-                    let way = map.ways[entry.way]
-                    for node in [way.n[entry.seg], way.n[entry.seg + 1]] {
-                        guard seen.insert(node).inserted else { continue }
-                        guard let q = map.point(node) else { continue }
-                        let d = Geo.distanceM(p, q)
-                        guard d <= withinM else { continue }
-                        // 真横や後ろの交差点は「これから曲がる場所」ではない
-                        guard abs(Geo.angularDiffDeg(Geo.bearingDeg(from: p, to: q), bearingDeg))
-                                <= forwardHalfAngleDeg else { continue }
-                        let br = branches(at: node)
-                        guard br.count >= 3 else { continue }
-                        if best == nil || d < best!.distanceM {
-                            best = UpcomingIntersection(nodeIndex: node, point: q,
-                                                        distanceM: d, branches: br)
-                        }
-                    }
-                }
+                                     snapMaxDistanceM: Double = 25) -> UpcomingIntersection? {
+        guard let s = snap(p, maxDistanceM: snapMaxDistanceM) else { return nil }
+        let way = map.ways[s.wayIndex]
+        let a = way.n[s.segmentIndex], b = way.n[s.segmentIndex + 1]
+        guard let pa = map.point(a), let pb = map.point(b) else { return nil }
+        // 進行方向に合う側へ歩き出す
+        let forward = abs(Geo.angularDiffDeg(Geo.bearingDeg(from: pa, to: pb), bearingDeg)) <= 90
+        var previous = forward ? a : b
+        var current = forward ? b : a
+        guard var here = map.point(current) else { return nil }
+        var travelled = Geo.distanceM(s.point, here)
+        // 同じ節点を二度踏まない(環状の道で回り続けないため)
+        var visited: Set<Int> = [previous]
+
+        while travelled <= withinM {
+            guard visited.insert(current).inserted else { return nil }
+            let br = branches(at: current)
+            if br.count >= 3 {
+                return UpcomingIntersection(nodeIndex: current, point: here,
+                                            distanceM: travelled, branches: br)
+            }
+            // 道が続いているだけの節点。来た方でないほうへ進む
+            guard let next = continuation(at: current, from: previous, heading: here) else {
+                return nil
+            }
+            guard let np = map.point(next) else { return nil }
+            travelled += Geo.distanceM(here, np)
+            previous = current
+            current = next
+            here = np
+        }
+        return nil
+    }
+
+    /// 節点 `node` を、`from` から来て通り抜ける先。行き止まりなら nil。
+    /// 候補が複数あるときは**最も真っ直ぐ**なものを選ぶ
+    /// (向きで畳まれて交差点扱いされなかった節点でも、道なりに進めるようにする)。
+    private func continuation(at node: Int, from previous: Int, heading: GeoPoint) -> Int? {
+        guard let pp = map.point(previous) else { return nil }
+        let incoming = Geo.bearingDeg(from: pp, to: heading)
+        var best: (node: Int, turn: Double)?
+        for n in adjacentNodes(of: node) where n != previous {
+            guard let q = map.point(n) else { continue }
+            let turn = abs(Geo.angularDiffDeg(Geo.bearingDeg(from: heading, to: q), incoming))
+            if best == nil || turn < best!.turn { best = (n, turn) }
+        }
+        return best?.node
+    }
+
+    /// その分岐へ入ってから `withinM` 進むまでの、**道の上の点列**(`stepM` 間隔)。
+    ///
+    /// 何のためか: 分岐の新鮮さを「その方向の扇形」ではなく**その道そのもの**で測るため。
+    /// 扇形(`sectorFamiliarity`)は空間を切り取るだけなので、交差点の東の扇形には
+    /// 東へ行く道も、そこから行けない別の道も、道でない場所も入る。
+    /// 実際に歩く道を辿って測れば、「この道が新しいか」を直接答えられる。
+    ///
+    /// 分岐の先で交差点に出たら、最も真っ直ぐな道へ進む(「この道を進んだらどうなるか」の模型)。
+    public func samplesAlong(branch: Branch, from node: Int,
+                             withinM: Double, stepM: Double) -> [GeoPoint] {
+        guard stepM > 0, withinM > 0, let origin = map.point(node) else { return [] }
+        // 分岐の向きに最も近い隣接節点へ踏み出す
+        var first: (node: Int, diff: Double)?
+        for n in adjacentNodes(of: node) {
+            guard let q = map.point(n) else { continue }
+            let d = abs(Geo.angularDiffDeg(Geo.bearingDeg(from: origin, to: q), branch.bearingDeg))
+            if first == nil || d < first!.diff { first = (n, d) }
+        }
+        guard var current = first?.node else { return [] }
+
+        // 道なりの折れ線を作る
+        var polyline = [origin]
+        var previous = node
+        var visited: Set<Int> = [node]
+        var length = 0.0
+        while visited.insert(current).inserted, let here = map.point(current) {
+            length += Geo.distanceM(polyline[polyline.count - 1], here)
+            polyline.append(here)
+            if length >= withinM { break }
+            guard let next = continuation(at: current, from: previous, heading: here) else { break }
+            previous = current
+            current = next
+        }
+        guard polyline.count >= 2 else { return [] }
+
+        // 等間隔に標本を取る。緯度経度の線形補間で足りる距離(数十 m)
+        var out: [GeoPoint] = []
+        var travelled = 0.0
+        var target = stepM
+        for i in 1..<polyline.count {
+            let a = polyline[i - 1], b = polyline[i]
+            let seg = Geo.distanceM(a, b)
+            while target <= travelled + seg, target <= withinM {
+                let t = seg > 0 ? (target - travelled) / seg : 0
+                out.append(GeoPoint(latitude: a.latitude + (b.latitude - a.latitude) * t,
+                                    longitude: a.longitude + (b.longitude - a.longitude) * t))
+                target += stepM
+            }
+            travelled += seg
+            if travelled >= withinM { break }
+        }
+        return out
+    }
+
+    /// その節点に隣接する節点。`branches` と違い**向きで畳まない**
+    public func adjacentNodes(of node: Int) -> [Int] {
+        var out: [Int] = []
+        for e in incident[node] ?? [] {
+            let way = map.ways[e.way]
+            for at in [e.at - 1, e.at + 1] {
+                guard way.n.indices.contains(at) else { continue }
+                let n = way.n[at]
+                if n != node, !out.contains(n) { out.append(n) }
             }
         }
-        return best
+        return out
+    }
+
+    /// 枠に入る道の線分。**経路図の下地**に使う(docs/06「散歩の記録」)。
+    /// 索引は 1 点の近傍を引くためのものなので、ここは way を素直に走査する。
+    /// 図を開いた時に 1 回だけ呼ぶ前提(毎秒の判定には使わない)
+    public func roadSegments(in frame: MapFrame) -> [RoadSegment] {
+        var out: [RoadSegment] = []
+        for way in map.ways {
+            guard way.n.count >= 2 else { continue }
+            for i in 0..<(way.n.count - 1) {
+                guard let a = map.point(way.n[i]), let b = map.point(way.n[i + 1]),
+                      frame.mayContain(a, b) else { continue }
+                out.append(RoadSegment(a: a, b: b, cls: way.cls))
+            }
+        }
+        return out
     }
 
     private func evaluate(_ entry: (way: Int, seg: Int), at p: GeoPoint) -> Snap? {
