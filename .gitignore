@@ -21,6 +21,10 @@ DL/
 build-mapbuild/
 build-demo/
 build-demo-tool/
+# Android のビルド生成物と機械固有の設定。
+# **2026-08-25 に .gradle 一式と local.properties を誤ってコミットしていた**
+# (392e793)。無視の指定が feature/android 側にしか無かったため、
+# develop で git add したときに拾われた。**両方の枝に置く**
 .gradle/
 android/.gradle/
 android/.kotlin/
