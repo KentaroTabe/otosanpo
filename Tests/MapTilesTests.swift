@@ -61,6 +61,43 @@ final class MapTilesTests: XCTestCase {
         XCTAssertFalse(MapTiles.cover(ids, between, sizeDeg: size))
     }
 
+    // MARK: - 近くだけ読む・取りに行く分の計算
+
+    /// 溜まったタイルから、基準点の周りだけを選ぶ。遠い街で取ったぶんは読まない
+    func testNearbyKeepsOnlyTilesAroundTheReferencePoints() {
+        let here = MapTiles.center(of: MapTiles.TileID(y: 703, x: 2737), sizeDeg: size)
+        let nearHere = MapTiles.covering(center: here, radiusM: 5000, sizeDeg: size)
+        let farAway = [MapTiles.TileID(y: 800, x: 2900), MapTiles.TileID(y: 801, x: 2900)]
+        let picked = MapTiles.nearby(nearHere + farAway, around: [here],
+                                     radiusM: 5000, sizeDeg: size)
+        XCTAssertEqual(Set(picked), Set(nearHere))
+    }
+
+    /// 基準点が無い(自宅も位置も未取得)なら絞らない。読める地図を捨てない
+    func testNearbyWithoutReferencePointsKeepsEverything() {
+        let stored = [MapTiles.TileID(y: 1, x: 1), MapTiles.TileID(y: 900, x: 900)]
+        XCTAssertEqual(MapTiles.nearby(stored, around: [], radiusM: 5000, sizeDeg: size), stored)
+    }
+
+    /// 取りに行く分 = 必要 −(ある)−(データ無しと分かっている)
+    func testToFetchSubtractsStoredAndKnownEmpty() {
+        let a = MapTiles.TileID(y: 1, x: 1)
+        let b = MapTiles.TileID(y: 1, x: 2)
+        let c = MapTiles.TileID(y: 1, x: 3)
+        XCTAssertEqual(MapTiles.toFetch(covering: [a, b, c], stored: [a], empty: [b],
+                                        retryEmpty: false), [c])
+        // ボタンからは「データ無し」を無視してもう一度試す(配信が増えた場合に拾い直す)
+        XCTAssertEqual(MapTiles.toFetch(covering: [a, b, c], stored: [a], empty: [b],
+                                        retryEmpty: true), [b, c])
+    }
+
+    /// 全部そろっていれば空 = **通信しない**
+    func testToFetchIsEmptyWhenEverythingIsPresent() {
+        let a = MapTiles.TileID(y: 1, x: 1)
+        XCTAssertTrue(MapTiles.toFetch(covering: [a], stored: [a], empty: [],
+                                       retryEmpty: false).isEmpty)
+    }
+
     // MARK: - 結合
 
     private func tileMap(ways: [[[Double]]], generated: String = "2026-08-28") -> WalkMap {

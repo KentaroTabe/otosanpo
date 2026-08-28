@@ -210,12 +210,16 @@ final class WalkSessionController: ObservableObject {
         guidanceTimer?.invalidate()
         summary = WalkSummary(startedAt: Date(), home: home)
         // **位置が確定したこの時点で、地図の選び直しが要るか見る。**
-        // 手で入れた地図とタイルの両方がある端末だけ(初期化時は位置が無く、
-        // 手動優先で読んでいる。旅行先ではタイルのほうが現在地を覆うことがある)
-        if MapStore.exists(), !TileStore.storedIDs().isEmpty {
+        // タイルがある端末だけ(初期化時は位置が無く、近傍の絞り込みも選択も
+        // 位置なしで行っている。旅行先ではタイルのほうが現在地を覆うことがある)
+        if !TileStore.storedIDs().isEmpty {
             reloadMap()
         }
         buildRouteField()
+        // 足りない分があれば裏で取得する。届くまではいまの地図(無ければグリッド)で歩く
+        if let p = location.position ?? home {
+            autoFetchTiles(around: p)
+        }
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
@@ -297,7 +301,10 @@ final class WalkSessionController: ObservableObject {
                                      hasTiles: hasTiles, tilesCover: tilesCover)
         let map: WalkMap? = switch mapSource {
         case .manual: manual
-        case .tiles: TileStore.loadAssembled()
+        case .tiles:
+            // 溜まったタイルを全部は読まない。自宅と現在地の周りだけ(→ MapTiles.nearby)
+            TileStore.loadAssembled(near: [home, p].compactMap { $0 },
+                                    radiusM: params.route.mapRadiusM)
         case .none: nil
         }
         graph = map.map { WalkGraph(map: $0, cellSizeM: params.route.mapIndexCellSizeM) }
@@ -305,18 +312,36 @@ final class WalkSessionController: ObservableObject {
         updateStatus()
     }
 
-    /// 現在地の周り(散歩の 5 km 圏)のタイルを落とす。
+    /// 現在地の周り(散歩の 5 km 圏)のタイルを落とす(画面のボタンから)。
     ///
     /// **通信に載るのは取得する区画の番号だけ**(粒度は約 5 km 角)。
     /// 正確な座標・歩いた経路・自宅は送らない(→ docs/12)。
+    ///
+    /// ボタンからは「データ無し」の記録を無視してもう一度試す
+    /// (配信が後から増えた場合に、人の操作で拾い直せるように)
     func downloadMapHere() async {
+        guard let p = location.position else {
+            mapDownloadLine = "現在地がまだ取れていません。空の見える場所で数秒待ってください"
+            return
+        }
+        await downloadTiles(around: p, retryEmpty: true, quiet: false)
+    }
+
+    /// 散歩の開始時の自動取得。**足りない分がある時だけ通信する**(→ docs/12)。
+    ///
+    /// - 揃っていれば何もしない = 通信ゼロ。2 回目以降の自宅の散歩はここに落ちる
+    /// - 「データ無し」と分かっている区画は取りに行かない。海沿いの自宅で
+    ///   毎回 404 を取りに行かないため
+    /// - 失敗しても散歩は止めない(地図が無ければグリッドのみで動く既存の経路)
+    private func autoFetchTiles(around p: GeoPoint) {
+        guard params.mapDownload.isConfigured else { return }
+        Task { await downloadTiles(around: p, retryEmpty: false, quiet: true) }
+    }
+
+    private func downloadTiles(around p: GeoPoint, retryEmpty: Bool, quiet: Bool) async {
         let settings = params.mapDownload
         guard settings.isConfigured else {
             mapDownloadLine = "配信先が未設定です"
-            return
-        }
-        guard let p = location.position else {
-            mapDownloadLine = "現在地がまだ取れていません。空の見える場所で数秒待ってください"
             return
         }
         guard !mapDownloading else { return }
@@ -324,17 +349,39 @@ final class WalkSessionController: ObservableObject {
         defer { mapDownloading = false }
 
         do {
-            mapDownloadLine = "配信の情報を取得中…"
+            // タイル角は配信側の宣言が正。ただし自動取得では、手元に宣言があり
+            // 揃っているかだけ見たい場合に通信を増やさないよう、まず手元の値で見積もる
+            let knownMeta = TileStore.loadMeta()
+            if quiet, let meta = knownMeta {
+                let covering = MapTiles.covering(center: p, radiusM: params.route.mapRadiusM,
+                                                 sizeDeg: meta.tileSizeDeg)
+                if MapTiles.toFetch(covering: covering, stored: TileStore.storedIDs(),
+                                    empty: TileStore.emptyIDs(), retryEmpty: false).isEmpty {
+                    return  // 揃っている。通信しない
+                }
+            }
+            if !quiet { mapDownloadLine = "配信の情報を取得中…" }
             let meta = try await MapDownloader.meta(baseURL: settings.baseURL,
                                                    timeoutSec: settings.timeoutSec)
-            let ids = MapTiles.covering(center: p, radiusM: params.route.mapRadiusM,
-                                        sizeDeg: meta.tileSizeDeg)
+            let covering = MapTiles.covering(center: p, radiusM: params.route.mapRadiusM,
+                                             sizeDeg: meta.tileSizeDeg)
+            let ids = MapTiles.toFetch(covering: covering, stored: TileStore.storedIDs(),
+                                       empty: TileStore.emptyIDs(), retryEmpty: retryEmpty)
+            guard !ids.isEmpty else {
+                if !quiet { mapDownloadLine = "この辺りの地図は揃っています" }
+                return
+            }
             let result = try await MapDownloader.download(
                 ids, baseURL: settings.baseURL, timeoutSec: settings.timeoutSec,
                 onProgress: { [weak self] done, total in
-                    self?.mapDownloadLine = "取得中 \(done)/\(total)…"
+                    if !quiet { self?.mapDownloadLine = "取得中 \(done)/\(total)…" }
                 })
-            reloadMap()
+            if result.saved > 0 {
+                reloadMap()
+                // 散歩が始まっていれば、届いた地図で経路の場も作り直す
+                // (自動取得は開始直後に走るので、放置すると今回の散歩に効かない)
+                if state != .idle, state != .arrived { buildRouteField() }
+            }
             if result.saved == 0 {
                 mapDownloadLine = "この辺りのデータは配信されていません(\(ids.count) 区画とも)"
             } else {

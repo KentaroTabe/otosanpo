@@ -89,6 +89,34 @@ public enum MapTiles {
         return out
     }
 
+    /// 端末にあるタイルのうち、**基準点(自宅・現在地)の周りだけ**を選ぶ。
+    ///
+    /// なぜ要るか: 取得のたびにタイルは溜まる。全部を結合すると、旅行先で取った端末ほど
+    /// 地図が肥大し、**散歩の開始時に作る経路の場が重くなる**
+    /// (実測: 57 万節点で構築 5.1 秒・メモリ 241 MB。docs/04)。
+    /// 歩くのに要るのは基準点の周り(散歩の 5 km 圏)だけなので、そこに絞る。
+    public static func nearby(_ stored: [TileID], around points: [GeoPoint],
+                              radiusM: Double, sizeDeg: Double) -> [TileID] {
+        guard !points.isEmpty else { return stored }
+        var wanted = Set<TileID>()
+        for p in points {
+            wanted.formUnion(covering(center: p, radiusM: radiusM, sizeDeg: sizeDeg))
+        }
+        return stored.filter { wanted.contains($0) }
+    }
+
+    /// 取りに行くタイル = 必要な範囲 −(端末にあるもの)−(データ無しと分かっているもの)。
+    ///
+    /// `retryEmpty` は「データ無し」の記録を無視してもう一度試す。
+    /// 自動取得(散歩開始時)は false — 海沿いの自宅で**毎回 404 を取りに行かない**ため。
+    /// ボタンからの取得は true — 配信が後から増えた場合に人の操作で拾い直せるように
+    public static func toFetch(covering: [TileID], stored: some Collection<TileID>,
+                               empty: some Collection<TileID>, retryEmpty: Bool) -> [TileID] {
+        let storedSet = Set(stored)
+        let emptySet = retryEmpty ? Set<TileID>() : Set(empty)
+        return covering.filter { !storedSet.contains($0) && !emptySet.contains($0) }
+    }
+
     // MARK: - 結合
 
     /// 複数のタイルを 1 つの `WalkMap` に組む。
