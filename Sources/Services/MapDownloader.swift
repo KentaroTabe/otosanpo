@@ -58,11 +58,39 @@ enum TileStore {
         return names.compactMap { MapTiles.id(fromFileName: $0) }
     }
 
-    /// 端末にあるタイルを全部読んで 1 つの地図に組む。無ければ nil。
+    // MARK: - 「データ無し」の記録
+
+    /// 404 だった区画の印(中身は空のファイル `t{y}_{x}.empty`)。
+    /// **自動取得が毎回同じ 404 を取りに行かないため**に残す。海沿いの自宅では
+    /// 5 km 圏の何枚かが恒久的にデータ無しで、記録しないと散歩のたびに通信が走る
+    static func markEmpty(_ id: MapTiles.TileID) {
+        guard let dir = directory() else { return }
+        let name = MapTiles.fileName(id) + ".empty"
+        try? Data().write(to: dir.appendingPathComponent(name))
+    }
+
+    static func emptyIDs() -> [MapTiles.TileID] {
+        guard let dir = directory(),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return []
+        }
+        return names.compactMap { name in
+            guard name.hasSuffix(".empty") else { return nil }
+            return MapTiles.id(fromFileName: String(name.dropLast(6)))
+        }
+    }
+
+    /// 基準点(自宅・現在地)の周りのタイルだけ読んで 1 つの地図に組む。無ければ nil。
+    ///
+    /// **全部は読まない。** 取得のたびにタイルは溜まり、旅行先で取った端末ほど
+    /// 結合した地図が肥大して、散歩の開始時に作る経路の場が重くなるため
+    /// (→ `MapTiles.nearby`)。基準点が無ければ絞らない。
     /// **壊れたタイルは黙って飛ばす**(1 枚のために全体を失わない)
-    static func loadAssembled() -> WalkMap? {
-        guard let dir = directory() else { return nil }
-        let maps: [WalkMap] = storedIDs().compactMap { id in
+    static func loadAssembled(near points: [GeoPoint], radiusM: Double) -> WalkMap? {
+        guard let dir = directory(), let meta = loadMeta() else { return nil }
+        let picked = MapTiles.nearby(storedIDs(), around: points,
+                                     radiusM: radiusM, sizeDeg: meta.tileSizeDeg)
+        let maps: [WalkMap] = picked.compactMap { id in
             guard let data = try? Data(contentsOf: dir.appendingPathComponent(MapTiles.fileName(id)))
             else { return nil }
             return try? JSONDecoder().decode(WalkMap.self, from: data)
@@ -125,6 +153,7 @@ enum MapDownloader {
                 try TileStore.save(data, id: id)
                 result.saved += 1
             } catch Failure.http(404) {
+                TileStore.markEmpty(id)
                 result.empty += 1
             }
         }
