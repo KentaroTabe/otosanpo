@@ -42,6 +42,25 @@ public enum ToneRenderer {
         return out
     }
 
+    /// 先頭に無音を足す。
+    ///
+    /// **なぜ要るか**: 定位は再生ノードの位置(または pan)で付けるが、その値は
+    /// 音が鳴り始めてから目標へ滑らかに移る。前の音と向きが大きく違うと、
+    /// **その移動が音の頭に乗って「鳴り出しは右、鳴り終わりは左」に聞こえる**
+    /// (2026-08-25 の報告。試聴で左右を押し比べると顕著)。
+    ///
+    /// 実測では、1 音ごとの向きの変化は中央 5° と小さいが、**イベントの 1 音目(予告)は
+    /// 22 件中 14 件で 60° 以上跳んでいた**(最大 168°)。いちばん向きを伝えたい音が
+    /// いちばん滲む。
+    ///
+    /// 無音のうちに移動を終わらせれば、鳴り始めた時にはもう目標の向きになっている。
+    public static func withLeadSilence(_ samples: [Float], seconds: Double,
+                                       sampleRate: Double) -> [Float] {
+        let frames = Int(max(0, seconds) * sampleRate)
+        guard frames > 0, !samples.isEmpty else { return samples }
+        return [Float](repeating: 0, count: frames) + samples
+    }
+
     /// 音色を暗くする(周波数を下げ、雑音成分を削る)。
     /// `darkness` 0 で変化なし、1 で最も暗い。
     /// HRTF では前後を判別できなかった(2026-08-18 実測)ため、背後は音色で分ける

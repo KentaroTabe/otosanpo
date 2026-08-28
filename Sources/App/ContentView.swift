@@ -8,6 +8,30 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             Form {
+                // **時間到来の応答。** うなずき・首振りはモーション対応の AirPods を
+                // 着けている人しか使えないので、着けていない人が答えられる道を画面にも用意する。
+                // 一番上に置くのは、ポケットから出して開いた人が最初に見る場所だから
+                if controller.state == .promptingReturn {
+                    Section("時間になりました") {
+                        Text("そろそろ帰りますか?")
+                            .font(.title3.bold())
+                        Button("帰る") { controller.answerReturnNow() }
+                        if controller.extensionsLeft > 0 {
+                            Button("もう少し歩く(あと \(controller.extensionsLeft) 回)") {
+                                controller.answerExtend()
+                            }
+                        } else {
+                            Text("延長の上限に達しています")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("AirPods を着けている場合は、うなずく=帰る / "
+                             + "首を横に振る=もう少し歩く でも答えられます")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("設定") {
                     if controller.home == nil {
                         LabeledContent("自宅", value: "未設定")
@@ -92,8 +116,7 @@ struct ContentView: View {
 
                 Section("デバッグ(シミュレータ・モーション非対応時の代替)") {
                     Button("時間到来を発火") { controller.debugTimeUp() }
-                    Button("うなずきを発火(帰路開始)") { controller.debugNod() }
-                    Button("首振りを発火(延長)") { controller.debugShake() }
+                    // 帰る / 延長はデバッグ専用ではなくなったので、上の「時間になりました」に移した
                 }
 
                 Section("earcon の試聴") {
@@ -154,6 +177,12 @@ struct ContentView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(controller.alertMessage ?? "")
+            }
+            // 出発の一言。**画面を見るのは開始の瞬間だけ**なので、ここで出して閉じてもらう
+            .alert(controller.greeting ?? "",
+                   isPresented: Binding(get: { controller.greeting != nil },
+                                        set: { if !$0 { controller.greeting = nil } })) {
+                Button("はい", role: .cancel) {}
             }
         }
     }

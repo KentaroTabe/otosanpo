@@ -311,6 +311,8 @@ var rejected: [String: Int] = [:]
 var bestScores: [Double] = []
 var intersectionsSeen = 0
 var choices: [String] = []
+/// 予告の 1 音目が指した向きに、実際に道があったか
+var announceChecks: [(distanceM: Double, relativeDeg: Double, nearestRoadM: Double)] = []
 var lastChoiceAt: GeoPoint?
 
 // 誘導の再生。**進行方位を基準にしたときに左右がどれだけ付くか**を測る。
@@ -398,9 +400,37 @@ for f in inMap where f.state == "wandering" {
     case .suggest(let c):
         bestScores.append(c.score)
         lastChoiceAt = f.point
-        choices.append(String(format: "  %@ 交差点まで %.0fm / 分岐 %d 本 → 相対 %+.0f° (%@, 横断 %d) score=%.2f",
+        // **予告の 1 音目は「曲がる先の方位」を、いま立っている場所から鳴らす。**
+        // 角がまだ 30m 先にあると、その向きの先には道が無い(家や塀)。
+        // 利用者の「道の存在しない方向に向かっていた」はこれの疑いがあるので、
+        // その向きに実際の道があるかを地図で確かめる
+        //
+        // **「近くに道がある」では判定にならない。** 街区は 30〜50m 間隔なので、
+        // どの向きへ 10m 進んでも何らかの道の近くにはなる。いま立っている道自体も拾う。
+        // 「その向きに**進める**か」を見るには、**道の向きが指した向きと揃っている**
+        // ことまで要る。15m 以上先(いまの道では説明できない距離)で探す
+        var nearestRoadM = Double.greatestFiniteMagnitude
+        var step = 15.0
+        while step <= r.intersectionLookaheadM {
+            let q = Geo.destination(from: f.point, bearingDeg: c.branch.bearingDeg,
+                                    distanceM: step)
+            if let s = graph.snap(q, maxDistanceM: 10),
+               abs(Geo.angularDiffDeg(s.bearingDeg, c.branch.bearingDeg)) <= 35
+                || abs(Geo.angularDiffDeg(s.bearingDeg, c.branch.bearingDeg + 180)) <= 35 {
+                nearestRoadM = min(nearestRoadM, s.distanceM)
+            }
+            step += 5
+        }
+        announceChecks.append((distanceM: x.distanceM,
+                               relativeDeg: c.relativeBearingDeg,
+                               nearestRoadM: nearestRoadM))
+        let roadLabel = nearestRoadM <= 10
+            ? String(format: "予告の先に道あり(%.0fm)", nearestRoadM)
+            : "**予告の先に進める道なし**"
+        choices.append(String(format: "  %@ 交差点まで %.0fm / 分岐 %d 本 → 相対 %+.0f° (%@, 横断 %d) score=%.2f / %@",
                               clock.string(from: f.time), x.distanceM, x.branches.count,
-                              c.relativeBearingDeg, "\(c.branch.cls)", c.branch.crossCost, c.score))
+                              c.relativeBearingDeg, "\(c.branch.cls)", c.branch.crossCost,
+                              c.score, roadLabel))
         active = (TurnGuidance(corner: x.point, branchBearingDeg: c.branch.bearingDeg,
                                distanceM: x.distanceM), f.time, [])
     }
@@ -427,6 +457,22 @@ if !bestScores.isEmpty {
     // 土地を歩いているか」を見るための材料として出す
     print(String(format: "接近した交差点での最良スコアの分布: 最小 %.2f / 中央 %.2f / 最大 %.2f",
                  sorted.first!, sorted[sorted.count / 2], sorted.last!))
+}
+if !announceChecks.isEmpty {
+    // **予告の 1 音目は「角に着いてから踏み出す向き」を、いま立っている場所から鳴らす。**
+    // 角が遠いほど、その向きの先には道が無い(家や塀を指す)。
+    let noRoad = announceChecks.filter { !$0.nearestRoadM.isFinite || $0.nearestRoadM > 15 }
+    print(String(format: "\n予告(1 音目)の向きの先に道があるか: 道が無い %d / %d 件 (%.0f%%)",
+                 noRoad.count, announceChecks.count,
+                 Double(noRoad.count) / Double(announceChecks.count) * 100))
+    let farAndSide = announceChecks.filter { $0.distanceM >= 25 && abs($0.relativeDeg) >= 60 }
+    print(String(format: "  角が 25m 以上先で、かつ横 60° 以上を指した回: %d 件",
+                 farAndSide.count))
+    if !noRoad.isEmpty {
+        let avgD = noRoad.reduce(0) { $0 + $1.distanceM } / Double(noRoad.count)
+        let avgR = noRoad.reduce(0) { $0 + abs($1.relativeDeg) } / Double(noRoad.count)
+        print(String(format: "  道が無かった回の平均: 角まで %.0fm / 相対 %.0f°", avgD, avgR))
+    }
 }
 for line in choices.prefix(30) { print(line) }
 if choices.count > 30 { print("  (以下 \(choices.count - 30) 件省略)") }
@@ -504,10 +550,12 @@ if let walkMap = loadedMap, !legs.isEmpty {
     let graph = WalkGraph(map: walkMap, cellSizeM: r.mapIndexCellSizeM)
     print("\n== 帰宅推定の測り比べ(帰路の開始時点で何分と見積もるか)==")
     print("  正解 = 実際にかかった時間。経路長は自宅を到着地点で近似している")
-    print(String(format: "  %8@ %7@ %9@ %9@ %11@ %11@",
+    print(String(format: "  %8@ %7@ %9@ %9@ %11@ %11@ %11@",
                  "開始" as NSString, "正解" as NSString, "直線" as NSString,
-                 "経路" as NSString, "直線の誤差" as NSString, "経路の誤差" as NSString))
-    var straightErr = 0.0, routeErr = 0.0, counted = 0
+                 "経路" as NSString, "直線の誤差" as NSString, "経路の誤差" as NSString,
+                 "実装の誤差" as NSString))
+    print("  「実装」= いま動いている選び方(経路長を直線の倍数で抑えたもの)")
+    var straightErr = 0.0, routeErr = 0.0, actualErr = 0.0, counted = 0
     for leg in legs {
         guard let first = leg.fixes.first, let last = leg.fixes.last else { continue }
         // 自宅は到着地点で近似する(実機の到着判定は arrival_radius_m 以内で成立している)
@@ -529,16 +577,116 @@ if let walkMap = loadedMap, !legs.isEmpty {
         let byStraight = ReturnBudget.estimatedReturnMin(.straight(leg.straightM),
                                                          speedMPerMin: v, p: b)
         let byRoute = ReturnBudget.estimatedReturnMin(.route(routeM), speedMPerMin: v, p: b)
+        // 実装が実際に選ぶ距離。経路長が直線の倍数を超えたら抑えられる
+        let chosen = ReturnBudget.distance(routeM: routeM, straightM: leg.straightM, p: b)
+        let byActual = ReturnBudget.estimatedReturnMin(chosen, speedMPerMin: v, p: b)
         straightErr += abs(byStraight - leg.elapsedMin)
         routeErr += abs(byRoute - leg.elapsedMin)
+        actualErr += abs(byActual - leg.elapsedMin)
         counted += 1
-        print(String(format: "  %8@ %6.1f分 %8.1f分 %8.1f分 %+10.1f分 %+10.1f分",
+        print(String(format: "  %8@ %6.1f分 %8.1f分 %8.1f分 %+10.1f分 %+10.1f分 %+10.1f分 [%@]",
                      clock.string(from: first.time) as NSString, leg.elapsedMin,
-                     byStraight, byRoute, byStraight - leg.elapsedMin, byRoute - leg.elapsedMin))
+                     byStraight, byRoute, byStraight - leg.elapsedMin, byRoute - leg.elapsedMin,
+                     byActual - leg.elapsedMin, chosen.label as NSString))
     }
     if counted > 0 {
-        print(String(format: "  平均誤差: 直線 %.1f分 / 経路 %.1f分(%d 本)",
-                     straightErr / Double(counted), routeErr / Double(counted), counted))
+        print(String(format: "  平均誤差: 直線 %.1f分 / 経路 %.1f分 / 実装 %.1f分(%d 本)",
+                     straightErr / Double(counted), routeErr / Double(counted),
+                     actualErr / Double(counted), counted))
+    }
+}
+
+// MARK: - 経路長が過大になる原因の切り分け
+
+/// 2026-08-27 の帰路で、経路長 1609m に対し実際に歩いたのは 688m だった。
+/// 原因の候補は 2 つあり、切り分けないとどちらを直せばいいか決まらない。
+///
+/// 1. **重みによる迂回**: 横断と幹線を嫌って遠回りの経路が選ばれている
+/// 2. **地図の欠落**: 実際に歩いた道が地図で繋がっておらず、遠回りしか出せない
+///
+/// 重み 0 の場を並べれば分けられる。重み 0 の経路長が実測に近ければ 1、
+/// 重み 0 でも過大なら 2。重みの割り増しは最大 1.52 倍なので、
+/// それを超える過大は原理的に 1 だけでは説明できない。
+if let walkMap = loadedMap, !legs.isEmpty {
+    let graph = WalkGraph(map: walkMap, cellSizeM: r.mapIndexCellSizeM)
+    print("\n== 経路長の内訳(重みの迂回 / 地図の欠落)==")
+    let plainWeights = RouteField.Weights(crossCostWeight: 0, wayClassWeight: 0)
+    let realWeights = RouteField.Weights(crossCostWeight: r.crossCostWeight,
+                                         wayClassWeight: r.wayClassWeight)
+    for (i, leg) in legs.enumerated() {
+        guard let first = leg.fixes.first, let last = leg.fixes.last,
+              let weighted = RouteField(graph: graph, goal: last.point,
+                                        snapMaxDistanceM: r.snapMaxDistanceM,
+                                        weights: realWeights),
+              let plain = RouteField(graph: graph, goal: last.point,
+                                     snapMaxDistanceM: r.snapMaxDistanceM,
+                                     weights: plainWeights) else { continue }
+
+        // 各 fix の時点で「あと何 m 歩いたか」を出す。経路長の見積もりと突き合わせる正解になる
+        var cumulative: [Double] = []
+        var m = GaitMetrics()
+        for f in leg.fixes {
+            m.add(f.point, speedMps: f.speedMps, accuracyM: f.accuracyM, limits: currentLimits)
+            cumulative.append(m.pathLengthM)
+        }
+        let total = cumulative.last ?? 0
+
+        let w0 = weighted.pathLengthM(from: first.point, graph: graph)
+        let p0 = plain.pathLengthM(from: first.point, graph: graph)
+        print(String(format: "帰路 %d: 直線=%.0fm 実際に歩いた=%.0fm", i + 1, leg.straightM, total))
+        print(String(format: "  重みあり経路=%@ / 重みなし経路(実距離の最短)=%@",
+                     w0.map { String(format: "%.0fm", $0) } ?? "-",
+                     p0.map { String(format: "%.0fm", $0) } ?? "-"))
+        if let w0, let p0, p0 > 0 {
+            print(String(format: "  重みの寄与=%.2f 倍(上限 1.52)/ 最短が実測を超える分=%.2f 倍",
+                         w0 / p0, p0 / max(total, 1)))
+        }
+        print("  経過とともにどう動くか(残り実距離 = 正解):")
+        print(String(format: "  %8@ %10@ %12@ %12@ %10@",
+                     "時刻" as NSString, "残り実距離" as NSString, "重みあり経路" as NSString,
+                     "重みなし経路" as NSString, "直線" as NSString))
+        for (j, f) in leg.fixes.enumerated() where j % 20 == 0 {
+            let remaining = total - cumulative[j]
+            let wm = weighted.pathLengthM(from: f.point, graph: graph)
+            let pm = plain.pathLengthM(from: f.point, graph: graph)
+            print(String(format: "  %8@ %9.0fm %11@ %11@ %9.0fm",
+                         clock.string(from: f.time) as NSString, remaining,
+                         wm.map { String(format: "%.0fm", $0) } ?? "-" as NSString,
+                         pm.map { String(format: "%.0fm", $0) } ?? "-" as NSString,
+                         Geo.distanceM(f.point, last.point)))
+        }
+
+        // **散歩全体で「経路長 / 直線距離」の分布を見る。**
+        // 跳ねが局所的なら比で弾ける。頻繁なら弾き方では足りず、地図か снап の作り直しが要る
+        // 帰路の取れない散歩があると legs と sessions の番号がずれるので、
+        // 一致している時だけ散歩全体を見る(この節は診断であって判定ではない)
+        let wholeSession = sessions.count == legs.count ? sessions[i] : leg.fixes
+        print("  散歩全体での 経路長/直線距離 の分布(自宅は到着地点で近似):")
+        var ratios: [(Double, LoggedFix)] = []
+        for f in wholeSession {
+            let straightM = Geo.distanceM(f.point, last.point)
+            guard straightM > 30, let rm = weighted.pathLengthM(from: f.point, graph: graph) else { continue }
+            ratios.append((rm / straightM, f))
+        }
+        let sorted = ratios.map(\.0).sorted()
+        func pct(_ q: Double) -> Double {
+            guard !sorted.isEmpty else { return 0 }
+            return sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * q))]
+        }
+        print(String(format: "    %d 件 / 中央 %.2f / 90%% %.2f / 95%% %.2f / 最大 %.2f",
+                     sorted.count, pct(0.5), pct(0.9), pct(0.95), sorted.last ?? 0))
+        for limit in [1.8, 2.0, 2.5, 3.0] {
+            let over = sorted.filter { $0 > limit }.count
+            print(String(format: "    %.1f 倍を超える: %d 件 (%.1f%%)",
+                         limit, over, 100 * Double(over) / Double(max(sorted.count, 1))))
+        }
+        // 跳ねている区間の時刻を出す。立ち止まり・幹線の反対側などと突き合わせるため
+        let spikes = ratios.filter { $0.0 > 2.0 }
+        if let head = spikes.first, let tail = spikes.last {
+            print(String(format: "    2.0 倍超えの範囲: %@ 〜 %@(%d 件)",
+                         clock.string(from: head.1.time) as NSString,
+                         clock.string(from: tail.1.time) as NSString, spikes.count))
+        }
     }
 }
 
@@ -772,6 +920,43 @@ if rotationPairs.isEmpty {
         sumDiff += abs(Geo.angularDiffDeg(b.rotationDeg, dCourse))
         if (b.rotationDeg > 0) == (dCourse > 0) { agree += 1 }
     }
+    // **まず「回転」と「Δyaw」を突き合わせる。**
+    // course を正解にすると「どちらも旋回を追えていない」としか言えないが、
+    // 回転(ジャイロの積分)と Δyaw(姿勢の変化)は、世界を追えているかとは無関係に
+    // **互いに一致するはず**である。どちらも「頭がどれだけ回ったか」を別経路で測ったもの。
+    // 一致しなければ、読んでいる軸か符号が違う。
+    var axisPairs = 0
+    var sumDyaw = 0.0, sumGap = 0.0, sumGapFlipped = 0.0, axisAgree = 0
+    for i in 1..<allPairs.count {
+        let a = allPairs[i - 1], b = allPairs[i]
+        let dt = b.time.timeIntervalSince(a.time)
+        guard dt > 0, dt <= 6, i < rotationPairs.count else { continue }
+        let dYaw = Geo.angularDiffDeg(b.yawDeg, a.yawDeg)
+        let rot = rotationPairs[min(i, rotationPairs.count - 1)].rotationDeg
+        guard abs(dYaw) >= 5 || abs(rot) >= 5 else { continue }
+        axisPairs += 1
+        sumDyaw += abs(dYaw)
+        sumGap += abs(Geo.angularDiffDeg(rot, dYaw))
+        sumGapFlipped += abs(Geo.angularDiffDeg(-rot, dYaw))
+        if (rot > 0) == (dYaw > 0) { axisAgree += 1 }
+    }
+    if axisPairs > 20 {
+        print("\n  ジャイロの軸と符号(回転 と Δyaw の突き合わせ・\(axisPairs) 区間)")
+        print(String(format: "    |Δyaw| %.1f° / |回転 − Δyaw| %.1f° / |−回転 − Δyaw| %.1f° / 符号一致 %.0f%%",
+                     sumDyaw / Double(axisPairs), sumGap / Double(axisPairs),
+                     sumGapFlipped / Double(axisPairs),
+                     100 * Double(axisAgree) / Double(axisPairs)))
+        let straight = sumGap / Double(axisPairs)
+        let flipped = sumGapFlipped / Double(axisPairs)
+        if min(straight, flipped) > sumDyaw / Double(axisPairs) * 0.5 {
+            print("    → 軸が違う。rotationRate.z は頭の鉛直軸ではない疑い")
+        } else if flipped < straight {
+            print("    → **符号が逆。head_rate_sign を反転させること**")
+        } else {
+            print("    → 軸も符号も合っている。ジャイロは頭の回転を取れている")
+        }
+    }
+
     print("\n  角速度の積分と course の比較(「回転」列・\(rotationPairs.count) 件)")
     if used == 0 {
         print("    曲がった区間がまだありません")
