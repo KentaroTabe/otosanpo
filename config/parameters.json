@@ -55,7 +55,7 @@
     "map_min_span_m": 150
   },
   "map_download": {
-    "base_url": "",
+    "base_url": "https://pub-0192e5581a214cbfa83d94ba357dbc2c.r2.dev",
     "timeout_sec": 60,
     "tile_size_deg": 0.05
   },
