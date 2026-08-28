@@ -12,7 +12,7 @@ public struct AppParameters: Codable, Equatable {
     public var audio: Audio
     public var location: Location
     public var summary: Summary
-    public var mapCatalog: MapCatalogSettings
+    public var mapDownload: MapDownloadSettings
     public var greeting: Greeting
 
     public struct Session: Codable, Equatable {
@@ -149,12 +149,16 @@ public struct AppParameters: Codable, Equatable {
         public var mapMinSpanM: Double
     }
 
-    /// 経路データの配信先。**アプリで唯一、外へ出る通信**(→ docs/12)
-    public struct MapCatalogSettings: Codable, Equatable {
+    /// 経路データ(タイル)の配信先。**アプリで唯一、外へ出る通信**(→ docs/12)
+    public struct MapDownloadSettings: Codable, Equatable {
         /// 配信先の基点。**空なら取得の機能を出さない**(通信しない状態に戻せる)。
         /// 末尾のスラッシュは有っても無くてもよい
         public var baseURL: String
         public var timeoutSec: Double
+        /// **生成側**が使うタイル角 [度](scripts/build_tiles.sh が読む)。
+        /// アプリは配信先の meta.json の値を使う — 配信データの分割はデータと一緒に
+        /// 宣言されるべきで、端末側の設定と食い違っても配信側が正になるため
+        public var tileSizeDeg: Double
 
         /// 取得を出してよいか。空の設定を「機能なし」として扱う
         public var isConfigured: Bool { !baseURL.isEmpty }
@@ -163,6 +167,7 @@ public struct AppParameters: Codable, Equatable {
             // 既定の snake_case 変換では base_url → baseUrl になるため明示する
             case baseURL = "base_url"
             case timeoutSec = "timeout_sec"
+            case tileSizeDeg = "tile_size_deg"
         }
     }
 

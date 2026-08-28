@@ -132,38 +132,27 @@ struct ContentView: View {
 
                 // 経路データを配信先から入れる。**手で入れる道は残す**
                 // (ファイルを置ける人はそのままでよい)。→ docs/12
-                if controller.params.mapCatalog.isConfigured {
+                if controller.params.mapDownload.isConfigured {
                     Section("地図を取得") {
-                        if controller.mapCities.isEmpty {
-                            Button("配信されている都市を見る") {
-                                Task { await controller.loadMapCatalog() }
-                            }
-                        } else {
-                            ForEach(controller.mapCities, id: \.name) { city in
-                                Button {
-                                    Task { await controller.downloadMap(city) }
-                                } label: {
-                                    HStack {
-                                        Text(city.name)
-                                        Spacer()
-                                        if controller.mapDownloading == city.name {
-                                            ProgressView()
-                                        } else {
-                                            Text("\(city.bytes / 1_000_000) MB")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
+                        Button {
+                            Task { await controller.downloadMapHere() }
+                        } label: {
+                            HStack {
+                                Text("この辺りの地図を取得(5 km 圏)")
+                                if controller.mapDownloading {
+                                    Spacer()
+                                    ProgressView()
                                 }
-                                .disabled(controller.mapDownloading != nil)
                             }
                         }
-                        if !controller.mapCatalogLine.isEmpty {
-                            Text(controller.mapCatalogLine)
+                        .disabled(controller.mapDownloading)
+                        if !controller.mapDownloadLine.isEmpty {
+                            Text(controller.mapDownloadLine)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        Text("**位置は送りません。** 送るのは選んだ都市のファイル名だけです")
+                        Text("送るのは取得する区画(約 5 km 角)の番号だけです。"
+                             + "正確な位置・歩いた経路・自宅は送りません")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

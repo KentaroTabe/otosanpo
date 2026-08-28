@@ -54,9 +54,10 @@
     "map_margin_m": 40,
     "map_min_span_m": 150
   },
-  "map_catalog": {
+  "map_download": {
     "base_url": "",
-    "timeout_sec": 60
+    "timeout_sec": 60,
+    "tile_size_deg": 0.05
   },
   "greeting": {
     "windows": [
