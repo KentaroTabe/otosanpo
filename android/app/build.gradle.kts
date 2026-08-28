@@ -49,7 +49,40 @@ val copyParameters = tasks.register<Copy>("copyParameters") {
     into(file("src/main/assets"))
 }
 
-tasks.named("preBuild") { dependsOn(copyParameters) }
+// **経路データを APK に同梱する**(任意)。`-PbundledMap=金沢市` で都市を指定する。
+//
+// なぜ要るか: テスターが `Android/data/dev.otosanpo/files/` へファイルを置けなかった
+// (2026-08-28)。この場所は Android 11 以降、標準のファイルアプリから辿りにくい。
+// 相手の都市が分かっているなら、ビルド時に入れてしまうほうが確実。
+//
+// 指定しなければ同梱しない。**置き忘れの複製が残らないよう、毎回消してから入れる。**
+val bundledMap = providers.gradleProperty("bundledMap").orNull
+val bundleMap = tasks.register("bundleMap") {
+    val assets = file("src/main/assets")
+    val dest = File(assets, "otosanpo-map.json")
+    val source = bundledMap?.let { rootProject.file("../maps/set/$it.json") }
+    // 構成が変われば作り直す
+    inputs.property("bundledMap", bundledMap ?: "")
+    outputs.file(dest)
+    doLast {
+        dest.delete()
+        if (source == null) {
+            logger.lifecycle("経路データは同梱しない(-PbundledMap=<都市名> で指定できる)")
+            return@doLast
+        }
+        if (!source.exists()) {
+            throw GradleException(
+                "経路データが見つかりません: ${source.path}\n" +
+                    "scripts/build_maps.sh で作ってください"
+            )
+        }
+        assets.mkdirs()
+        source.copyTo(dest, overwrite = true)
+        logger.lifecycle("経路データを同梱: $bundledMap (${source.length() / 1024 / 1024} MB)")
+    }
+}
+
+tasks.named("preBuild") { dependsOn(copyParameters, bundleMap) }
 
 dependencies {
     implementation(project(":core"))

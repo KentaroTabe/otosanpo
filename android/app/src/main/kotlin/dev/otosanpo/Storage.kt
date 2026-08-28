@@ -42,17 +42,36 @@ class Storage(private val context: Context) {
     // MARK: - 経路データ
 
     /**
-     * 経路データ。置かれていれば読む。無ければ null(グリッドのみで動く)。
-     * PC 側の `scripts/build_map.sh` が作った JSON をそのまま読む
+     * 経路データ。無ければ null(グリッドのみで動く)。
+     *
+     * 探す順は **端末に置かれたファイル → APK に同梱したもの**。
+     *
+     * 同梱を足したのは、**テスターが `Android/data/dev.otosanpo/files/` へ
+     * ファイルを置けなかった**ため(2026-08-28)。この場所は Android 11 以降、
+     * 標準のファイルアプリから辿りにくく、機種によっては見えない。
+     * 相手の都市が分かっているなら、ビルド時に入れてしまうほうが確実
+     * (`scripts/build_android.sh <都市名>`)。
+     *
+     * **置かれたファイルを優先する。** 同梱は「置けなかった人のための既定値」であって、
+     * 自分で用意した人の地図を上書きしてはいけない。
      */
-    fun loadGraph(cellSizeM: Double): WalkGraph? {
+    fun loadGraph(cellSizeM: Double): WalkGraph? =
+        decodeGraph(cellSizeM, externalMapText()) ?: decodeGraph(cellSizeM, bundledMapText())
+
+    /** 端末に置かれた経路データ。PC 側の `scripts/build_map.sh` が作った JSON */
+    private fun externalMapText(): String? {
         val f = File(sharedDir, MAP_FILE)
-        if (!f.exists()) return null
-        return try {
-            WalkGraph(WalkMap.decode(f.readText()), cellSizeM)
-        } catch (e: Exception) {
-            null
-        }
+        return if (f.exists()) runCatching { f.readText() }.getOrNull() else null
+    }
+
+    /** APK に同梱した経路データ。同梱していなければ無い */
+    private fun bundledMapText(): String? =
+        runCatching { context.assets.open(MAP_FILE).use { it.readBytes().decodeToString() } }
+            .getOrNull()
+
+    private fun decodeGraph(cellSizeM: Double, text: String?): WalkGraph? {
+        if (text == null) return null
+        return runCatching { WalkGraph(WalkMap.decode(text), cellSizeM) }.getOrNull()
     }
 
     // MARK: - 自宅

@@ -23,5 +23,7 @@ android/.gradle/
 android/.kotlin/
 android/local.properties
 android/app/src/main/assets/parameters.json
+# 同梱する経路データ(-PbundledMap で入れる複製)。10〜40 MB あるのでコミットしない
+android/app/src/main/assets/otosanpo-map.json
 android/build/
 android/*/build/
