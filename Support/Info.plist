@@ -25,7 +25,7 @@
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>ポケットに入れたままでも案内を続けるため、バックグラウンドでも位置情報を使用します。 履歴は端末内にのみ保存されます。</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>散歩中の現在地から、寄り道の提案と帰路の方向案内を行うために使用します。 位置の履歴は端末内にのみ保存され、外部に送信されません。</string>
+	<string>散歩中の現在地から、寄り道の提案と帰路の方向案内を行うために使用します。 位置の履歴は端末内にのみ保存され、外部に送信されません。 地図を取得する時だけ、その区画(約 5 km 角)の番号を配信元へ送ります。</string>
 	<key>NSMotionUsageDescription</key>
 	<string>うなずき・首振りの応答を検出するため、AirPods のモーションデータを使用します。</string>
 	<key>UIBackgroundModes</key>

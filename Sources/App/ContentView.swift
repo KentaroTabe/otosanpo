@@ -130,6 +130,34 @@ struct ContentView: View {
                     Button("到着音") { controller.debugPlay(.arrival) }
                 }
 
+                // 経路データを配信先から入れる。**手で入れる道は残す**
+                // (ファイルを置ける人はそのままでよい)。→ docs/12
+                if controller.params.mapDownload.isConfigured {
+                    Section("地図を取得") {
+                        Button {
+                            Task { await controller.downloadMapHere() }
+                        } label: {
+                            HStack {
+                                Text("この辺りの地図を取得(5 km 圏)")
+                                if controller.mapDownloading {
+                                    Spacer()
+                                    ProgressView()
+                                }
+                            }
+                        }
+                        .disabled(controller.mapDownloading)
+                        if !controller.mapDownloadLine.isEmpty {
+                            Text(controller.mapDownloadLine)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("送るのは取得する区画(約 5 km 角)の番号だけです。"
+                             + "正確な位置・歩いた経路・自宅は送りません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("フィールドログ") {
                     if let url = controller.fieldLogURL {
                         ShareLink(item: url) {

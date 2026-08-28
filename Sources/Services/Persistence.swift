@@ -87,11 +87,19 @@ enum MapStore {
             .appendingPathComponent(fileName)
     }
 
-    static func load(cellSizeM: Double) -> WalkGraph? {
+    static func exists() -> Bool {
+        fileURL().map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+    }
+
+    /// 手で入れた地図そのもの。**タイル(TileStore)とどちらを読むかは呼び出し側が決める**
+    static func loadMap() -> WalkMap? {
         guard let url = fileURL(),
-              let data = try? Data(contentsOf: url),
-              let map = try? JSONDecoder().decode(WalkMap.self, from: data) else { return nil }
-        return WalkGraph(map: map, cellSizeM: cellSizeM)
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(WalkMap.self, from: data)
+    }
+
+    static func load(cellSizeM: Double) -> WalkGraph? {
+        loadMap().map { WalkGraph(map: $0, cellSizeM: cellSizeM) }
     }
 }
 

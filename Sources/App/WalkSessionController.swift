@@ -98,6 +98,14 @@ final class WalkSessionController: ObservableObject {
     /// 机上テストの現在値。画面に出して符号と追従を目で確かめる
     @Published private(set) var headCheckLine = ""
     private var headCheckTimer: Timer?
+
+    // MARK: - 経路データの取得(→ docs/12)
+
+    /// 取得中か。二重に走らせないための旗
+    @Published private(set) var mapDownloading = false
+    @Published private(set) var mapDownloadLine = ""
+    /// いま使っている地図の出どころ。画面の「地図:」行に添える
+    private var mapSource: MapSource = .none
     /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
     private var latestCourseBearing: Double?
     /// 推定した顔の絶対方位。nil なら進行方位をそのまま使う
@@ -120,10 +128,10 @@ final class WalkSessionController: ObservableObject {
         detector = HeadGestureDetector(params: params.gesture)
         shadowDetector = HeadGestureDetector(params: params.gesture)
         home = HomeStore.load()
-        graph = MapStore.load(cellSizeM: params.route.mapIndexCellSizeM)
         speed = SpeedStore.load()
-        zones = graph.map { ZoneMap(map: $0.map, zoneSizeM: params.route.zoneSizeM) }
         lastSummary = SummaryStore.load()
+        // 地図は手動ファイルとタイルの 2 系統から選ぶ(初期化時は位置が無く手動優先)
+        reloadMap()
 
         location.$position
             .sink { [weak self] p in
@@ -201,6 +209,12 @@ final class WalkSessionController: ObservableObject {
         target = nil
         guidanceTimer?.invalidate()
         summary = WalkSummary(startedAt: Date(), home: home)
+        // **位置が確定したこの時点で、地図の選び直しが要るか見る。**
+        // 手で入れた地図とタイルの両方がある端末だけ(初期化時は位置が無く、
+        // 手動優先で読んでいる。旅行先ではタイルのほうが現在地を覆うことがある)
+        if MapStore.exists(), !TileStore.storedIDs().isEmpty {
+            reloadMap()
+        }
         buildRouteField()
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
@@ -258,6 +272,80 @@ final class WalkSessionController: ObservableObject {
         log("デバッグ再生: \(e.rawValue) 方位=\(String(format: "%.0f", relativeBearingDeg))°"
             + "(\(synth.isSpatial ? "3D" : "パン")"
             + "・エンジン\(synth.isRunning ? "稼働" : "停止"))")
+    }
+
+    // MARK: - 経路データの取得
+
+    /// どの地図で歩くかを決めて読み直す(→ docs/12)。
+    ///
+    /// 出どころは 2 つある: 手で入れた `otosanpo-map.json` と、取得したタイル。
+    /// **取得は手で入れた地図を上書きしない**ので、両方ある端末が普通に存在する。
+    /// どちらを読むかは `MapSource.choose`(現在地を覆うほう。両方覆えば手動)。
+    private func reloadMap() {
+        let manual = MapStore.loadMap()
+        let meta = TileStore.loadMeta()
+        let tileIDs = TileStore.storedIDs()
+        let hasTiles = meta != nil && !tileIDs.isEmpty
+        let p = location.position
+
+        let manualCovers = manual.flatMap { m in p.map(m.covers) } ?? false
+        let tilesCover = (hasTiles && p != nil)
+            ? MapTiles.cover(tileIDs, p!, sizeDeg: meta!.tileSizeDeg)
+            : false
+
+        mapSource = MapSource.choose(hasManual: manual != nil, manualCovers: manualCovers,
+                                     hasTiles: hasTiles, tilesCover: tilesCover)
+        let map: WalkMap? = switch mapSource {
+        case .manual: manual
+        case .tiles: TileStore.loadAssembled()
+        case .none: nil
+        }
+        graph = map.map { WalkGraph(map: $0, cellSizeM: params.route.mapIndexCellSizeM) }
+        zones = graph.map { ZoneMap(map: $0.map, zoneSizeM: params.route.zoneSizeM) }
+        updateStatus()
+    }
+
+    /// 現在地の周り(散歩の 5 km 圏)のタイルを落とす。
+    ///
+    /// **通信に載るのは取得する区画の番号だけ**(粒度は約 5 km 角)。
+    /// 正確な座標・歩いた経路・自宅は送らない(→ docs/12)。
+    func downloadMapHere() async {
+        let settings = params.mapDownload
+        guard settings.isConfigured else {
+            mapDownloadLine = "配信先が未設定です"
+            return
+        }
+        guard let p = location.position else {
+            mapDownloadLine = "現在地がまだ取れていません。空の見える場所で数秒待ってください"
+            return
+        }
+        guard !mapDownloading else { return }
+        mapDownloading = true
+        defer { mapDownloading = false }
+
+        do {
+            mapDownloadLine = "配信の情報を取得中…"
+            let meta = try await MapDownloader.meta(baseURL: settings.baseURL,
+                                                   timeoutSec: settings.timeoutSec)
+            let ids = MapTiles.covering(center: p, radiusM: params.route.mapRadiusM,
+                                        sizeDeg: meta.tileSizeDeg)
+            let result = try await MapDownloader.download(
+                ids, baseURL: settings.baseURL, timeoutSec: settings.timeoutSec,
+                onProgress: { [weak self] done, total in
+                    self?.mapDownloadLine = "取得中 \(done)/\(total)…"
+                })
+            reloadMap()
+            if result.saved == 0 {
+                mapDownloadLine = "この辺りのデータは配信されていません(\(ids.count) 区画とも)"
+            } else {
+                mapDownloadLine = "この辺りの地図を入れました(\(result.saved) 区画"
+                    + (result.empty > 0 ? "・データ無し \(result.empty)" : "") + ")"
+            }
+            log("タイルを取得しました(保存 \(result.saved) / 無し \(result.empty))")
+        } catch {
+            mapDownloadLine = error.localizedDescription
+            log("タイルを取得できません: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - 頭の追従の机上テスト
@@ -917,10 +1005,12 @@ final class WalkSessionController: ObservableObject {
         if let synth {
             parts.append("音声: \(synth.isRunning ? "稼働" : "停止")")
         }
-        // 経路データの有無で提案の質が変わるので、読めているかを画面で示す
+        // 経路データの有無で提案の質が変わるので、読めているかと出どころを画面で示す
         if let graph {
-            parts.append("地図: 半径\(Int(graph.map.radiusM / 1000))km・\(graph.map.generated)"
-                         + (graph.map.covers(p) ? "" : "(圏外)"))
+            let label = mapSource == .tiles
+                ? "地図: タイル \(TileStore.storedIDs().count) 枚・\(graph.map.generated)"
+                : "地図: 半径\(Int(graph.map.radiusM / 1000))km・\(graph.map.generated)"
+            parts.append(label + (graph.map.covers(p) ? "" : "(圏外)"))
         } else {
             parts.append("地図: 未読込")
         }
