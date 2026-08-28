@@ -12,6 +12,7 @@ public struct AppParameters: Codable, Equatable {
     public var audio: Audio
     public var location: Location
     public var summary: Summary
+    public var mapCatalog: MapCatalogSettings
     public var greeting: Greeting
 
     public struct Session: Codable, Equatable {
@@ -146,6 +147,23 @@ public struct AppParameters: Codable, Equatable {
         public var mapMarginM: Double
         /// 経路図の最小の広さ [m]。ごく短い散歩でも図が破綻しないように
         public var mapMinSpanM: Double
+    }
+
+    /// 経路データの配信先。**アプリで唯一、外へ出る通信**(→ docs/12)
+    public struct MapCatalogSettings: Codable, Equatable {
+        /// 配信先の基点。**空なら取得の機能を出さない**(通信しない状態に戻せる)。
+        /// 末尾のスラッシュは有っても無くてもよい
+        public var baseURL: String
+        public var timeoutSec: Double
+
+        /// 取得を出してよいか。空の設定を「機能なし」として扱う
+        public var isConfigured: Bool { !baseURL.isEmpty }
+
+        enum CodingKeys: String, CodingKey {
+            // 既定の snake_case 変換では base_url → baseUrl になるため明示する
+            case baseURL = "base_url"
+            case timeoutSec = "timeout_sec"
+        }
     }
 
     /// 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない)

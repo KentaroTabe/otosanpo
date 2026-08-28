@@ -130,6 +130,45 @@ struct ContentView: View {
                     Button("到着音") { controller.debugPlay(.arrival) }
                 }
 
+                // 経路データを配信先から入れる。**手で入れる道は残す**
+                // (ファイルを置ける人はそのままでよい)。→ docs/12
+                if controller.params.mapCatalog.isConfigured {
+                    Section("地図を取得") {
+                        if controller.mapCities.isEmpty {
+                            Button("配信されている都市を見る") {
+                                Task { await controller.loadMapCatalog() }
+                            }
+                        } else {
+                            ForEach(controller.mapCities, id: \.name) { city in
+                                Button {
+                                    Task { await controller.downloadMap(city) }
+                                } label: {
+                                    HStack {
+                                        Text(city.name)
+                                        Spacer()
+                                        if controller.mapDownloading == city.name {
+                                            ProgressView()
+                                        } else {
+                                            Text("\(city.bytes / 1_000_000) MB")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                .disabled(controller.mapDownloading != nil)
+                            }
+                        }
+                        if !controller.mapCatalogLine.isEmpty {
+                            Text(controller.mapCatalogLine)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("**位置は送りません。** 送るのは選んだ都市のファイル名だけです")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("フィールドログ") {
                     if let url = controller.fieldLogURL {
                         ShareLink(item: url) {

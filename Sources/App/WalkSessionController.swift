@@ -98,6 +98,14 @@ final class WalkSessionController: ObservableObject {
     /// 机上テストの現在値。画面に出して符号と追従を目で確かめる
     @Published private(set) var headCheckLine = ""
     private var headCheckTimer: Timer?
+
+    // MARK: - 経路データの取得(→ docs/12)
+
+    /// 配信されている都市の一覧。取りに行くまでは空
+    @Published private(set) var mapCities: [MapCatalog.Entry] = []
+    /// 取得中の都市名。nil なら何もしていない
+    @Published private(set) var mapDownloading: String?
+    @Published private(set) var mapCatalogLine = ""
     /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
     private var latestCourseBearing: Double?
     /// 推定した顔の絶対方位。nil なら進行方位をそのまま使う
@@ -258,6 +266,56 @@ final class WalkSessionController: ObservableObject {
         log("デバッグ再生: \(e.rawValue) 方位=\(String(format: "%.0f", relativeBearingDeg))°"
             + "(\(synth.isSpatial ? "3D" : "パン")"
             + "・エンジン\(synth.isRunning ? "稼働" : "停止"))")
+    }
+
+    // MARK: - 経路データの取得
+
+    /// 地図を入れ替えた後の読み直し。初期化と同じ手順を踏む。
+    /// **経路の場は作り直さない** — 散歩中に差し替える想定が無く、
+    /// 次の散歩の開始時に作られる
+    private func reloadMap() {
+        graph = MapStore.load(cellSizeM: params.route.mapIndexCellSizeM)
+        zones = graph.map { ZoneMap(map: $0.map, zoneSizeM: params.route.zoneSizeM) }
+        updateStatus()
+    }
+
+    /// 配信されている都市の一覧を取る。**位置は送らない**(近い順に並べるのは端末の中)
+    func loadMapCatalog() async {
+        let settings = params.mapCatalog
+        guard settings.isConfigured else {
+            mapCatalogLine = "配信先が未設定です"
+            return
+        }
+        mapCatalogLine = "一覧を取得中…"
+        do {
+            let catalog = try await MapDownloader.catalog(baseURL: settings.baseURL,
+                                                          timeoutSec: settings.timeoutSec)
+            mapCities = MapCatalog.sorted(catalog.cities, near: location.position)
+            let covering = location.position.flatMap { MapCatalog.best(catalog.cities, for: $0) }
+            mapCatalogLine = covering.map { "現在地は「\($0.name)」に入っています" }
+                ?? "\(catalog.cities.count) 都市(現在地を覆う地図は見つかりません)"
+            log("地図の一覧を取得しました(\(catalog.cities.count) 都市)")
+        } catch {
+            mapCatalogLine = error.localizedDescription
+            log("地図の一覧を取得できません: \(error.localizedDescription)")
+        }
+    }
+
+    /// 1 都市ぶんを落として入れ替える。**成功したときだけ差し替わる**
+    func downloadMap(_ entry: MapCatalog.Entry) async {
+        guard mapDownloading == nil else { return }
+        mapDownloading = entry.name
+        defer { mapDownloading = nil }
+        do {
+            try await MapDownloader.download(entry, baseURL: params.mapCatalog.baseURL,
+                                             timeoutSec: params.mapCatalog.timeoutSec)
+            reloadMap()
+            mapCatalogLine = "「\(entry.name)」を入れました"
+            log("地図を取得しました: \(entry.name)")
+        } catch {
+            mapCatalogLine = error.localizedDescription
+            log("地図を取得できません(\(entry.name)): \(error.localizedDescription)")
+        }
     }
 
     // MARK: - 頭の追従の机上テスト
