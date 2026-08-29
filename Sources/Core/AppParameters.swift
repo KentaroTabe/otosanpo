@@ -152,8 +152,13 @@ public struct AppParameters: Codable, Equatable {
     /// 経路データ(タイル)の配信先。**アプリで唯一、外へ出る通信**(→ docs/12)
     public struct MapDownloadSettings: Codable, Equatable {
         /// 配信先の基点。**空なら取得の機能を出さない**(通信しない状態に戻せる)。
-        /// 末尾のスラッシュは有っても無くてもよい
-        public var baseURL: String
+        /// 末尾のスラッシュは有っても無くてもよい。
+        ///
+        /// **`baseURL` ではなく `baseUrl`。** デコーダは `.convertFromSnakeCase` を使い、
+        /// JSON の `base_url` は照合の**前に** `baseUrl` へ変換される。
+        /// `URL` と大文字で綴ると一致せず、**実機の起動時に読み込みが失敗する**
+        /// (2026-08-29 に実際に起きた)。この構造体に `CodingKeys` を書いてはいけない
+        public var baseUrl: String
         public var timeoutSec: Double
         /// **生成側**が使うタイル角 [度](scripts/build_tiles.sh が読む)。
         /// アプリは配信先の meta.json の値を使う — 配信データの分割はデータと一緒に
@@ -161,14 +166,7 @@ public struct AppParameters: Codable, Equatable {
         public var tileSizeDeg: Double
 
         /// 取得を出してよいか。空の設定を「機能なし」として扱う
-        public var isConfigured: Bool { !baseURL.isEmpty }
-
-        enum CodingKeys: String, CodingKey {
-            // 既定の snake_case 変換では base_url → baseUrl になるため明示する
-            case baseURL = "base_url"
-            case timeoutSec = "timeout_sec"
-            case tileSizeDeg = "tile_size_deg"
-        }
+        public var isConfigured: Bool { !baseUrl.isEmpty }
     }
 
     /// 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない)

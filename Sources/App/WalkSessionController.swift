@@ -361,7 +361,7 @@ final class WalkSessionController: ObservableObject {
                 }
             }
             if !quiet { mapDownloadLine = "配信の情報を取得中…" }
-            let meta = try await MapDownloader.meta(baseURL: settings.baseURL,
+            let meta = try await MapDownloader.meta(baseURL: settings.baseUrl,
                                                    timeoutSec: settings.timeoutSec)
             let covering = MapTiles.covering(center: p, radiusM: params.route.mapRadiusM,
                                              sizeDeg: meta.tileSizeDeg)
@@ -372,7 +372,7 @@ final class WalkSessionController: ObservableObject {
                 return
             }
             let result = try await MapDownloader.download(
-                ids, baseURL: settings.baseURL, timeoutSec: settings.timeoutSec,
+                ids, baseURL: settings.baseUrl, timeoutSec: settings.timeoutSec,
                 onProgress: { [weak self] done, total in
                     if !quiet { self?.mapDownloadLine = "取得中 \(done)/\(total)…" }
                 })
