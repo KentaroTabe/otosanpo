@@ -72,8 +72,12 @@ echo "転送: ${COUNT} ファイル / $(du -sh maps/tiles | cut -f1)"
 
 # --transfers: 並列数。R2 の Class A 操作は無料枠 100 万/月なので 17,000 件は問題ない
 # --checksum: 中断後の再実行で、送り直す分だけを選ぶ
+# --s3-no-check-bucket: **R2 の限定トークンでは必須。**
+#   これが無いと rclone は転送前に CreateBucket を試み、
+#   バケット作成の権限が無いトークンでは 403 で止まる(2026-08-29 に遭遇)。
+#   バケットは人が先に作っている前提なので、確認そのものが不要
 rclone copy maps/tiles "${REMOTE}:${BUCKET}" \
-  --transfers 32 --checkers 32 --checksum --progress
+  --transfers 32 --checkers 32 --checksum --s3-no-check-bucket --progress
 
 echo
 echo "完了しました。アプリ側の確認:"
