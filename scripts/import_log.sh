@@ -24,13 +24,28 @@ fi
 
 mkdir -p "$INBOX"
 
-SRC=$(ls -t "$INBOX"/*.tsv 2>/dev/null | head -n 1 || true)
+# **拡張子で決め打ちしない。** テスターから届いたログが `Untitled.txt` で、
+# `*.tsv` しか見ていなかったため「ログがありません」になった(2026-08-30)。
+# 経由(AirDrop・メール・メッセージ)によって名前も拡張子も変わる。
+# **中身の見出し行で判定する。** 名前は相手の環境が決めるものなので当てにしない
+SRC=""
+for f in $(ls -t "$INBOX"/* 2>/dev/null || true); do
+  [ -f "$f" ] || continue
+  if head -n 1 "$f" | grep -q "^time	state	lat	lon	message$"; then
+    SRC="$f"
+    break
+  fi
+done
 
 if [ -z "${SRC:-}" ]; then
   echo "$INBOX にログがありません。" >&2
   echo "iPhone のアプリで「ログを書き出す」→ AirDrop で Mac へ送り、" >&2
   echo "受信したファイルをこのフォルダに入れてから再実行してください:" >&2
   echo "  $(pwd)/$INBOX" >&2
+  if [ -n "$(ls -A "$INBOX" 2>/dev/null || true)" ]; then
+    echo "(ファイルはありますが、どれも見出し行が合いません。中身を確かめてください)" >&2
+    ls -1 "$INBOX" >&2
+  fi
   exit 1
 fi
 
