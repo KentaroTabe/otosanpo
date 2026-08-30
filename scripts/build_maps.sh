@@ -9,6 +9,11 @@
 # **同じ都市圏の人には同じファイルを渡す**ための道具。
 # 住所を聞かなくても「どの市の近くか」だけで足りるようになる。
 #
+# **このまま渡してよい。改名は要らない。**
+# アプリは Documents 直下の .json を名前を問わず読む(→ Sources/Core/MapFiles.swift)。
+# 以前は otosanpo-map.json しか読まず、都市名のまま置いたテスターの端末で
+# 「地図: 未読込」のままになっていた(2026-08-30 に発覚・修正済み)。
+#
 # 一覧は都道府県から作れる:
 #   scripts/pref_bbox.py --build-list 20000 maps/chubu-260816-free.gpkg/chubu.gpkg > 一覧.tsv
 #
