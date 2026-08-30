@@ -3,6 +3,7 @@ package dev.otosanpo
 import android.content.Context
 import dev.otosanpo.core.AppParameters
 import dev.otosanpo.core.GeoPoint
+import dev.otosanpo.core.MapFiles
 import dev.otosanpo.core.SpeedEstimator
 import dev.otosanpo.core.VisitGrid
 import dev.otosanpo.core.WalkGraph
@@ -54,25 +55,68 @@ class Storage(private val context: Context) {
      *
      * **置かれたファイルを優先する。** 同梱は「置けなかった人のための既定値」であって、
      * 自分で用意した人の地図を上書きしてはいけない。
+     *
+     * **置かれたファイルの名前は問わない**(2026-08-30)。`.json` なら順に試す。
+     * 名前を `otosanpo-map.json` に固定していたせいで、都市名のまま置いた
+     * iOS のテスターの端末で読まれなかった。同梱版は改名しているので同じ形では
+     * 起きないが、手で置く人は同じ穴を踏むので先に塞ぐ(→ `MapFiles`)。
      */
-    fun loadGraph(cellSizeM: Double): WalkGraph? =
-        decodeGraph(cellSizeM, externalMapText()) ?: decodeGraph(cellSizeM, bundledMapText())
+    fun loadGraph(cellSizeM: Double): WalkGraph? {
+        val ordered = MapFiles.order(mapCandidates())
+        val rejected = mutableListOf<String>()
 
-    /** 端末に置かれた経路データ。PC 側の `scripts/build_map.sh` が作った JSON */
-    private fun externalMapText(): String? {
-        val f = File(sharedDir, MAP_FILE)
-        return if (f.exists()) runCatching { f.readText() }.getOrNull() else null
+        // **解くのは 1 回だけ。** 同梱した名古屋は 25 MB あり、
+        // 「読めるか確かめてからもう一度解く」形にすると峰の使用量が倍になる
+        for (c in ordered) {
+            val graph = decodeGraph(cellSizeM) { File(sharedDir, c.name).readText() }
+            if (graph != null) {
+                lastMapFailure = null
+                lastMapName = c.name
+                return graph
+            }
+            rejected.add(c.name)
+        }
+
+        // 置かれたものが無い / どれも解けない場合だけ同梱へ退避する
+        val bundled = decodeGraph(cellSizeM) {
+            context.assets.open(MAP_FILE).use { it.readBytes().decodeToString() }
+        }
+        // 同梱で歩けても、**置いたファイルが読めていないことは残す**(黙って握りつぶさない)
+        lastMapFailure = when {
+            rejected.isNotEmpty() -> MapFiles.Failure.Undecodable(rejected)
+            bundled == null -> MapFiles.Failure.NoFile
+            else -> null
+        }
+        lastMapName = if (bundled != null) BUNDLED_NAME else null
+        return bundled
     }
 
-    /** APK に同梱した経路データ。同梱していなければ無い */
-    private fun bundledMapText(): String? =
-        runCatching { context.assets.open(MAP_FILE).use { it.readBytes().decodeToString() } }
-            .getOrNull()
+    /** 置き場にある `.json`。読む順は `MapFiles.order`(正式名 → 新しい順) */
+    fun mapCandidates(): List<MapFiles.Candidate> =
+        sharedDir?.listFiles().orEmpty()
+            .filter { it.isFile && it.extension.equals("json", ignoreCase = true) }
+            .map { MapFiles.Candidate(it.name, it.lastModified(), it.length()) }
 
-    private fun decodeGraph(cellSizeM: Double, text: String?): WalkGraph? {
-        if (text == null) return null
-        return runCatching { WalkGraph(WalkMap.decode(text), cellSizeM) }.getOrNull()
-    }
+    /**
+     * 読めなかった理由。**「未読込」の一言に潰さない。**
+     * 潰すと、名前違い・壊れている・大きすぎて読めない、が区別できない
+     */
+    var lastMapFailure: MapFiles.Failure? = null
+        private set
+
+    /** 読めた地図の出どころ(ファイル名、または同梱)。どれを読んだかを画面で確かめる */
+    var lastMapName: String? = null
+        private set
+
+    /**
+     * 本文の取り出しから `WalkGraph` の構築までを 1 度に行う。
+     *
+     * **`runCatching` は `OutOfMemoryError` も捕まえる。** 25 MB の地図は
+     * JVM 上で 100 MB 近くに膨らむので、端末によっては実際に起きうる。
+     * 握りつぶすと「同梱したのに未読込」に見えるため、理由を残す
+     */
+    private fun decodeGraph(cellSizeM: Double, text: () -> String): WalkGraph? =
+        runCatching { WalkGraph(WalkMap.decode(text()), cellSizeM) }.getOrNull()
 
     // MARK: - 自宅
 
@@ -213,7 +257,10 @@ class Storage(private val context: Context) {
     private val isoFormatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US)
 
     companion object {
-        const val MAP_FILE = "otosanpo-map.json"
+        /** APK に同梱するときの資産名。**置かれたファイルの名前は問わない**(→ `MapFiles`) */
+        const val MAP_FILE = MapFiles.PREFERRED_NAME
+        /** 同梱を読んだときに画面へ出す名前 */
+        const val BUNDLED_NAME = "同梱"
         const val LOG_FILE = "otosanpo-field-log.tsv"
         private const val GRID_FILE = "visit_grid.tsv"
     }

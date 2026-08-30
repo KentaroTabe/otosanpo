@@ -11,6 +11,7 @@ import dev.otosanpo.core.GaitMetrics
 import dev.otosanpo.core.Geo
 import dev.otosanpo.core.GeoPoint
 import dev.otosanpo.core.HeldCourse
+import dev.otosanpo.core.MapFiles
 import dev.otosanpo.core.ReturnAck
 import dev.otosanpo.core.ReturnBudget
 import dev.otosanpo.core.RouteField
@@ -174,10 +175,19 @@ class WalkSession(
     }
 
     val hasMap: Boolean get() = graph != null
+
+    /**
+     * 画面に出す経路データの状態。**読めなかった理由まで出す**(2026-08-30)。
+     * 「未読込」だけだと、入れ忘れたのか入れたのに読めないのかが切り分けられない
+     */
     val mapLabel: String
         get() = graph?.let {
-            "地図: 半径${(it.map.radiusM / 1000).roundToInt()}km・${it.map.generated}"
-        } ?: "地図: 未読込"
+            val name = storage.lastMapName ?: "?"
+            "地図: $name・半径${(it.map.radiusM / 1000).roundToInt()}km・${it.map.generated}"
+        } ?: when (val f = storage.lastMapFailure) {
+            is MapFiles.Failure.Undecodable -> "地図: 読めません(${f.names.joinToString(", ")})"
+            else -> "地図: 未読込"
+        }
 
     // MARK: - イベント適用
 
