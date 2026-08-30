@@ -294,7 +294,7 @@ final class WalkSessionController: ObservableObject {
     /// **取得は手で入れた地図を上書きしない**ので、両方ある端末が普通に存在する。
     /// どちらを読むかは `MapSource.choose`(現在地を覆うほう。両方覆えば手動)。
     private func reloadMap() {
-        let outcome = MapStore.loadMap()
+        let outcome = MapStore.loadMap(maxBytes: Int(params.route.mapFileMaxMb * 1_000_000))
         let manual = outcome.map
         manualMapFailure = { if case .failed(let f) = outcome { return f } else { return nil } }()
         manualMapName = { if case .loaded(_, let n) = outcome { return n } else { return nil } }()

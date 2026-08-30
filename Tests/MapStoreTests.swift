@@ -43,6 +43,9 @@ final class MapStoreTests: XCTestCase {
         return url
     }
 
+    /// サイズ制限を試すテスト以外で使う、十分に大きい上限
+    private let generousMaxBytes = 100_000_000
+
     // MARK: -
 
     /// **今回の不具合そのもの。**
@@ -50,8 +53,8 @@ final class MapStoreTests: XCTestCase {
     func testCityNamedFileIsLoaded() throws {
         try write("名古屋市.json", try JSONEncoder().encode(sampleMap()))
 
-        guard case .loaded(let map, let name) = MapStore.loadMap() else {
-            return XCTFail("都市名のファイルが読まれませんでした: \(MapStore.loadMap())")
+        guard case .loaded(let map, let name) = MapStore.loadMap(maxBytes: generousMaxBytes) else {
+            return XCTFail("都市名のファイルが読まれませんでした: \(MapStore.loadMap(maxBytes: generousMaxBytes))")
         }
         XCTAssertEqual(name, "名古屋市.json")
         XCTAssertEqual(map.generated, "2026-08-30")
@@ -61,7 +64,7 @@ final class MapStoreTests: XCTestCase {
     func testPreferredNameStillLoads() throws {
         try write(MapFiles.preferredName, try JSONEncoder().encode(sampleMap()))
 
-        guard case .loaded(_, let name) = MapStore.loadMap() else {
+        guard case .loaded(_, let name) = MapStore.loadMap(maxBytes: generousMaxBytes) else {
             return XCTFail("正式名のファイルが読まれませんでした")
         }
         XCTAssertEqual(name, MapFiles.preferredName)
@@ -69,7 +72,7 @@ final class MapStoreTests: XCTestCase {
 
     /// 何も置いていなければ「未読込」。**読めなかったのとは区別する**
     func testNoFileIsReportedAsNoFile() {
-        XCTAssertEqual(MapStore.loadMap().mapFailure, .noFile)
+        XCTAssertEqual(MapStore.loadMap(maxBytes: generousMaxBytes).mapFailure, .noFile)
     }
 
     /// 置いてあるのに解けない場合は、**ファイル名つきで理由が返る**。
@@ -77,7 +80,7 @@ final class MapStoreTests: XCTestCase {
     func testUndecodableFileIsReportedWithItsName() throws {
         try write("こわれた.json", Data("{ これは経路データではない }".utf8))
 
-        XCTAssertEqual(MapStore.loadMap().mapFailure, .undecodable(["こわれた.json"]))
+        XCTAssertEqual(MapStore.loadMap(maxBytes: generousMaxBytes).mapFailure, .undecodable(["こわれた.json"]))
     }
 
     /// 解けないものが混ざっていても、**解けるものがあればそれを使う**
@@ -85,7 +88,7 @@ final class MapStoreTests: XCTestCase {
         try write("こわれた.json", Data("{}".utf8))
         try write("金沢市.json", try JSONEncoder().encode(sampleMap()))
 
-        guard case .loaded(_, let name) = MapStore.loadMap() else {
+        guard case .loaded(_, let name) = MapStore.loadMap(maxBytes: generousMaxBytes) else {
             return XCTFail("解ける地図があるのに読まれませんでした")
         }
         XCTAssertEqual(name, "金沢市.json")
@@ -106,6 +109,49 @@ final class MapStoreTests: XCTestCase {
         let before = MapStore.fingerprint()
         try write("名古屋市.json", try JSONEncoder().encode(sampleMap()))
         XCTAssertNotEqual(MapStore.fingerprint(), before)
+    }
+
+    // MARK: - 変な JSON への防護(2026-08-30・TestFlight 配布前の処置)
+
+    /// 上限より大きいファイルは**読む前に**拒む(メモリへ載せてから捨てない)。
+    /// 巨大な無関係の JSON で起動やメモリが死ぬのを防ぐ
+    func testOversizedFileIsRejectedBeforeReading() throws {
+        try write("でかい.json", try JSONEncoder().encode(sampleMap()))
+
+        guard case .undecodable(let names)? = MapStore.loadMap(maxBytes: 10).mapFailure else {
+            return XCTFail("上限超のファイルが拒まれませんでした")
+        }
+        XCTAssertEqual(names.count, 1)
+        XCTAssertTrue(names[0].contains("でかい.json"), "どのファイルかが分かること")
+        XCTAssertTrue(names[0].contains("上限超"), "理由が分かること: \(names[0])")
+    }
+
+    /// **形は合うが中身が壊れている JSON**(存在しない節点を指す道)は拒む。
+    /// 通すと散歩開始の場の構築(RouteField)が生の添字で落ちる
+    func testCorruptIndicesAreRejectedWithReason() throws {
+        var bad = sampleMap()
+        bad.ways = [WalkMap.Way(n: [0, 999], cls: .residential, cross: 0)]
+        try write("偽物.json", try JSONEncoder().encode(bad))
+
+        guard case .undecodable(let names)? =
+                MapStore.loadMap(maxBytes: generousMaxBytes).mapFailure else {
+            return XCTFail("壊れた地図が拒まれませんでした")
+        }
+        XCTAssertTrue(names[0].contains("偽物.json"))
+        XCTAssertTrue(names[0].contains("存在しない節点"), "理由が分かること: \(names[0])")
+    }
+
+    /// 壊れたファイルが混ざっていても、健全な地図があればそれを使う
+    func testHealthyMapWinsOverCorruptOne() throws {
+        var bad = sampleMap()
+        bad.nodes = []
+        try write("空っぽ.json", try JSONEncoder().encode(bad))
+        try write("金沢市.json", try JSONEncoder().encode(sampleMap()))
+
+        guard case .loaded(_, let name) = MapStore.loadMap(maxBytes: generousMaxBytes) else {
+            return XCTFail("健全な地図があるのに読まれませんでした")
+        }
+        XCTAssertEqual(name, "金沢市.json")
     }
 }
 
