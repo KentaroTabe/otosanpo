@@ -12,6 +12,7 @@ public struct AppParameters: Codable, Equatable {
     public var audio: Audio
     public var location: Location
     public var summary: Summary
+    public var mapDownload: MapDownloadSettings
     public var greeting: Greeting
 
     public struct Session: Codable, Equatable {
@@ -77,6 +78,10 @@ public struct AppParameters: Codable, Equatable {
         public var suggestionMinTravelM: Double
         /// 端末に置く経路データの半径 [m]。徒歩 1 時間圏を覆う目安(docs/04)
         public var mapRadiusM: Double
+        /// 手で置かれた経路データとして読む上限 [MB]。**名前を問わず読む**ので、
+        /// 巨大な無関係の JSON を掴んで起動やメモリが死ぬのを防ぐ。
+        /// 実測の最大は東京都の 40 MB(実機で動作確認済み・2026-08-30)
+        public var mapFileMaxMb: Double
         /// 道路スナップの空間索引のセル幅 [m]
         public var mapIndexCellSizeM: Double
         /// この距離より離れた点は道に乗せない [m]。水平精度(実測 3〜5 m)より大きく取る
@@ -146,6 +151,26 @@ public struct AppParameters: Codable, Equatable {
         public var mapMarginM: Double
         /// 経路図の最小の広さ [m]。ごく短い散歩でも図が破綻しないように
         public var mapMinSpanM: Double
+    }
+
+    /// 経路データ(タイル)の配信先。**アプリで唯一、外へ出る通信**(→ docs/12)
+    public struct MapDownloadSettings: Codable, Equatable {
+        /// 配信先の基点。**空なら取得の機能を出さない**(通信しない状態に戻せる)。
+        /// 末尾のスラッシュは有っても無くてもよい。
+        ///
+        /// **`baseURL` ではなく `baseUrl`。** デコーダは `.convertFromSnakeCase` を使い、
+        /// JSON の `base_url` は照合の**前に** `baseUrl` へ変換される。
+        /// `URL` と大文字で綴ると一致せず、**実機の起動時に読み込みが失敗する**
+        /// (2026-08-29 に実際に起きた)。この構造体に `CodingKeys` を書いてはいけない
+        public var baseUrl: String
+        public var timeoutSec: Double
+        /// **生成側**が使うタイル角 [度](scripts/build_tiles.sh が読む)。
+        /// アプリは配信先の meta.json の値を使う — 配信データの分割はデータと一緒に
+        /// 宣言されるべきで、端末側の設定と食い違っても配信側が正になるため
+        public var tileSizeDeg: Double
+
+        /// 取得を出してよいか。空の設定を「機能なし」として扱う
+        public var isConfigured: Bool { !baseUrl.isEmpty }
     }
 
     /// 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない)

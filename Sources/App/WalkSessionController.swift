@@ -98,6 +98,22 @@ final class WalkSessionController: ObservableObject {
     /// 机上テストの現在値。画面に出して符号と追従を目で確かめる
     @Published private(set) var headCheckLine = ""
     private var headCheckTimer: Timer?
+
+    // MARK: - 経路データの取得(→ docs/12)
+
+    /// 取得中か。二重に走らせないための旗
+    @Published private(set) var mapDownloading = false
+    @Published private(set) var mapDownloadLine = ""
+    /// いま使っている地図の出どころ。画面の「地図:」行に添える
+    private var mapSource: MapSource = .none
+    /// 手で入れた地図が読めなかった理由。**「未読込」に潰さず画面に出す**
+    /// (名前違い・壊れている・大きすぎる、が区別できないと切り分けができない)
+    private var manualMapFailure: MapFiles.Failure?
+    /// 読めた地図のファイル名。**どれを読んだかを画面で確かめられるようにする**
+    /// (名前を問わず読むようにしたので、意図しないファイルを読んでいないかを見る)
+    private var manualMapName: String?
+    /// 直近に読んだときの、置かれたファイルの指紋。変わっていなければ読み直さない
+    private var mapFingerprint: String?
     /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
     private var latestCourseBearing: Double?
     /// 推定した顔の絶対方位。nil なら進行方位をそのまま使う
@@ -120,10 +136,10 @@ final class WalkSessionController: ObservableObject {
         detector = HeadGestureDetector(params: params.gesture)
         shadowDetector = HeadGestureDetector(params: params.gesture)
         home = HomeStore.load()
-        graph = MapStore.load(cellSizeM: params.route.mapIndexCellSizeM)
         speed = SpeedStore.load()
-        zones = graph.map { ZoneMap(map: $0.map, zoneSizeM: params.route.zoneSizeM) }
         lastSummary = SummaryStore.load()
+        // 地図は手動ファイルとタイルの 2 系統から選ぶ(初期化時は位置が無く手動優先)
+        reloadMap()
 
         location.$position
             .sink { [weak self] p in
@@ -201,7 +217,17 @@ final class WalkSessionController: ObservableObject {
         target = nil
         guidanceTimer?.invalidate()
         summary = WalkSummary(startedAt: Date(), home: home)
+        // **位置が確定したこの時点で、地図の選び直しが要るか見る。**
+        // タイルがある端末だけ(初期化時は位置が無く、近傍の絞り込みも選択も
+        // 位置なしで行っている。旅行先ではタイルのほうが現在地を覆うことがある)
+        if !TileStore.storedIDs().isEmpty {
+            reloadMap()
+        }
         buildRouteField()
+        // 足りない分があれば裏で取得する。届くまではいまの地図(無ければグリッド)で歩く
+        if let p = location.position ?? home {
+            autoFetchTiles(around: p)
+        }
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
         location.start()
         // 未接続でも start する(後から装着された時点で更新が始まる)
@@ -258,6 +284,145 @@ final class WalkSessionController: ObservableObject {
         log("デバッグ再生: \(e.rawValue) 方位=\(String(format: "%.0f", relativeBearingDeg))°"
             + "(\(synth.isSpatial ? "3D" : "パン")"
             + "・エンジン\(synth.isRunning ? "稼働" : "停止"))")
+    }
+
+    // MARK: - 経路データの取得
+
+    /// どの地図で歩くかを決めて読み直す(→ docs/12)。
+    ///
+    /// 出どころは 2 つある: 手で入れた `otosanpo-map.json` と、取得したタイル。
+    /// **取得は手で入れた地図を上書きしない**ので、両方ある端末が普通に存在する。
+    /// どちらを読むかは `MapSource.choose`(現在地を覆うほう。両方覆えば手動)。
+    private func reloadMap() {
+        let outcome = MapStore.loadMap(maxBytes: Int(params.route.mapFileMaxMb * 1_000_000))
+        let manual = outcome.map
+        manualMapFailure = { if case .failed(let f) = outcome { return f } else { return nil } }()
+        manualMapName = { if case .loaded(_, let n) = outcome { return n } else { return nil } }()
+        // **読んだ時点の指紋を控える。** 前面に戻るたびに解き直さないため
+        mapFingerprint = MapStore.fingerprint()
+
+        let meta = TileStore.loadMeta()
+        let tileIDs = TileStore.storedIDs()
+        let hasTiles = meta != nil && !tileIDs.isEmpty
+        let p = location.position
+
+        let manualCovers = manual.flatMap { m in p.map(m.covers) } ?? false
+        let tilesCover = (hasTiles && p != nil)
+            ? MapTiles.cover(tileIDs, p!, sizeDeg: meta!.tileSizeDeg)
+            : false
+
+        mapSource = MapSource.choose(hasManual: manual != nil, manualCovers: manualCovers,
+                                     hasTiles: hasTiles, tilesCover: tilesCover)
+        let map: WalkMap? = switch mapSource {
+        case .manual: manual
+        case .tiles:
+            // 溜まったタイルを全部は読まない。自宅と現在地の周りだけ(→ MapTiles.nearby)
+            TileStore.loadAssembled(near: [home, p].compactMap { $0 },
+                                    radiusM: params.route.mapRadiusM)
+        case .none: nil
+        }
+        graph = map.map { WalkGraph(map: $0, cellSizeM: params.route.mapIndexCellSizeM) }
+        zones = graph.map { ZoneMap(map: $0.map, zoneSizeM: params.route.zoneSizeM) }
+        updateStatus()
+    }
+
+    /// 前面に戻ったときに呼ぶ。**置かれたファイルが変わっていれば読み直す。**
+    ///
+    /// なぜ要るか(2026-08-30): 地図は起動時にしか読んでいなかったので、
+    /// 「アプリを開く → ファイルアプリで保存 → アプリに戻る」の順で入れた人は、
+    /// **完全に終了して開き直すまで「未読込」のまま**だった。手順書にもその記載が無い。
+    ///
+    /// 毎回読み直さないのは、20 km の地図が数十 MB あり、
+    /// **解き直すと前面に戻るたびに画面が固まる**ため。指紋が同じなら何もしない。
+    /// 歩いている最中も読み直さない(音が途切れるうえ、経路の場を作り直す必要が出る)。
+    func refreshMapIfFilesChanged() {
+        guard state == .idle else { return }
+        guard MapStore.fingerprint() != mapFingerprint else { return }
+        log("経路データのファイルが変わったので読み直します")
+        reloadMap()
+    }
+
+    /// 現在地の周り(散歩の 5 km 圏)のタイルを落とす(画面のボタンから)。
+    ///
+    /// **通信に載るのは取得する区画の番号だけ**(粒度は約 5 km 角)。
+    /// 正確な座標・歩いた経路・自宅は送らない(→ docs/12)。
+    ///
+    /// ボタンからは「データ無し」の記録を無視してもう一度試す
+    /// (配信が後から増えた場合に、人の操作で拾い直せるように)
+    func downloadMapHere() async {
+        guard let p = location.position else {
+            mapDownloadLine = "現在地がまだ取れていません。空の見える場所で数秒待ってください"
+            return
+        }
+        await downloadTiles(around: p, retryEmpty: true, quiet: false)
+    }
+
+    /// 散歩の開始時の自動取得。**足りない分がある時だけ通信する**(→ docs/12)。
+    ///
+    /// - 揃っていれば何もしない = 通信ゼロ。2 回目以降の自宅の散歩はここに落ちる
+    /// - 「データ無し」と分かっている区画は取りに行かない。海沿いの自宅で
+    ///   毎回 404 を取りに行かないため
+    /// - 失敗しても散歩は止めない(地図が無ければグリッドのみで動く既存の経路)
+    private func autoFetchTiles(around p: GeoPoint) {
+        guard params.mapDownload.isConfigured else { return }
+        Task { await downloadTiles(around: p, retryEmpty: false, quiet: true) }
+    }
+
+    private func downloadTiles(around p: GeoPoint, retryEmpty: Bool, quiet: Bool) async {
+        let settings = params.mapDownload
+        guard settings.isConfigured else {
+            mapDownloadLine = "配信先が未設定です"
+            return
+        }
+        guard !mapDownloading else { return }
+        mapDownloading = true
+        defer { mapDownloading = false }
+
+        do {
+            // タイル角は配信側の宣言が正。ただし自動取得では、手元に宣言があり
+            // 揃っているかだけ見たい場合に通信を増やさないよう、まず手元の値で見積もる
+            let knownMeta = TileStore.loadMeta()
+            if quiet, let meta = knownMeta {
+                let covering = MapTiles.covering(center: p, radiusM: params.route.mapRadiusM,
+                                                 sizeDeg: meta.tileSizeDeg)
+                if MapTiles.toFetch(covering: covering, stored: TileStore.storedIDs(),
+                                    empty: TileStore.emptyIDs(), retryEmpty: false).isEmpty {
+                    return  // 揃っている。通信しない
+                }
+            }
+            if !quiet { mapDownloadLine = "配信の情報を取得中…" }
+            let meta = try await MapDownloader.meta(baseURL: settings.baseUrl,
+                                                   timeoutSec: settings.timeoutSec)
+            let covering = MapTiles.covering(center: p, radiusM: params.route.mapRadiusM,
+                                             sizeDeg: meta.tileSizeDeg)
+            let ids = MapTiles.toFetch(covering: covering, stored: TileStore.storedIDs(),
+                                       empty: TileStore.emptyIDs(), retryEmpty: retryEmpty)
+            guard !ids.isEmpty else {
+                if !quiet { mapDownloadLine = "この辺りの地図は揃っています" }
+                return
+            }
+            let result = try await MapDownloader.download(
+                ids, baseURL: settings.baseUrl, timeoutSec: settings.timeoutSec,
+                onProgress: { [weak self] done, total in
+                    if !quiet { self?.mapDownloadLine = "取得中 \(done)/\(total)…" }
+                })
+            if result.saved > 0 {
+                reloadMap()
+                // 散歩が始まっていれば、届いた地図で経路の場も作り直す
+                // (自動取得は開始直後に走るので、放置すると今回の散歩に効かない)
+                if state != .idle, state != .arrived { buildRouteField() }
+            }
+            if result.saved == 0 {
+                mapDownloadLine = "この辺りのデータは配信されていません(\(ids.count) 区画とも)"
+            } else {
+                mapDownloadLine = "この辺りの地図を入れました(\(result.saved) 区画"
+                    + (result.empty > 0 ? "・データ無し \(result.empty)" : "") + ")"
+            }
+            log("タイルを取得しました(保存 \(result.saved) / 無し \(result.empty))")
+        } catch {
+            mapDownloadLine = error.localizedDescription
+            log("タイルを取得できません: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - 頭の追従の机上テスト
@@ -917,12 +1082,22 @@ final class WalkSessionController: ObservableObject {
         if let synth {
             parts.append("音声: \(synth.isRunning ? "稼働" : "停止")")
         }
-        // 経路データの有無で提案の質が変わるので、読めているかを画面で示す
+        // 経路データの有無で提案の質が変わるので、読めているかと出どころを画面で示す
         if let graph {
-            parts.append("地図: 半径\(Int(graph.map.radiusM / 1000))km・\(graph.map.generated)"
-                         + (graph.map.covers(p) ? "" : "(圏外)"))
+            let label = mapSource == .tiles
+                ? "地図: タイル \(TileStore.storedIDs().count) 枚・\(graph.map.generated)"
+                : "地図: \(manualMapName ?? "?")・半径\(Int(graph.map.radiusM / 1000))km"
+                    + "・\(graph.map.generated)"
+            parts.append(label + (graph.map.covers(p) ? "" : "(圏外)"))
         } else {
-            parts.append("地図: 未読込")
+            // **読めなかった理由まで出す。** 「未読込」だけだと、入れ忘れたのか
+            // 入れたのに読めないのかが分からず、テスターも我々も切り分けられない
+            switch manualMapFailure {
+            case .undecodable(let names):
+                parts.append("地図: 読めません(\(names.joined(separator: ", ")))")
+            case .noFile, nil:
+                parts.append("地図: 未読込")
+            }
         }
         // 実機テストで「いま左右の定位が何を基準にしているか」を確認するために表示する。
         // 表示は副作用を持たせたくないので、保持値の更新は行わない

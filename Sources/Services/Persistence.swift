@@ -76,22 +76,92 @@ enum SummaryStore {
 /// 自宅座標の永続化(UserDefaults)
 /// 経路データ(WalkMap)の読み込み。
 /// Documents に置かれたファイルを読むだけで、取得も生成も行わない。
-/// PC 側で `scripts/build_map.sh` が作り、Finder で Documents に入れる想定
+/// PC 側で `scripts/build_map.sh` / `build_maps.sh` が作り、
+/// 「ファイル」アプリか Finder で Documents に入れる想定
 /// (docs/04「OSM データの持ち方」)。無ければグリッドのみで動く。
+///
+/// **ファイル名は問わない。** Documents 直下の `.json` を順に試す(→ `MapFiles`)。
+/// 名前を固定していたせいで、都市名のまま置いたテスターの端末で
+/// 読まれなかった(2026-08-30)。
 enum MapStore {
-    static let fileName = "otosanpo-map.json"
+    /// 以前から使っている名前。読む順で最優先されるだけで、**必須ではない**
+    static let fileName = MapFiles.preferredName
 
-    static func fileURL() -> URL? {
+    static func documentsURL() -> URL? {
         try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
                                      appropriateFor: nil, create: false)
-            .appendingPathComponent(fileName)
     }
 
-    static func load(cellSizeM: Double) -> WalkGraph? {
-        guard let url = fileURL(),
-              let data = try? Data(contentsOf: url),
-              let map = try? JSONDecoder().decode(WalkMap.self, from: data) else { return nil }
-        return WalkGraph(map: map, cellSizeM: cellSizeM)
+    /// Documents 直下に置かれた `.json`。下位ディレクトリ(`map-tiles/`)は見ない
+    static func candidates() -> [MapFiles.Candidate] {
+        guard let dir = documentsURL(),
+              let urls = try? FileManager.default.contentsOfDirectory(
+                  at: dir,
+                  includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey,
+                                               .isRegularFileKey],
+                  options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants])
+        else { return [] }
+
+        return urls.compactMap { url in
+            guard url.pathExtension.lowercased() == "json" else { return nil }
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey,
+                                                           .fileSizeKey, .isRegularFileKey])
+            guard values?.isRegularFile != false else { return nil }
+            return MapFiles.Candidate(name: url.lastPathComponent,
+                                      modified: values?.contentModificationDate ?? .distantPast,
+                                      sizeBytes: values?.fileSize ?? 0)
+        }
+    }
+
+    /// 置かれたファイルの指紋。**前面に戻るたびに解き直さない**ための印
+    static func fingerprint() -> String { MapFiles.fingerprint(candidates()) }
+
+    enum Outcome {
+        case loaded(WalkMap, name: String)
+        case failed(MapFiles.Failure)
+
+        var map: WalkMap? {
+            if case .loaded(let m, _) = self { return m }
+            return nil
+        }
+    }
+
+    /// 手で入れた地図そのもの。**タイル(TileStore)とどちらを読むかは呼び出し側が決める**。
+    ///
+    /// 読む順は `MapFiles.order`(正式名 → 新しい順)で、
+    /// **最初に受け入れられたもの**を返す。受け入れの条件は 3 つ:
+    ///
+    /// 1. **サイズが上限以内**(`maxBytes`)。名前を問わず読むので、巨大な無関係の
+    ///    JSON を全部メモリへ読んでから捨てる、をしない(読む前に候補の実測サイズで拒む)
+    /// 2. `WalkMap` として解けること
+    /// 3. **中身が健全なこと**(`WalkMap.integrityIssue`)。形だけ合う別物の JSON が
+    ///    「存在しない節点を指す道」を持っていると、散歩開始の場の構築で落ちる
+    ///
+    /// 受け入れられなければ理由つきで返す(画面に出すため)。
+    static func loadMap(maxBytes: Int) -> Outcome {
+        guard let dir = documentsURL() else { return .failed(.noFile) }
+        let ordered = MapFiles.order(candidates())
+        if ordered.isEmpty { return .failed(.noFile) }
+
+        var rejected: [String] = []
+        for c in ordered {
+            if c.sizeBytes > maxBytes {
+                rejected.append("\(c.name)(\(c.sizeBytes / 1_000_000)MB・上限超)")
+                continue
+            }
+            let url = dir.appendingPathComponent(c.name)
+            guard let data = try? Data(contentsOf: url),
+                  let map = try? JSONDecoder().decode(WalkMap.self, from: data) else {
+                rejected.append(c.name)
+                continue
+            }
+            if let issue = map.integrityIssue() {
+                rejected.append("\(c.name)(\(issue))")
+                continue
+            }
+            return .loaded(map, name: c.name)
+        }
+        return .failed(.undecodable(rejected))
     }
 }
 

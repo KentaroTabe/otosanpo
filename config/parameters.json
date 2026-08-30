@@ -32,6 +32,7 @@
     "suggestion_margin_over_straight": 0.05,
     "suggestion_min_travel_m": 30,
     "map_radius_m": 5000,
+    "map_file_max_mb": 80,
     "map_index_cell_size_m": 50,
     "snap_max_distance_m": 25,
     "node_arrival_tolerance_m": 8,
@@ -53,6 +54,11 @@
     "max_track_points": 2000,
     "map_margin_m": 40,
     "map_min_span_m": 150
+  },
+  "map_download": {
+    "base_url": "https://pub-0192e5581a214cbfa83d94ba357dbc2c.r2.dev",
+    "timeout_sec": 60,
+    "tile_size_deg": 0.05
   },
   "greeting": {
     "windows": [

@@ -49,11 +49,17 @@ public struct RouteField: Sendable {
         self.snapMaxDistanceM = snapMaxDistanceM
 
         let count = graph.map.nodes.count
+        // **存在しない節点を指す道は捨てる。** ここは生の添字で配列を引くので、
+        // 拒まないと壊れた地図で落ちる(読み込み側の検分 WalkMap.integrityIssue と
+        // 二重の守り。タイル結合など検分を通らない経路もここを通るため)
+        func indicesValid(_ way: WalkMap.Way) -> Bool {
+            way.n.allSatisfy { $0 >= 0 && $0 < count }
+        }
         // **隣接を平坦な配列に前計算する。** 辞書引きと配列の作り直しを探索の内側から追い出す。
         // 実機は Debug ビルドで動かすため、内側のループの割り当ては素直に効く
         // (前計算なしでは Mac・Debug で 1.3 秒かかっていた)
         var degree = [Int](repeating: 0, count: count)
-        for way in graph.map.ways where way.n.count >= 2 {
+        for way in graph.map.ways where way.n.count >= 2 && indicesValid(way) {
             for i in 0..<(way.n.count - 1) {
                 degree[way.n[i]] += 1
                 degree[way.n[i + 1]] += 1
@@ -66,7 +72,7 @@ public struct RouteField: Sendable {
         var length = [Double](repeating: 0, count: edgeCount)
         var weighted = [Double](repeating: 0, count: edgeCount)
         var fill = start
-        for way in graph.map.ways where way.n.count >= 2 {
+        for way in graph.map.ways where way.n.count >= 2 && indicesValid(way) {
             // 横断と道の種別は「その道を通る負担」として距離を割り増しする。
             // 分岐提案では score から引いていたが、経路長では掛けるのが素直
             let penalty = 1
