@@ -8,6 +8,7 @@ public struct AppParameters: Codable, Equatable {
     public var budget: Budget
     public var route: Route
     public var heading: Heading
+    public var headMount: HeadMountSettings
     public var gesture: Gesture
     public var audio: Audio
     public var location: Location
@@ -221,6 +222,35 @@ public struct AppParameters: Codable, Equatable {
         /// yaw は旋回そのものを追えておらず、|Δraw| が |Δcourse| とほぼ同じだった。
         /// `use_head_orientation` は false のままにする(docs/03)
         public var yawSign: Double
+    }
+
+    /// スマホ頭部固定(docs/13)。**実験装置**なので既定は off。
+    /// スマホの真北基準の方位を定位の基準に使い、磁気の乱れは検疫する(HeadingQuarantine)。
+    ///
+    /// **`CodingKeys` を書かないこと**(→ MapDownloadSettings の注記。
+    /// デコーダの `.convertFromSnakeCase` が照合の前に変換する)
+    public struct HeadMountSettings: Codable, Equatable {
+        /// 装置を着けた実験でだけ true にする
+        public var enabled: Bool
+        /// 取り付けの向きの補正 [deg]。方位からこの値を引く(机上確認で決める)
+        public var offsetDeg: Double
+        /// スマホのモーション更新頻度 [Hz]。定位は再生時に参照するだけなので高頻度は要らない
+        public var updateHz: Double
+        /// course との差がこれを超えたら乱れを疑う [deg]
+        public var distrustDeg: Double
+        /// 超過がこれだけ続いたら退避 [sec]
+        public var distrustSec: Double
+        /// 内側がこれだけ続いたら採用(復帰)[sec]
+        public var regainSec: Double
+        /// 生データ(頭方位 行)をログに残す間隔 [sec]。replay で閾値を振り直す材料
+        public var logIntervalSec: Double
+
+        /// HeadingQuarantine に渡す設定値
+        public var quarantine: HeadingQuarantine.Params {
+            HeadingQuarantine.Params(distrustDeg: distrustDeg,
+                                     distrustSec: distrustSec,
+                                     regainSec: regainSec)
+        }
     }
 
     public struct Gesture: Codable, Equatable {
