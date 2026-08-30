@@ -32,6 +32,7 @@
     "suggestion_margin_over_straight": 0.05,
     "suggestion_min_travel_m": 30,
     "map_radius_m": 5000,
+    "map_file_max_mb": 80,
     "map_index_cell_size_m": 50,
     "snap_max_distance_m": 25,
     "node_arrival_tolerance_m": 8,
