@@ -276,11 +276,17 @@ public struct AppParameters: Codable, Equatable {
         public var beaconDirectionChangeDeg: Double
         /// 繰り上げの下限間隔 [sec]。連打を防ぐ
         public var beaconMinGapSec: Double
-        /// 3D 音響(HRTF)で定位するか。false ならステレオパンで代替する。
-        /// 3D は前後を区別できるが、モノラル入力と AVAudioEnvironmentNode を要する
+        /// 3D 音響(HRTF)で定位するか。false ならステレオパンで代替する
         public var useSpatialAudio: Bool
+        /// **定位を前半球に畳むか**(→ SoundPlacement.foldToFrontDeg・docs/03)。
+        /// 前後は伝わらないチャネルだと実測で確定しており(純音 + 汎用 HRTF)、
+        /// 全球に置くと**前に置いた音まで背後から聞こえる**(2026-08-30 テスター報告。
+        /// 帰路 204 発中 201 発が前半球なのに「背後から鳴る」)。
+        /// true でこの誤知覚を断つ。左右の情報は失わない(pan は畳む前後で同値)
+        public var frontHemisphereOnly: Bool
         /// 相対方位の大きさがこれを超えたら「真後ろ寄り」の音色に切り替える [deg]。
-        /// HRTF では前後が判別できなかった(2026-08-18 実測)ため、音色で分ける
+        /// **`front_hemisphere_only` が true の間は到達しない**(畳んだ後は必ず 90° 以内)。
+        /// 前半球化を取り下げて A/B するときのために残してある
         public var behindThresholdDeg: Double
         /// 真後ろ用の音色をどれだけ暗くするか [0..1]。周波数を下げ雑音成分を削る
         public var behindDarkness: Double
