@@ -116,6 +116,14 @@ final class WalkSessionController: ObservableObject {
     @Published private(set) var mapDownloadLine = ""
     /// いま使っている地図の出どころ。画面の「地図:」行に添える
     private var mapSource: MapSource = .none
+    /// 手で入れた地図が読めなかった理由。**「未読込」に潰さず画面に出す**
+    /// (名前違い・壊れている・大きすぎる、が区別できないと切り分けができない)
+    private var manualMapFailure: MapFiles.Failure?
+    /// 読めた地図のファイル名。**どれを読んだかを画面で確かめられるようにする**
+    /// (名前を問わず読むようにしたので、意図しないファイルを読んでいないかを見る)
+    private var manualMapName: String?
+    /// 直近に読んだときの、置かれたファイルの指紋。変わっていなければ読み直さない
+    private var mapFingerprint: String?
     /// 直近に解決した進行方位(50 Hz のモーション側から参照する)
     private var latestCourseBearing: Double?
     /// 推定した顔の絶対方位。nil なら進行方位をそのまま使う
@@ -309,7 +317,13 @@ final class WalkSessionController: ObservableObject {
     /// **取得は手で入れた地図を上書きしない**ので、両方ある端末が普通に存在する。
     /// どちらを読むかは `MapSource.choose`(現在地を覆うほう。両方覆えば手動)。
     private func reloadMap() {
-        let manual = MapStore.loadMap()
+        let outcome = MapStore.loadMap(maxBytes: Int(params.route.mapFileMaxMb * 1_000_000))
+        let manual = outcome.map
+        manualMapFailure = { if case .failed(let f) = outcome { return f } else { return nil } }()
+        manualMapName = { if case .loaded(_, let n) = outcome { return n } else { return nil } }()
+        // **読んだ時点の指紋を控える。** 前面に戻るたびに解き直さないため
+        mapFingerprint = MapStore.fingerprint()
+
         let meta = TileStore.loadMeta()
         let tileIDs = TileStore.storedIDs()
         let hasTiles = meta != nil && !tileIDs.isEmpty
@@ -333,6 +347,22 @@ final class WalkSessionController: ObservableObject {
         graph = map.map { WalkGraph(map: $0, cellSizeM: params.route.mapIndexCellSizeM) }
         zones = graph.map { ZoneMap(map: $0.map, zoneSizeM: params.route.zoneSizeM) }
         updateStatus()
+    }
+
+    /// 前面に戻ったときに呼ぶ。**置かれたファイルが変わっていれば読み直す。**
+    ///
+    /// なぜ要るか(2026-08-30): 地図は起動時にしか読んでいなかったので、
+    /// 「アプリを開く → ファイルアプリで保存 → アプリに戻る」の順で入れた人は、
+    /// **完全に終了して開き直すまで「未読込」のまま**だった。手順書にもその記載が無い。
+    ///
+    /// 毎回読み直さないのは、20 km の地図が数十 MB あり、
+    /// **解き直すと前面に戻るたびに画面が固まる**ため。指紋が同じなら何もしない。
+    /// 歩いている最中も読み直さない(音が途切れるうえ、経路の場を作り直す必要が出る)。
+    func refreshMapIfFilesChanged() {
+        guard state == .idle else { return }
+        guard MapStore.fingerprint() != mapFingerprint else { return }
+        log("経路データのファイルが変わったので読み直します")
+        reloadMap()
     }
 
     /// 現在地の周り(散歩の 5 km 圏)のタイルを落とす(画面のボタンから)。
@@ -1127,10 +1157,18 @@ final class WalkSessionController: ObservableObject {
         if let graph {
             let label = mapSource == .tiles
                 ? "地図: タイル \(TileStore.storedIDs().count) 枚・\(graph.map.generated)"
-                : "地図: 半径\(Int(graph.map.radiusM / 1000))km・\(graph.map.generated)"
+                : "地図: \(manualMapName ?? "?")・半径\(Int(graph.map.radiusM / 1000))km"
+                    + "・\(graph.map.generated)"
             parts.append(label + (graph.map.covers(p) ? "" : "(圏外)"))
         } else {
-            parts.append("地図: 未読込")
+            // **読めなかった理由まで出す。** 「未読込」だけだと、入れ忘れたのか
+            // 入れたのに読めないのかが分からず、テスターも我々も切り分けられない
+            switch manualMapFailure {
+            case .undecodable(let names):
+                parts.append("地図: 読めません(\(names.joined(separator: ", ")))")
+            case .noFile, nil:
+                parts.append("地図: 未読込")
+            }
         }
         // 実機テストで「いま左右の定位が何を基準にしているか」を確認するために表示する。
         // 表示は副作用を持たせたくないので、保持値の更新は行わない
