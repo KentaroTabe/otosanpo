@@ -68,8 +68,12 @@ struct Timeline {
 
     /// `atSec` の位置に、相対方位 `relDeg`・音量 `gain` で 1 音を置く
     mutating func place(_ tone: AppParameters.ToneSpec, atSec: Double,
-                        relDeg: Double, gain: Double, behind: AppParameters.Audio) {
-        // 実機と同じく、真後ろ寄りは音色を暗くする
+                        relDeg rawRelDeg: Double, gain: Double, behind: AppParameters.Audio) {
+        // **実機と同じ規則で置く**(このツールの存在理由)。
+        // 前半球へ畳むのも実機と同じ(docs/03「前後からの撤退」)。
+        // 畳んでいる間は真後ろの音色に到達しない
+        let relDeg = behind.frontHemisphereOnly
+            ? SoundPlacement.foldToFrontDeg(rawRelDeg) : rawRelDeg
         let spec = abs(Geo.angularDiffDeg(relDeg, 0)) > behind.behindThresholdDeg
             ? ToneRenderer.darken(tone, by: behind.behindDarkness) : tone
         let mono = ToneRenderer.samples(spec, sampleRate: sampleRate,
