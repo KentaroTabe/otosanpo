@@ -82,4 +82,16 @@ if [ "$AGE_H" -ge 6 ]; then
   echo "警告: このファイルは $AGE_H 時間前のものです。今回のテストのものか確認してください。"
 fi
 
-scripts/summarize_log.sh "$OUT"
+# **複数の散歩が混ざっていたら、散歩ごとのファイルに割る**(2026-08-31 決定)。
+# 端末側では削除しない — ログは唯一の実験データで、消えると取り返しがつかない。
+# 混在の実害(取り違え・ひと手間)はこの分割が PC 側で吸収する(docs/05)
+PARTS=$(scripts/split_log.sh "$OUT")
+N=$(echo "$PARTS" | wc -l | tr -d ' ')
+if [ "$N" -gt 1 ]; then
+  echo "複数の散歩が混ざっていたので、散歩ごとに分割しました:"
+  echo "$PARTS" | sed 's/^/  /'
+  echo "(要約は最新の 1 回。他は scripts/summarize_log.sh <ファイル> で)"
+fi
+LAST=$(echo "$PARTS" | tail -n 1)
+
+scripts/summarize_log.sh "$LAST"
