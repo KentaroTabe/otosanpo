@@ -93,6 +93,16 @@ final class WalkSessionController: ObservableObject {
     private var headingFusion = HeadingFusion()
     /// 角速度から頭の向きを推定する別系統(HeadTracker)。既定では記録だけ
     private var headTracker = HeadTracker()
+    /// 頭部固定スマホの方位(→ docs/13)。`head_mount.enabled` の時だけ動かす実験装置
+    private let headMountMotion = HeadMotionService()
+    /// 磁気の乱れの検疫。**採用になるまで定位には使わない**(初期は未検証)
+    private var headQuarantine = HeadingQuarantine()
+    /// 画面に出す頭部固定の状態(未検証 / 採用 / 退避)。nil なら機能ごと無効
+    private var headMountLabel: String?
+    /// 直近に受けた補正後の方位(机上確認の表示用)
+    private var latestHeadMountHeading: Double?
+    /// 頭方位 行を残した時刻(生データは間隔を空けて残す)
+    private var lastHeadMountLogAt: Date?
     /// 机上で頭の追従を確かめている最中か(散歩とは独立に回す)
     @Published private(set) var headCheckActive = false
     /// 机上テストの現在値。画面に出して符号と追従を目で確かめる
@@ -151,6 +161,9 @@ final class WalkSessionController: ObservableObject {
         }
         motion.onConnectionChange = { [weak self] connected in
             Task { @MainActor in self?.onHeadphoneConnectionChange(connected) }
+        }
+        headMountMotion.onHeading = { [weak self] deg, _ in
+            Task { @MainActor in self?.onHeadMountHeading(deg) }
         }
         location.requestPermission()
         // 起動時から取得しておく。ボタンを押した時に fix が無くて失敗するのを避ける
@@ -233,6 +246,16 @@ final class WalkSessionController: ObservableObject {
         // 未接続でも start する(後から装着された時点で更新が始まる)
         motion.start()
         pedometer.start()
+        if params.headMount.enabled {
+            // 検疫は散歩ごとに白紙から。**前回の散歩の信頼を持ち越さない**
+            // (乱れた場所で終えた場合も、正常な場所で終えた場合も、実績は今回の分だけ)
+            headQuarantine = HeadingQuarantine()
+            headMountLabel = HeadingQuarantine.State.unverified.label
+            lastHeadMountLogAt = nil
+            headMountMotion.start(updateHz: params.headMount.updateHz)
+            log("頭部固定: 有効(利用可能=\(headMountMotion.isAvailable ? "はい" : "いいえ")"
+                + " 補正=\(Int(params.headMount.offsetDeg))°)")
+        }
         log("歩調: 利用可能=\(PedometerService.isAvailable ? "はい" : "いいえ")"
             + " 許可=\(pedometer.authorizationLabel)")
         log("ヘッドフォンモーション: 利用可能=\(motion.isAvailable ? "はい" : "いいえ")"
@@ -442,6 +465,11 @@ final class WalkSessionController: ObservableObject {
         ensureSynth()
         headTracker.reset()
         motion.start()
+        // 頭部固定の机上確認(docs/13 未確認 2・3)もここで一緒にできるようにする。
+        // 画面に生の方位が出るので、取り付け補正(offset_deg)と磁気の乱れを目で確かめられる
+        if params.headMount.enabled {
+            headMountMotion.start(updateHz: params.headMount.updateHz)
+        }
         headCheckActive = true
         headCheckLine = "正面を向いたまま始めてください(音は正面から鳴ります)"
         log("頭の追従の確認を開始(首を右に向けると音は左へ動くのが正しい)")
@@ -453,7 +481,10 @@ final class WalkSessionController: ObservableObject {
         headCheckTimer = nil
         headCheckActive = false
         headCheckLine = ""
-        if state == .idle || state == .arrived { motion.stop() }
+        if state == .idle || state == .arrived {
+            motion.stop()
+            headMountMotion.stop()
+        }
         log("頭の追従の確認を終了")
     }
 
@@ -465,6 +496,10 @@ final class WalkSessionController: ObservableObject {
         synth?.play(.homeBeacon, relativeBearingDeg: -offset)
         headCheckLine = String(format: "首の向き %+.0f°(右が正)→ 音は %+.0f° に鳴る",
                                offset, -offset)
+        if params.headMount.enabled {
+            let heading = latestHeadMountHeading.map { String(format: "%.0f°", $0) } ?? "未取得"
+            headCheckLine += "\nスマホ方位(補正後): \(heading)(北=0・時計回り)"
+        }
         headCheckTimer = Timer.scheduledTimer(withTimeInterval: params.audio.guidanceIntervalSec,
                                               repeats: false) { [weak self] _ in
             Task { @MainActor in self?.fireHeadCheckTick() }
@@ -589,6 +624,9 @@ final class WalkSessionController: ObservableObject {
             if !commuteLearning { location.stop() }
             motion.stop()
             pedometer.stop()
+            headMountMotion.stop()
+            // 定位の基準を進行方位に戻す(次の散歩の検疫が通るまで使わない)
+            if params.headMount.enabled { latestFacingBearing = nil }
             GridStore.save(grid)
             // 終わり方は 2 つ(到着・手動終了)あるが、どちらもこの効果を通る
             finishSummary()
@@ -919,12 +957,45 @@ final class WalkSessionController: ObservableObject {
                              headTracker.offsetDeg, heading))
         }
         guard params.heading.useHeadOrientation else { return }
+        // 頭部固定が有効な間は、スマホの方位が定位の基準を持つ(書き手を 2 つにしない)
+        guard !params.headMount.enabled else { return }
         let p = HeadingFusion.Params(baselineAlpha: params.heading.baselineAlpha,
                                      maxOffsetDeg: params.heading.maxOffsetDeg,
                                      minSamples: params.heading.minSamples,
                                      yawSign: params.heading.yawSign)
         latestFacingBearing = headingFusion.ingest(headYawDeg: s.yawDeg,
                                                    travelBearingDeg: course, p: p)
+    }
+
+    /// 頭部固定スマホの方位を受ける(→ docs/13)。
+    /// 検疫(course との突き合わせ)を通った時だけ定位の基準に流す。
+    /// 通らない間は nil のまま = 従来どおり進行方位で定位する(同じビルドで装着あり /
+    /// なしを比べられるのはこのため。docs/14「頭部固定なしでも動く」)
+    private func onHeadMountHeading(_ headingDeg: Double) {
+        guard params.headMount.enabled else { return }
+        let corrected = Geo.normalizeDeg(headingDeg - params.headMount.offsetDeg)
+        latestHeadMountHeading = corrected
+        let course = latestCourseBearing
+        let usable = headQuarantine.assess(headingDeg: corrected, courseDeg: course,
+                                           at: Date().timeIntervalSinceReferenceDate,
+                                           p: params.headMount.quarantine)
+        headMountLabel = headQuarantine.state.label
+        latestFacingBearing = usable ? corrected : nil
+
+        // 生データを一定間隔で残す。**heading と course の対があれば、検疫の閾値は
+        // 再生で振り直せる**(docs/13。歩き直さずに distrust_deg 等を決めるための材料)
+        guard state == .wandering || state == .returning else { return }
+        let now = Date()
+        if lastHeadMountLogAt == nil
+            || now.timeIntervalSince(lastHeadMountLogAt!) >= params.headMount.logIntervalSec {
+            lastHeadMountLogAt = now
+            let courseLabel = course.map { String(format: "%.1f", $0) } ?? "-"
+            let diffLabel = course.map {
+                String(format: "%.1f", abs(Geo.angularDiffDeg(corrected, $0)))
+            } ?? "-"
+            logToFile(String(format: "頭方位 heading=%.1f° course=%@° 差=%@° 状態=%@",
+                             corrected, courseLabel, diffLabel, headQuarantine.state.label))
+        }
     }
 
     /// 姿勢の基準が変わったときに、検出器と診断の窓を捨てる
@@ -1106,6 +1177,11 @@ final class WalkSessionController: ObservableObject {
         }
         let travel = TravelDirection.resolve(location.motionFix(), held: held, params: params.location)
         parts.append("方向: \(travel.map { label(for: $0.source) } ?? "不明")")
+        // 頭部固定の実験中は、方位が採用されているかを常に見えるようにする(docs/13)。
+        // 「退避」が出続けるなら磁気が乱れている(それ自体が実験の観測値)
+        if params.headMount.enabled {
+            parts.append("頭部: \(headMountLabel ?? HeadingQuarantine.State.unverified.label)")
+        }
         statusLine = parts.joined(separator: " / ")
     }
 

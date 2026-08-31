@@ -49,4 +49,15 @@ final class ParametersFileTests: XCTestCase {
         XCTAssertGreaterThan(p.mapDownload.timeoutSec, 0)
         XCTAssertGreaterThan(p.mapDownload.tileSizeDeg, 0)
     }
+
+    /// head_mount の値が届いていること(docs/13)。
+    /// 既定 enabled=false でも、閾値が 0 で届くと実験の時に検疫が意味を失う
+    func testHeadMountValuesArrive() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        XCTAssertGreaterThan(p.headMount.updateHz, 0)
+        XCTAssertGreaterThan(p.headMount.distrustDeg, 0)
+        XCTAssertGreaterThan(p.headMount.distrustSec, 0)
+        XCTAssertGreaterThan(p.headMount.regainSec, 0)
+        XCTAssertGreaterThan(p.headMount.logIntervalSec, 0)
+    }
 }
