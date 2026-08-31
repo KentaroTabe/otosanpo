@@ -126,6 +126,7 @@
     "beacon_direction_change_deg": 30,
     "beacon_min_gap_sec": 0.6,
     "use_spatial_audio": true,
+    "front_hemisphere_only": true,
     "behind_threshold_deg": 100,
     "behind_darkness": 0.6,
     "guidance_interval_sec": 1.2,
