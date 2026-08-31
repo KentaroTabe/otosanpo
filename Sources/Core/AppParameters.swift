@@ -236,8 +236,6 @@ public struct AppParameters: Codable, Equatable {
     public struct HeadMountSettings: Codable, Equatable {
         /// 装置を着けた実験でだけ true にする
         public var enabled: Bool
-        /// 取り付けの向きの補正 [deg]。方位からこの値を引く(机上確認で決める)
-        public var offsetDeg: Double
         /// スマホのモーション更新頻度 [Hz]。定位は再生時に参照するだけなので高頻度は要らない
         public var updateHz: Double
         /// course との差がこれを超えたら乱れを疑う [deg]
@@ -246,6 +244,13 @@ public struct AppParameters: Codable, Equatable {
         public var distrustSec: Double
         /// 内側がこれだけ続いたら採用(復帰)[sec]
         public var regainSec: Double
+        /// 取り付けのずれの学習が成立するのに要る実効の標本量(10 Hz で 200 ≈ 20 秒)。
+        /// **ずれは固定値で持たず、歩きながら学習する**(2026-09-01 利用者判断 → MountOffset)
+        public var offsetMinSamples: Double
+        /// ずれの平均の半減期 [sec]。長め = 付け直し程度の変化にゆっくり追従
+        public var offsetHalfLifeSec: Double
+        /// ずれが「定数である」と認める合成ベクトル長 R の下限(0..1)
+        public var offsetMinConcentration: Double
         /// 生データ(頭方位 行)をログに残す間隔 [sec]。replay で閾値を振り直す材料
         public var logIntervalSec: Double
 
@@ -254,6 +259,13 @@ public struct AppParameters: Codable, Equatable {
             HeadingQuarantine.Params(distrustDeg: distrustDeg,
                                      distrustSec: distrustSec,
                                      regainSec: regainSec)
+        }
+
+        /// MountOffset に渡す設定値
+        public var offsetEstimator: MountOffset.Params {
+            MountOffset.Params(minWeight: offsetMinSamples,
+                               halfLifeSec: offsetHalfLifeSec,
+                               minConcentration: offsetMinConcentration)
         }
     }
 

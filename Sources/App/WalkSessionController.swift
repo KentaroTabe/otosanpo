@@ -97,6 +97,8 @@ final class WalkSessionController: ObservableObject {
     private let headMountMotion = HeadMotionService()
     /// 磁気の乱れの検疫。**採用になるまで定位には使わない**(初期は未検証)
     private var headQuarantine = HeadingQuarantine()
+    /// 取り付けのずれの学習(→ MountOffset)。固定値は持たない(2026-09-01)
+    private var mountOffset = MountOffset()
     /// 画面に出す頭部固定の状態(未検証 / 採用 / 退避)。nil なら機能ごと無効
     private var headMountLabel: String?
     /// 直近に受けた補正後の方位(机上確認の表示用)
@@ -250,11 +252,13 @@ final class WalkSessionController: ObservableObject {
             // 検疫は散歩ごとに白紙から。**前回の散歩の信頼を持ち越さない**
             // (乱れた場所で終えた場合も、正常な場所で終えた場合も、実績は今回の分だけ)
             headQuarantine = HeadingQuarantine()
+            // 取り付けのずれも散歩ごとに白紙から学習し直す(付け直しで変わるため)
+            mountOffset = MountOffset()
             headMountLabel = HeadingQuarantine.State.unverified.label
             lastHeadMountLogAt = nil
             headMountMotion.start(updateHz: params.headMount.updateHz)
             log("頭部固定: 有効(利用可能=\(headMountMotion.isAvailable ? "はい" : "いいえ")"
-                + " 補正=\(Int(params.headMount.offsetDeg))°)")
+                + " 取り付けのずれは歩きながら学習)")
         }
         log("歩調: 利用可能=\(PedometerService.isAvailable ? "はい" : "いいえ")"
             + " 許可=\(pedometer.authorizationLabel)")
@@ -498,7 +502,9 @@ final class WalkSessionController: ObservableObject {
                                offset, -offset)
         if params.headMount.enabled {
             let heading = latestHeadMountHeading.map { String(format: "%.0f°", $0) } ?? "未取得"
-            headCheckLine += "\nスマホ方位(補正後): \(heading)(北=0・時計回り)"
+            // 机上では course が無く、取り付けのずれは学習できない(歩き出してから)。
+            // ここで見るのは**追従と符号**: 首を回して数字が滑らかに追うか・北で 0° 近辺か
+            headCheckLine += "\nスマホ方位(生): \(heading)(北=0・時計回り。取り付けのずれは歩行中に自動学習)"
         }
         headCheckTimer = Timer.scheduledTimer(withTimeInterval: params.audio.guidanceIntervalSec,
                                               repeats: false) { [weak self] _ in
@@ -968,33 +974,47 @@ final class WalkSessionController: ObservableObject {
     }
 
     /// 頭部固定スマホの方位を受ける(→ docs/13)。
+    ///
+    /// 取り付けのずれは**歩きながら学習する**(→ MountOffset・2026-09-01 利用者判断)。
+    /// 初回の実験で固定値の決め忘れにより散歩が丸ごと無駄になったため、
+    /// 固定値は持たない。学習が立つまでは補正 0 のまま検疫に落とされ、
+    /// 従来どおり進行方位で定位する(壊れた方位が音に出ることはない)。
+    ///
     /// 検疫(course との突き合わせ)を通った時だけ定位の基準に流す。
     /// 通らない間は nil のまま = 従来どおり進行方位で定位する(同じビルドで装着あり /
     /// なしを比べられるのはこのため。docs/14「頭部固定なしでも動く」)
     private func onHeadMountHeading(_ headingDeg: Double) {
         guard params.headMount.enabled else { return }
-        let corrected = Geo.normalizeDeg(headingDeg - params.headMount.offsetDeg)
-        latestHeadMountHeading = corrected
+        let now = Date().timeIntervalSinceReferenceDate
         let course = latestCourseBearing
+        // 学習は生の方位で行う(補正後を食わせると自分の出力を追いかけて循環する)
+        mountOffset.ingest(headingDeg: headingDeg, courseDeg: course,
+                           at: now, p: params.headMount.offsetEstimator)
+        let learned = mountOffset.offsetDeg(p: params.headMount.offsetEstimator)
+        let corrected = Geo.normalizeDeg(headingDeg - (learned ?? 0))
+        latestHeadMountHeading = corrected
         let usable = headQuarantine.assess(headingDeg: corrected, courseDeg: course,
-                                           at: Date().timeIntervalSinceReferenceDate,
-                                           p: params.headMount.quarantine)
-        headMountLabel = headQuarantine.state.label
+                                           at: now, p: params.headMount.quarantine)
+        headMountLabel = learned == nil
+            ? "\(headQuarantine.state.label)(補正待ち)"
+            : headQuarantine.state.label
         latestFacingBearing = usable ? corrected : nil
 
-        // 生データを一定間隔で残す。**heading と course の対があれば、検疫の閾値は
-        // 再生で振り直せる**(docs/13。歩き直さずに distrust_deg 等を決めるための材料)
+        // 生データを一定間隔で残す。**heading と course の対があれば、検疫の閾値も
+        // 学習の条件も再生で振り直せる**(docs/13。歩き直さずに決めるための材料)
         guard state == .wandering || state == .returning else { return }
-        let now = Date()
+        let logNow = Date()
         if lastHeadMountLogAt == nil
-            || now.timeIntervalSince(lastHeadMountLogAt!) >= params.headMount.logIntervalSec {
-            lastHeadMountLogAt = now
+            || logNow.timeIntervalSince(lastHeadMountLogAt!) >= params.headMount.logIntervalSec {
+            lastHeadMountLogAt = logNow
             let courseLabel = course.map { String(format: "%.1f", $0) } ?? "-"
             let diffLabel = course.map {
                 String(format: "%.1f", abs(Geo.angularDiffDeg(corrected, $0)))
             } ?? "-"
-            logToFile(String(format: "頭方位 heading=%.1f° course=%@° 差=%@° 状態=%@",
-                             corrected, courseLabel, diffLabel, headQuarantine.state.label))
+            let offsetLabel = learned.map { String(format: "%.1f", $0) } ?? "学習中"
+            logToFile(String(format: "頭方位 heading=%.1f° course=%@° 差=%@° 状態=%@ 補正=%@ R=%.2f",
+                             corrected, courseLabel, diffLabel, headQuarantine.state.label,
+                             offsetLabel, mountOffset.concentration))
         }
     }
 
