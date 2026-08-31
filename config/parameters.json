@@ -102,11 +102,13 @@
   },
   "head_mount": {
     "enabled": false,
-    "offset_deg": 0,
     "update_hz": 10,
     "distrust_deg": 40,
     "distrust_sec": 5,
     "regain_sec": 5,
+    "offset_min_samples": 200,
+    "offset_half_life_sec": 300,
+    "offset_min_concentration": 0.8,
     "log_interval_sec": 1
   },
   "gesture": {

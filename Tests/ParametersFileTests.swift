@@ -59,5 +59,10 @@ final class ParametersFileTests: XCTestCase {
         XCTAssertGreaterThan(p.headMount.distrustSec, 0)
         XCTAssertGreaterThan(p.headMount.regainSec, 0)
         XCTAssertGreaterThan(p.headMount.logIntervalSec, 0)
+        // ずれの学習(MountOffset)。0 で届くと学習が意味を失う
+        XCTAssertGreaterThan(p.headMount.offsetMinSamples, 0)
+        XCTAssertGreaterThan(p.headMount.offsetHalfLifeSec, 0)
+        XCTAssertGreaterThan(p.headMount.offsetMinConcentration, 0)
+        XCTAssertLessThanOrEqual(p.headMount.offsetMinConcentration, 1)
     }
 }
