@@ -159,7 +159,10 @@
         ],
         "blip_sec": 0.09,
         "gap_sec": 0.06,
-        "noise_mix": 0.0
+        "noise_mix": 0.0,
+        "harmonics": 3,
+        "harmonic_decay": 0.7,
+        "attack_ratio": 0.05
       },
       "time_up_prompt": {
         "freqs_hz": [
@@ -169,7 +172,10 @@
         ],
         "blip_sec": 0.12,
         "gap_sec": 0.05,
-        "noise_mix": 0.0
+        "noise_mix": 0.0,
+        "harmonics": 2,
+        "harmonic_decay": 0.35,
+        "attack_ratio": 0.3
       },
       "return_ack": {
         "freqs_hz": [
@@ -178,7 +184,10 @@
         ],
         "blip_sec": 0.18,
         "gap_sec": 0.08,
-        "noise_mix": 0.0
+        "noise_mix": 0.0,
+        "harmonics": 2,
+        "harmonic_decay": 0.35,
+        "attack_ratio": 0.3
       },
       "home_beacon": {
         "freqs_hz": [
@@ -186,7 +195,10 @@
         ],
         "blip_sec": 0.07,
         "gap_sec": 0.0,
-        "noise_mix": 0.0
+        "noise_mix": 0.0,
+        "harmonics": 4,
+        "harmonic_decay": 0.7,
+        "attack_ratio": 0.05
       },
       "arrival": {
         "freqs_hz": [
@@ -196,7 +208,10 @@
         ],
         "blip_sec": 0.12,
         "gap_sec": 0.04,
-        "noise_mix": 0.0
+        "noise_mix": 0.0,
+        "harmonics": 2,
+        "harmonic_decay": 0.35,
+        "attack_ratio": 0.3
       }
     }
   }
