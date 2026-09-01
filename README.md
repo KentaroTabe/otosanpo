@@ -1,5 +1,7 @@
 # 音さんぽ(OtoSanpo)— 画面を見ない散歩アプリ
 
+[![CI](https://github.com/KentaroTabe/otosanpo/actions/workflows/ci.yml/badge.svg)](https://github.com/KentaroTabe/otosanpo/actions/workflows/ci.yml)
+
 **音でそっと導く、画面を見ない寄り道散歩アプリ。**
 
 出発前に時間だけ決めれば、歩行中は短い効果音が普段通らない道への寄り道を提案する。
