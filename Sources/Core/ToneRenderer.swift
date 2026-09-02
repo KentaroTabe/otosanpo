@@ -27,11 +27,41 @@ public enum ToneRenderer {
         }
         let mix = max(0, min(1, tone.noiseMix))
 
+        // **倍音の重みを先に作る。** 高域成分が両耳間レベル差(ILD)を生み、
+        // 左右の定位を可能にする(440 Hz の基音だけでは頭を回折して差が出ない)
+        let harmonicCount = max(1, tone.harmonics)
+        var weights: [Double] = []
+        var amp = 1.0
+        for _ in 0..<harmonicCount {
+            weights.append(amp)
+            amp *= max(0, tone.harmonicDecay)
+        }
+        let weightSum = weights.reduce(0, +)
+
+        // 立ち上がりの鋭さ。0.5 で従来の Hann 窓(左右対称)
+        let attack = max(0.001, min(0.999, tone.attackRatio))
+        let attackFrames = Double(blipFrames) * attack
+
         for (i, f) in tone.freqsHz.enumerated() {
             for n in 0..<blipFrames {
                 let t = Double(n) / sampleRate
-                let env = 0.5 * (1 - cos(2 * .pi * Double(n) / Double(blipFrames)))
-                let tonal = sin(2 * .pi * f * t)
+                // 非対称エンベロープ: 鋭く立ち上がり、緩やかに減衰する。
+                // **立ち上がりの鋭さが両耳間時間差(ITD)の手がかりになる**
+                let pos = Double(n)
+                let env: Double
+                if pos < attackFrames {
+                    env = 0.5 * (1 - cos(.pi * pos / attackFrames))
+                } else {
+                    let rest = Double(blipFrames) - attackFrames
+                    let p = rest > 0 ? (pos - attackFrames) / rest : 1
+                    env = 0.5 * (1 + cos(.pi * min(1, p)))
+                }
+                // 基音と倍音を重ねる。合計の重みで割るので音量は倍音数に依らない
+                var tonal = 0.0
+                for (h, w) in weights.enumerated() {
+                    tonal += sin(2 * .pi * f * Double(h + 1) * t) * w
+                }
+                tonal /= weightSum
                 let v = tonal * (1 - mix) + nextNoise() * mix
                 out.append(Float(v * env * gain))
             }

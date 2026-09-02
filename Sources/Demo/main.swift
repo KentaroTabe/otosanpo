@@ -68,8 +68,12 @@ struct Timeline {
 
     /// `atSec` の位置に、相対方位 `relDeg`・音量 `gain` で 1 音を置く
     mutating func place(_ tone: AppParameters.ToneSpec, atSec: Double,
-                        relDeg: Double, gain: Double, behind: AppParameters.Audio) {
-        // 実機と同じく、真後ろ寄りは音色を暗くする
+                        relDeg rawRelDeg: Double, gain: Double, behind: AppParameters.Audio) {
+        // **実機と同じ規則で置く**(このツールの存在理由)。
+        // 前半球へ畳むのも実機と同じ(docs/03「前後からの撤退」)。
+        // 畳んでいる間は真後ろの音色に到達しない
+        let relDeg = behind.frontHemisphereOnly
+            ? SoundPlacement.foldToFrontDeg(rawRelDeg) : rawRelDeg
         let spec = abs(Geo.angularDiffDeg(relDeg, 0)) > behind.behindThresholdDeg
             ? ToneRenderer.darken(tone, by: behind.behindDarkness) : tone
         let mono = ToneRenderer.samples(spec, sampleRate: sampleRate,
@@ -141,6 +145,37 @@ for (name, spec) in vocabulary {
     try writeWAV([mono], sampleRate: Int(sr), to: outDir.appendingPathComponent("\(name).wav"))
 }
 print("語彙 \(vocabulary.count) 種を書き出しました")
+
+// MARK: - 左右の聴き比べ(2026-09-01)
+//
+// 「音の向きが分からず従えなかった」への対策(倍音 + 鋭いアタック)が
+// **実際に左右を聴き分けられるようにしたか**を、歩かずに確かめるための素材。
+// 従来の純音と、いまの設定を、同じ角度で交互に鳴らす。
+//
+// **イヤホンで聴くこと。** ここでの定位は等パワーのパンによる近似で、
+// 実機の HRTF とは別物だが、**素材が左右の手がかりを持つかどうか**は判定できる。
+func abTrack(_ tone: AppParameters.ToneSpec, label: String) throws {
+    var legacy = tone           // 従来: 純音・左右対称の窓
+    legacy.harmonics = 1
+    legacy.attackRatio = 0.5
+
+    var t = Timeline(sampleRate: sr)
+    var at = 0.5
+    // 左 → 右 → 左 → 右 を、旧 → 新 の順で
+    for spec in [legacy, tone] {
+        for deg in [-70.0, 70.0, -70.0, 70.0] {
+            t.place(spec, atSec: at, relDeg: deg, gain: 1.0, behind: audio)
+            at += 0.7
+        }
+        at += 1.0   // 旧と新の間に間を置く
+    }
+    try writeWAV(t.stereo, sampleRate: Int(sr),
+                 to: outDir.appendingPathComponent("ab-\(label).wav"))
+    print("左右の聴き比べ(\(label)): 前半 4 音 = 従来の純音 / 後半 4 音 = いまの設定"
+          + "(各 左右左右・±70°)")
+}
+try abTrack(audio.tones.homeBeacon, label: "beacon")
+try abTrack(audio.tones.suggestion, label: "suggestion")
 
 // MARK: - 場面 1: 散策で 1 つ角を曲がる
 

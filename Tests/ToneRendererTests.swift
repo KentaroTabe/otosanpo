@@ -4,8 +4,11 @@ import XCTest
 /// 波形の合成。**アプリと紹介用の書き出しで同じ音が鳴る**ことが前提なので、
 /// ここが変わると両方が同時に変わる。
 final class ToneRendererTests: XCTestCase {
+    /// 従来と同じ純音・左右対称の窓(harmonics 1・attackRatio 0.5)。
+    /// 既存の検査はこの形が保たれることを確かめている
     private let tone = AppParameters.ToneSpec(
-        freqsHz: [880, 1174.7], blipSec: 0.09, gapSec: 0.06, noiseMix: 0)
+        freqsHz: [880, 1174.7], blipSec: 0.09, gapSec: 0.06, noiseMix: 0,
+        harmonics: 1, harmonicDecay: 0.45, attackRatio: 0.5)
 
     /// 標本数は「ブリップ × 音数 + 間 × (音数 − 1)」
     func testSampleCountFollowsTheToneSpec() {

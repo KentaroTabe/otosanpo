@@ -122,12 +122,42 @@ struct ContentView: View {
                 Section("earcon の試聴") {
                     Button("提案音(左 90°)") { controller.debugPlay(.suggestion, relativeBearingDeg: -90) }
                     Button("提案音(右 90°)") { controller.debugPlay(.suggestion, relativeBearingDeg: 90) }
-                    // 3D が効いていれば、正面と真後ろが聴き分けられる(パンでは同じに聞こえる)
+                    // 「真後ろ」の試聴ボタンは置かない(2026-08-31 利用者判断)。
+                    // 定位は前半球のみで、後ろから鳴ることは無い(docs/03「前後からの撤退」)。
+                    // 鳴らない音を試聴に並べると「後ろから鳴ることがある」という誤解を教えてしまう。
+                    // かつては前後の聴き比べ実験用の対だったが、その実験は決着済み(2026-08-18)
                     Button("ビーコン(正面)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: 0) }
-                    Button("ビーコン(真後ろ)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: 180) }
                     Button("時間到来") { controller.debugPlay(.timeUpPrompt) }
                     Button("帰路の確認音") { controller.debugPlay(.returnAck) }
                     Button("到着音") { controller.debugPlay(.arrival) }
+                }
+
+                // 経路データを配信先から入れる。**手で入れる道は残す**
+                // (ファイルを置ける人はそのままでよい)。→ docs/12
+                if controller.params.mapDownload.isConfigured {
+                    Section("地図を取得") {
+                        Button {
+                            Task { await controller.downloadMapHere() }
+                        } label: {
+                            HStack {
+                                Text("この辺りの地図を取得(5 km 圏)")
+                                if controller.mapDownloading {
+                                    Spacer()
+                                    ProgressView()
+                                }
+                            }
+                        }
+                        .disabled(controller.mapDownloading)
+                        if !controller.mapDownloadLine.isEmpty {
+                            Text(controller.mapDownloadLine)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("送るのは取得する区画(約 5 km 角)の番号だけです。"
+                             + "正確な位置・歩いた経路・自宅は送りません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("フィールドログ") {

@@ -58,4 +58,45 @@ final class SoundPlacementTests: XCTestCase {
         XCTAssertEqual(SoundPlacement.pan(relativeBearingDeg: -270),
                        SoundPlacement.pan(relativeBearingDeg: 90), accuracy: 0.001)
     }
+
+    // MARK: - 前半球への畳み(2026-08-31・docs/03「前後からの撤退」)
+
+    /// 前半球はそのまま(何も変えない)
+    func testFoldKeepsFrontHemisphereUntouched() {
+        for deg in [-90.0, -45, -1, 0, 1, 45, 90] {
+            XCTAssertEqual(SoundPlacement.foldToFrontDeg(deg), deg, accuracy: 0.001, "\(deg)°")
+        }
+    }
+
+    /// 後半球は耳軸を鏡にして前へ映る(左右は保つ)
+    func testFoldMirrorsBackHemisphereKeepingSide() {
+        XCTAssertEqual(SoundPlacement.foldToFrontDeg(120), 60, accuracy: 0.001)
+        XCTAssertEqual(SoundPlacement.foldToFrontDeg(-120), -60, accuracy: 0.001)
+        XCTAssertEqual(SoundPlacement.foldToFrontDeg(174), 6, accuracy: 0.001)
+        XCTAssertEqual(SoundPlacement.foldToFrontDeg(-174), -6, accuracy: 0.001)
+        XCTAssertEqual(SoundPlacement.foldToFrontDeg(180), 0, accuracy: 0.001)
+    }
+
+    /// **左右の情報は 1 ビットも失わない**: pan は畳む前後で同値(sin(180−x) = sin(x))
+    func testFoldPreservesPanExactly() {
+        for deg in stride(from: -180.0, through: 180.0, by: 7.5) {
+            XCTAssertEqual(SoundPlacement.pan(relativeBearingDeg: SoundPlacement.foldToFrontDeg(deg)),
+                           SoundPlacement.pan(relativeBearingDeg: deg),
+                           accuracy: 0.0001, "方位 \(deg)°")
+        }
+    }
+
+    /// 畳んだ後は必ず前半球に置かれる(z ≤ 0)= HRTF が後ろの色付けをしない
+    func testFoldedPositionsAreAlwaysInFront() {
+        for deg in stride(from: -180.0, through: 180.0, by: 5.0) {
+            let p = SoundPlacement.position(relativeBearingDeg: SoundPlacement.foldToFrontDeg(deg))
+            XCTAssertLessThanOrEqual(p.z, 0.001, "方位 \(deg)° が後半球に置かれています")
+        }
+    }
+
+    /// 360° を跨ぐ入力でも畳みが働く
+    func testFoldNormalizesWraparound() {
+        XCTAssertEqual(SoundPlacement.foldToFrontDeg(300), -60, accuracy: 0.001, "300° = −60°(前)")
+        XCTAssertEqual(SoundPlacement.foldToFrontDeg(-250), 70, accuracy: 0.001, "−250° = 110° → 70°")
+    }
 }

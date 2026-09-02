@@ -1,0 +1,103 @@
+name: CI
+
+# 何を守るか:
+#   - Core の純粋ロジック(iOS 279 件 / Android 112 件)が壊れていないこと
+#   - **config/parameters.json と型の対応**(実機の起動時に落ちた前歴がある。753c310)
+#   - XcodeGen の定義から実際にプロジェクトが生成できること
+#
+# 実機でしか確かめられないもの(音の聞こえ方・GPS・ジェスチャ)は CI の対象外。
+# それらは散歩 1 回でまとめて見る(docs/05)。
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  # 手で走らせたい時のため(ランナーの Xcode が上がった直後の確認など)
+  workflow_dispatch:
+
+# 同じブランチへ連続で push した時は古い実行を止める(macOS ランナーは高価)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: iOS Core のテスト
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: XcodeGen を入れる
+        run: brew install xcodegen
+
+      - name: 使える Xcode を記録する
+        run: xcodebuild -version
+
+      # 署名の設定(Support/Signing.xcconfig)は gitignore 対象で CI には無いが、
+      # **setup.sh が example から作る**ので手当ては要らない。
+      # シミュレータのテストに Team ID は不要(警告が出るだけ)
+      - name: プロジェクトを生成する
+        run: scripts/setup.sh
+
+      # 名前を固定すると Xcode が上がった日に「実装は正しいのに赤」になる
+      - name: シミュレータを選ぶ
+        id: sim
+        run: echo "name=$(scripts/pick_simulator.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: テスト
+        run: scripts/test.sh "${{ steps.sim.outputs.name }}"
+
+      # 失敗した時に原因が分かるように。スクリプトは要点だけを出す作りなので
+      - name: 失敗したらログを残す
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-log
+          path: logs/test.log
+          if-no-files-found: ignore
+
+  android:
+    name: Android Core のテスト
+    # core は Android SDK を要さない JVM ライブラリなので Linux で足りる(docs/10)。
+    #
+    # **android/ は main / develop にはまだ無い**(コードは feature/android のみ。
+    # 2026-09-01 に確認: develop の git 管理下は 0 ファイル)。
+    # 無いブランチで確実に落ちるジョブを置くと CI の信頼が壊れるので、
+    # **存在を確かめてから走らせる**。develop へ入った時点で自動で動き出す
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Android のコードがあるか
+        id: has_android
+        run: |
+          if [ -f android/settings.gradle.kts ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+            echo "このブランチに android/ は無いので飛ばします"
+          fi
+
+      - uses: actions/setup-java@v4
+        if: steps.has_android.outputs.yes == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.has_android.outputs.yes == 'true'
+
+      - name: テスト(core のみ)
+        if: steps.has_android.outputs.yes == 'true'
+        run: gradle -p android :core:test --console=plain
+
+      - name: 失敗したらレポートを残す
+        if: failure() && steps.has_android.outputs.yes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-report
+          path: android/core/build/reports/tests/
+          if-no-files-found: ignore

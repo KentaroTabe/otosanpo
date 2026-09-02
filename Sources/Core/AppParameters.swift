@@ -8,10 +8,12 @@ public struct AppParameters: Codable, Equatable {
     public var budget: Budget
     public var route: Route
     public var heading: Heading
+    public var headMount: HeadMountSettings
     public var gesture: Gesture
     public var audio: Audio
     public var location: Location
     public var summary: Summary
+    public var mapDownload: MapDownloadSettings
     public var greeting: Greeting
 
     public struct Session: Codable, Equatable {
@@ -77,6 +79,10 @@ public struct AppParameters: Codable, Equatable {
         public var suggestionMinTravelM: Double
         /// 端末に置く経路データの半径 [m]。徒歩 1 時間圏を覆う目安(docs/04)
         public var mapRadiusM: Double
+        /// 手で置かれた経路データとして読む上限 [MB]。**名前を問わず読む**ので、
+        /// 巨大な無関係の JSON を掴んで起動やメモリが死ぬのを防ぐ。
+        /// 実測の最大は東京都の 40 MB(実機で動作確認済み・2026-08-30)
+        public var mapFileMaxMb: Double
         /// 道路スナップの空間索引のセル幅 [m]
         public var mapIndexCellSizeM: Double
         /// この距離より離れた点は道に乗せない [m]。水平精度(実測 3〜5 m)より大きく取る
@@ -148,6 +154,26 @@ public struct AppParameters: Codable, Equatable {
         public var mapMinSpanM: Double
     }
 
+    /// 経路データ(タイル)の配信先。**アプリで唯一、外へ出る通信**(→ docs/12)
+    public struct MapDownloadSettings: Codable, Equatable {
+        /// 配信先の基点。**空なら取得の機能を出さない**(通信しない状態に戻せる)。
+        /// 末尾のスラッシュは有っても無くてもよい。
+        ///
+        /// **`baseURL` ではなく `baseUrl`。** デコーダは `.convertFromSnakeCase` を使い、
+        /// JSON の `base_url` は照合の**前に** `baseUrl` へ変換される。
+        /// `URL` と大文字で綴ると一致せず、**実機の起動時に読み込みが失敗する**
+        /// (2026-08-29 に実際に起きた)。この構造体に `CodingKeys` を書いてはいけない
+        public var baseUrl: String
+        public var timeoutSec: Double
+        /// **生成側**が使うタイル角 [度](scripts/build_tiles.sh が読む)。
+        /// アプリは配信先の meta.json の値を使う — 配信データの分割はデータと一緒に
+        /// 宣言されるべきで、端末側の設定と食い違っても配信側が正になるため
+        public var tileSizeDeg: Double
+
+        /// 取得を出してよいか。空の設定を「機能なし」として扱う
+        public var isConfigured: Bool { !baseUrl.isEmpty }
+    }
+
     /// 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない)
     public struct Greeting: Codable, Equatable {
         public var windows: [GreetingWindow]
@@ -202,6 +228,47 @@ public struct AppParameters: Codable, Equatable {
         public var yawSign: Double
     }
 
+    /// スマホ頭部固定(docs/13)。**実験装置**なので既定は off。
+    /// スマホの真北基準の方位を定位の基準に使い、磁気の乱れは検疫する(HeadingQuarantine)。
+    ///
+    /// **`CodingKeys` を書かないこと**(→ MapDownloadSettings の注記。
+    /// デコーダの `.convertFromSnakeCase` が照合の前に変換する)
+    public struct HeadMountSettings: Codable, Equatable {
+        /// 装置を着けた実験でだけ true にする
+        public var enabled: Bool
+        /// スマホのモーション更新頻度 [Hz]。定位は再生時に参照するだけなので高頻度は要らない
+        public var updateHz: Double
+        /// course との差がこれを超えたら乱れを疑う [deg]
+        public var distrustDeg: Double
+        /// 超過がこれだけ続いたら退避 [sec]
+        public var distrustSec: Double
+        /// 内側がこれだけ続いたら採用(復帰)[sec]
+        public var regainSec: Double
+        /// 取り付けのずれの学習が成立するのに要る実効の標本量(10 Hz で 200 ≈ 20 秒)。
+        /// **ずれは固定値で持たず、歩きながら学習する**(2026-09-01 利用者判断 → MountOffset)
+        public var offsetMinSamples: Double
+        /// ずれの平均の半減期 [sec]。長め = 付け直し程度の変化にゆっくり追従
+        public var offsetHalfLifeSec: Double
+        /// ずれが「定数である」と認める合成ベクトル長 R の下限(0..1)
+        public var offsetMinConcentration: Double
+        /// 生データ(頭方位 行)をログに残す間隔 [sec]。replay で閾値を振り直す材料
+        public var logIntervalSec: Double
+
+        /// HeadingQuarantine に渡す設定値
+        public var quarantine: HeadingQuarantine.Params {
+            HeadingQuarantine.Params(distrustDeg: distrustDeg,
+                                     distrustSec: distrustSec,
+                                     regainSec: regainSec)
+        }
+
+        /// MountOffset に渡す設定値
+        public var offsetEstimator: MountOffset.Params {
+            MountOffset.Params(minWeight: offsetMinSamples,
+                               halfLifeSec: offsetHalfLifeSec,
+                               minConcentration: offsetMinConcentration)
+        }
+    }
+
     public struct Gesture: Codable, Equatable {
         public var nodPitchThresholdDeg: Double
         public var shakeYawThresholdDeg: Double
@@ -251,11 +318,17 @@ public struct AppParameters: Codable, Equatable {
         public var beaconDirectionChangeDeg: Double
         /// 繰り上げの下限間隔 [sec]。連打を防ぐ
         public var beaconMinGapSec: Double
-        /// 3D 音響(HRTF)で定位するか。false ならステレオパンで代替する。
-        /// 3D は前後を区別できるが、モノラル入力と AVAudioEnvironmentNode を要する
+        /// 3D 音響(HRTF)で定位するか。false ならステレオパンで代替する
         public var useSpatialAudio: Bool
+        /// **定位を前半球に畳むか**(→ SoundPlacement.foldToFrontDeg・docs/03)。
+        /// 前後は伝わらないチャネルだと実測で確定しており(純音 + 汎用 HRTF)、
+        /// 全球に置くと**前に置いた音まで背後から聞こえる**(2026-08-30 テスター報告。
+        /// 帰路 204 発中 201 発が前半球なのに「背後から鳴る」)。
+        /// true でこの誤知覚を断つ。左右の情報は失わない(pan は畳む前後で同値)
+        public var frontHemisphereOnly: Bool
         /// 相対方位の大きさがこれを超えたら「真後ろ寄り」の音色に切り替える [deg]。
-        /// HRTF では前後が判別できなかった(2026-08-18 実測)ため、音色で分ける
+        /// **`front_hemisphere_only` が true の間は到達しない**(畳んだ後は必ず 90° 以内)。
+        /// 前半球化を取り下げて A/B するときのために残してある
         public var behindThresholdDeg: Double
         /// 真後ろ用の音色をどれだけ暗くするか [0..1]。周波数を下げ雑音成分を削る
         public var behindDarkness: Double
@@ -308,7 +381,29 @@ public struct AppParameters: Codable, Equatable {
         /// 白色雑音を混ぜる割合 [0..1]。
         /// 純音には 4〜10 kHz の成分が無く、HRTF の前後判別が依存する耳介の
         /// スペクトル手がかりを運べない。広帯域成分を足すと前後が聴き分けやすくなる
-        /// (2026-08-18 の実測で、純音のビーコンは前後がほぼ判別不能だった)
+        /// (2026-08-18 の実測で、純音のビーコンは前後がほぼ判別不能だった)。
+        /// **ただし「さっ」という雑音が不快と評価され 0 にした**(2026-08-18)。
+        /// 代わりに倍音とアタックで手がかりを作る(下記・2026-09-01)
         public var noiseMix: Double
+
+        /// 倍音の数(1 = 基音のみ = 純音)。**左右の定位に直接効く。**
+        ///
+        /// 440 Hz の純音は波長 78 cm で、頭(約 18 cm)を回折してしまうため
+        /// **両耳間レベル差(ILD)がほとんど出ない**。ILD が効くのは概ね 1.5 kHz 以上。
+        /// 倍音を足すと高域成分が生まれ、同じ音程のまま ILD の手がかりを持てる
+        /// (440 Hz に 4 倍音まで足せば 1760 Hz まで伸びる)。
+        /// 雑音と違い「豊かな音色」として聞こえるので、`noiseMix` の不快さを避けられる
+        public var harmonics: Int
+
+        /// 倍音 1 段あたりの振幅比 [0..1]。小さいほど基音に近い素朴な音になる
+        public var harmonicDecay: Double
+
+        /// 立ち上がりが 1 音に占める割合 [0..1]。**0.5 で左右対称(従来の Hann 窓)**。
+        ///
+        /// 小さくするほど立ち上がりが鋭くなる。**鋭い立ち上がりは
+        /// 両耳間時間差(ITD)の手がかりになる** — 持続する純音の位相差は
+        /// 周期的で曖昧だが、「どちらの耳に先に届いたか」は一意に決まるため。
+        /// 打楽器的になるので音色としても不自然ではない
+        public var attackRatio: Double
     }
 }

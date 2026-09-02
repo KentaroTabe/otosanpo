@@ -1,10 +1,15 @@
 # 音さんぽ(OtoSanpo)— 画面を見ない散歩アプリ
 
+[![CI](https://github.com/KentaroTabe/otosanpo/actions/workflows/ci.yml/badge.svg)](https://github.com/KentaroTabe/otosanpo/actions/workflows/ci.yml)
+
 **音でそっと導く、画面を見ない寄り道散歩アプリ。**
 
 出発前に時間だけ決めれば、歩行中は短い効果音が普段通らない道への寄り道を提案する。
 時間が来たら音で知らせ、うなずきで帰路開始、首振りで延長。帰路は音が自宅へ導く。
 移動履歴は端末内にのみ保存し、外部へ送信しない。
+外へ出るのは地図を取得する時(散歩開始時の自動取得と画面のボタン)だけで、
+送るのは**その区画(約 5 km 角)の番号**のみ。揃っていれば通信しない
+(→ [docs/12](docs/12_map_delivery.md))。
 
 > **試してくれる方へ: [docs/09_tester_guide.md](docs/09_tester_guide.md) を読んでください。**
 > ビルドから散歩、フィードバックの返し方まで手順が書いてあります。
@@ -115,8 +120,11 @@ project.yml              XcodeGen 定義(*.xcodeproj は生成物)
 | [05 フィールドテスト](docs/05_field_test.md) | 実測の記録と未検証の待ち行列 |
 | [06 設計方針と実験計画](docs/06_design_plan.md) | 4 本の柱・案内音の 3 方針・判断待ち |
 | [07 人に紹介する道具](docs/07_introducing.md) | 音を書き出して聴かせる |
-| [08 方針 C: スポットの音楽](docs/08_music_spots.md) | 計画のみ(`feature/music-spots`) |
+| [08 方針 C: スポットの音楽](docs/08_music_spots.md) | 計画 + 2026-08-29 改訂(頭部固定・音楽は配信) |
 | [09 テスターの手順書](docs/09_tester_guide.md) | **試してくれる方はここから**(そのまま渡せる) |
+| [12 地図の配り方](docs/12_map_delivery.md) | タイル配信・自動取得・通信の約束 |
+| [13 スマホ頭部固定](docs/13_head_mount.md) | B・C 共通の実験基盤(絶対方位・磁気の検疫) |
+| [14 方針 B: 道の先から音がする](docs/14_direction_b.md) | 先導ビーコンの設計(帰路の一般化) |
 
 配る側(署名・配信・審査)の手順は `docs/09_distribution_private.md` に分けてあり、
 **gitignore 対象なのでここには無い**。手順書をそのまま共有できる状態に保つため。

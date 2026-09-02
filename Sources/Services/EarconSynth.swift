@@ -15,6 +15,8 @@ final class EarconSynth {
     private var buffers: [Earcon: AVAudioPCMBuffer] = [:]
     /// 真後ろ用の暗い音色。HRTF の前後判別は当てにならないため、音色で前後を分ける
     private var behindBuffers: [Earcon: AVAudioPCMBuffer] = [:]
+    /// 定位を前半球に畳むか(→ SoundPlacement.foldToFrontDeg)
+    private let frontHemisphereOnly: Bool
     private let behindThresholdDeg: Double
     private let behindDarkness: Double
     /// 3D 音響として繋げられたか。false の間はステレオパンで代替する
@@ -43,6 +45,7 @@ final class EarconSynth {
         monoFormat = mono
         stereoFormat = stereo
         useSpatialAudio = audio.useSpatialAudio
+        frontHemisphereOnly = audio.frontHemisphereOnly
         behindThresholdDeg = audio.behindThresholdDeg
         behindDarkness = audio.behindDarkness
 
@@ -154,8 +157,13 @@ final class EarconSynth {
     func play(_ e: Earcon, relativeBearingDeg: Double? = nil, gain: Double = 1.0) {
         // 鳴らす直前にも確かめる。通知を取りこぼしても無音のままにしない
         if !engine.isRunning { recover(reason: "再生前の点検") }
-        let deg = relativeBearingDeg ?? 0
-        // 前後は定位では伝わらない(2026-08-18 実測)。音色で分ける
+        // **前後は伝わらないチャネルなので、主張しない**(→ SoundPlacement.foldToFrontDeg)。
+        // 全球に置いていた頃、前に置いた音まで背後から聞こえていた(2026-08-30 テスター報告)。
+        // 畳んだ後は 90° 以内なので、真後ろ用の音色(isBehind)にも到達しない
+        let deg = frontHemisphereOnly
+            ? SoundPlacement.foldToFrontDeg(relativeBearingDeg ?? 0)
+            : (relativeBearingDeg ?? 0)
+        // 前後は定位では伝わらない(2026-08-18 実測)。畳まない場合は音色で分ける
         let useBehind = Self.isBehind(deg, thresholdDeg: behindThresholdDeg)
         guard let b = (useBehind ? behindBuffers[e] : nil) ?? buffers[e] else { return }
         player.volume = Float(max(0, min(1, gain)))

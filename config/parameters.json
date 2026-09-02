@@ -32,6 +32,7 @@
     "suggestion_margin_over_straight": 0.05,
     "suggestion_min_travel_m": 30,
     "map_radius_m": 5000,
+    "map_file_max_mb": 80,
     "map_index_cell_size_m": 50,
     "snap_max_distance_m": 25,
     "node_arrival_tolerance_m": 8,
@@ -53,6 +54,11 @@
     "max_track_points": 2000,
     "map_margin_m": 40,
     "map_min_span_m": 150
+  },
+  "map_download": {
+    "base_url": "https://pub-0192e5581a214cbfa83d94ba357dbc2c.r2.dev",
+    "timeout_sec": 60,
+    "tile_size_deg": 0.05
   },
   "greeting": {
     "windows": [
@@ -94,6 +100,17 @@
     "head_rate_sign": 1,
     "head_rate_max_gap_sec": 0.5
   },
+  "head_mount": {
+    "enabled": false,
+    "update_hz": 10,
+    "distrust_deg": 40,
+    "distrust_sec": 5,
+    "regain_sec": 5,
+    "offset_min_samples": 200,
+    "offset_half_life_sec": 300,
+    "offset_min_concentration": 0.8,
+    "log_interval_sec": 1
+  },
   "gesture": {
     "nod_pitch_threshold_deg": 8,
     "shake_yaw_threshold_deg": 12,
@@ -120,6 +137,7 @@
     "beacon_direction_change_deg": 30,
     "beacon_min_gap_sec": 0.6,
     "use_spatial_audio": true,
+    "front_hemisphere_only": true,
     "behind_threshold_deg": 100,
     "behind_darkness": 0.6,
     "guidance_interval_sec": 1.2,
@@ -141,7 +159,10 @@
         ],
         "blip_sec": 0.09,
         "gap_sec": 0.06,
-        "noise_mix": 0.0
+        "noise_mix": 0.0,
+        "harmonics": 3,
+        "harmonic_decay": 0.7,
+        "attack_ratio": 0.05
       },
       "time_up_prompt": {
         "freqs_hz": [
@@ -151,7 +172,10 @@
         ],
         "blip_sec": 0.12,
         "gap_sec": 0.05,
-        "noise_mix": 0.0
+        "noise_mix": 0.0,
+        "harmonics": 2,
+        "harmonic_decay": 0.35,
+        "attack_ratio": 0.3
       },
       "return_ack": {
         "freqs_hz": [
@@ -160,7 +184,10 @@
         ],
         "blip_sec": 0.18,
         "gap_sec": 0.08,
-        "noise_mix": 0.0
+        "noise_mix": 0.0,
+        "harmonics": 2,
+        "harmonic_decay": 0.35,
+        "attack_ratio": 0.3
       },
       "home_beacon": {
         "freqs_hz": [
@@ -168,7 +195,10 @@
         ],
         "blip_sec": 0.07,
         "gap_sec": 0.0,
-        "noise_mix": 0.0
+        "noise_mix": 0.0,
+        "harmonics": 4,
+        "harmonic_decay": 0.7,
+        "attack_ratio": 0.05
       },
       "arrival": {
         "freqs_hz": [
@@ -178,7 +208,10 @@
         ],
         "blip_sec": 0.12,
         "gap_sec": 0.04,
-        "noise_mix": 0.0
+        "noise_mix": 0.0,
+        "harmonics": 2,
+        "harmonic_decay": 0.35,
+        "attack_ratio": 0.3
       }
     }
   }

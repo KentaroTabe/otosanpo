@@ -86,4 +86,35 @@ public struct WalkMap: Codable, Equatable, Sendable {
     public func covers(_ p: GeoPoint) -> Bool {
         Geo.distanceM(center, p) <= radiusM
     }
+
+    /// この地図を**読み込んでよいか**の検分。壊れていれば理由を返す(健全なら nil)。
+    ///
+    /// なぜ要るか(2026-08-30): 経路データはファイル名を問わず読むので、
+    /// **形だけ合っている別物の JSON** が来うる。特に「存在しない節点を指す道」は、
+    /// `RouteField` の隣接の前計算が生の添字で配列を引くため、
+    /// **散歩開始の瞬間に落ちる**。読み込みの入り口で拒む。
+    ///
+    /// 検分は O(節点 + 参照)の 1 走査。東京都(節点 97 万)でも一瞬で終わる
+    public func integrityIssue() -> String? {
+        if nodes.isEmpty { return "節点が空" }
+        if ways.isEmpty { return "道が空" }
+        for (i, node) in nodes.enumerated() {
+            guard node.count >= 2 else { return "節点 \(i) に座標が足りない" }
+            let lat = node[0], lon = node[1]
+            guard lat.isFinite, lon.isFinite,
+                  abs(lat) <= 90, abs(lon) <= 180 else {
+                return "節点 \(i) の座標が壊れている"
+            }
+        }
+        for (w, way) in ways.enumerated() {
+            for index in way.n where index < 0 || index >= nodes.count {
+                return "道 \(w) が存在しない節点 \(index) を指している"
+            }
+        }
+        guard center.latitude.isFinite, center.longitude.isFinite,
+              radiusM.isFinite, radiusM > 0 else {
+            return "中心か半径が壊れている"
+        }
+        return nil
+    }
 }
