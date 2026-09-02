@@ -83,15 +83,31 @@ class ToneDirectionalityTest {
         assertTrue(abs(s.last()) < 1e-3f, "終端が 0 へ落ちていない")
     }
 
-    /** 実際に配る設定で、方向を伝える 2 つの音が高域成分を持つ */
+    /**
+     * **配る設定は 5 つの音すべてで揃っていること**(2026-09-02 利用者判断)。
+     * iOS 版 `testShippedTonesAreUniformSoPlatformsMatch` と同じ検査。
+     *
+     * > 配布しているバージョンが機種によって違うという状況はあるべきではない
+     *
+     * 倍音は効果が未確認のまま **Android の APK にだけ**入り、
+     * iOS のテスターとは違う音が鳴る状態になっていた(公開前に停止)。
+     * 仕組みは残し、配る値は配布版と同じ純音に戻してある。
+     * **実験するときは 5 つとも変える**(片方だけ変えると機種差になる)。
+     */
     @Test
-    fun shippedDirectionalTonesCarryHighFrequencies() {
-        val text = java.io.File("../../config/parameters.json").readText()
-        val p = AppParameters.decode(text)
-        for ((name, tone) in listOf("ビーコン" to p.audio.tones.homeBeacon,
-                                    "提案音" to p.audio.tones.suggestion)) {
-            assertTrue(tone.harmonics > 1, "$name が純音のままでは左右が伝わらない")
-            assertTrue(tone.attackRatio < 0.3, "$name の立ち上がりが鈍い")
+    fun shippedTonesAreUniformSoPlatformsMatch() {
+        val p = AppParameters.decode(java.io.File("../../config/parameters.json").readText())
+        val tones = listOf(
+            "提案音" to p.audio.tones.suggestion,
+            "時間到来" to p.audio.tones.timeUpPrompt,
+            "確認音" to p.audio.tones.returnAck,
+            "ビーコン" to p.audio.tones.homeBeacon,
+            "到着音" to p.audio.tones.arrival,
+        )
+        for ((name, tone) in tones) {
+            assertTrue(tone.harmonics == 1, "$name: 配る値は配布版と同じ純音のはず")
+            assertTrue(abs(tone.attackRatio - 0.5) < 1e-9,
+                       "$name: 配る値は配布版と同じ左右対称の窓のはず")
         }
     }
 }
