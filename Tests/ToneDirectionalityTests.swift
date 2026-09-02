@@ -102,15 +102,30 @@ final class ToneDirectionalityTests: XCTestCase {
         XCTAssertEqual(Double(peakIndex) / Double(s.count), 0.5, accuracy: 0.1)
     }
 
-    /// 実際に配る設定で、方向を伝える 2 つの音が高域成分を持つ
-    func testShippedDirectionalTonesCarryHighFrequencies() throws {
+    /// **配る設定は 5 つの音すべてで揃っていること**(2026-09-02 利用者判断)。
+    ///
+    /// > 配布しているバージョンが機種によって違うという状況はあるべきではない
+    ///
+    /// 倍音とアタックは**効果が未確認のまま Android の APK にだけ入り**、
+    /// iOS のテスターとは違う音が鳴る状態になっていた。仕組みは残し、
+    /// 配る値は配布版(testflight-202608311200)と同じ純音に戻した。
+    ///
+    /// ここが守るのは「実験の値がうっかり配布物へ混ざらないこと」。
+    /// **実験するときは 5 つとも変える**(片方だけ変えると機種差になる)。
+    /// 値を上げて配ると決めた時は、この検査の期待値も一緒に更新する
+    func testShippedTonesAreUniformSoPlatformsMatch() throws {
         let p = try ConfigLoader.load(from: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("config/parameters.json"))
-        for (name, tone) in [("ビーコン", p.audio.tones.homeBeacon),
-                             ("提案音", p.audio.tones.suggestion)] {
-            XCTAssertGreaterThan(tone.harmonics, 1, "\(name) が純音のままでは左右が伝わらない")
-            XCTAssertLessThan(tone.attackRatio, 0.3, "\(name) の立ち上がりが鈍い")
+        let tones = [("提案音", p.audio.tones.suggestion),
+                     ("時間到来", p.audio.tones.timeUpPrompt),
+                     ("確認音", p.audio.tones.returnAck),
+                     ("ビーコン", p.audio.tones.homeBeacon),
+                     ("到着音", p.audio.tones.arrival)]
+        for (name, tone) in tones {
+            XCTAssertEqual(tone.harmonics, 1, "\(name): 配る値は配布版と同じ純音のはず")
+            XCTAssertEqual(tone.attackRatio, 0.5, accuracy: 1e-9,
+                           "\(name): 配る値は配布版と同じ左右対称の窓のはず")
         }
     }
 }
