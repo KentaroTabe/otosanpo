@@ -164,8 +164,10 @@ class TravelDirectionTest {
 }
 
 class ToneRendererTest {
+    /** 従来と同じ純音・左右対称の窓(harmonics 1・attackRatio 0.5) */
     private val tone = AppParameters.ToneSpec(
-        freqsHz = listOf(880.0, 1174.7), blipSec = 0.09, gapSec = 0.06, noiseMix = 0.0
+        freqsHz = listOf(880.0, 1174.7), blipSec = 0.09, gapSec = 0.06, noiseMix = 0.0,
+        harmonics = 1, harmonicDecay = 0.7, attackRatio = 0.5
     )
 
     /** 標本数は「ブリップ × 音数 + 間 × (音数 − 1)」 */

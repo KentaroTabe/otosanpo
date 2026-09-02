@@ -118,11 +118,40 @@ object ToneRenderer {
         }
         val mix = tone.noiseMix.coerceIn(0.0, 1.0)
 
+        // **倍音の重みを先に作る**(iOS 版 Sources/Core/ToneRenderer.swift と同じ規則)。
+        // 高域成分が両耳間レベル差(ILD)を生み、左右の定位を可能にする
+        val harmonicCount = maxOf(1, tone.harmonics)
+        val weights = ArrayList<Double>(harmonicCount)
+        var amp = 1.0
+        repeat(harmonicCount) {
+            weights.add(amp)
+            amp *= maxOf(0.0, tone.harmonicDecay)
+        }
+        val weightSum = weights.sum()
+
+        // 立ち上がりの鋭さ。0.5 で従来の Hann 窓(左右対称)
+        val attack = tone.attackRatio.coerceIn(0.001, 0.999)
+        val attackFrames = blipFrames * attack
+
         for ((i, f) in tone.freqsHz.withIndex()) {
             for (n in 0 until blipFrames) {
                 val t = n / sampleRate
-                val env = 0.5 * (1 - cos(2 * Math.PI * n / blipFrames))
-                val tonal = sin(2 * Math.PI * f * t)
+                // 非対称エンベロープ: 鋭く立ち上がり緩やかに減衰する。
+                // 立ち上がりの鋭さが両耳間時間差(ITD)の手がかりになる
+                val pos = n.toDouble()
+                val env = if (pos < attackFrames) {
+                    0.5 * (1 - cos(Math.PI * pos / attackFrames))
+                } else {
+                    val rest = blipFrames - attackFrames
+                    val p = if (rest > 0) (pos - attackFrames) / rest else 1.0
+                    0.5 * (1 + cos(Math.PI * minOf(1.0, p)))
+                }
+                // 基音と倍音を重ね、重みの合計で割る(音量は倍音数に依らない)
+                var tonal = 0.0
+                for ((h, w) in weights.withIndex()) {
+                    tonal += sin(2 * Math.PI * f * (h + 1) * t) * w
+                }
+                tonal /= weightSum
                 val v = tonal * (1 - mix) + nextNoise() * mix
                 out.add((v * env * gain).toFloat())
             }

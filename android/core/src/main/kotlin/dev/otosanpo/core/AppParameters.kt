@@ -211,6 +211,21 @@ data class AppParameters(
         val gapSec: Double,
         /** 白色雑音を混ぜる割合 [0..1]。広帯域成分は前後の手がかりになる */
         val noiseMix: Double,
+        /**
+         * 倍音の数(1 = 基音のみ = 純音)。**左右の定位に直接効く**(iOS 版と同じ規則)。
+         *
+         * 440 Hz の純音は波長 78 cm で頭(約 18 cm)を回折し、
+         * 両耳間レベル差(ILD)がほとんど出ない。ILD が効くのは概ね 1.5 kHz 以上。
+         * 倍音を足すと同じ音程のまま高域成分が生まれる(2026-09-01)
+         */
+        val harmonics: Int,
+        /** 倍音 1 段あたりの振幅比 [0..1] */
+        val harmonicDecay: Double,
+        /**
+         * 立ち上がりが 1 音に占める割合 [0..1]。0.5 で左右対称(従来の Hann 窓)。
+         * 小さいほど鋭くなり、両耳間時間差(ITD)の手がかりになる
+         */
+        val attackRatio: Double,
     )
 
     @Serializable
