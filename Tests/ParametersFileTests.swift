@@ -49,4 +49,9 @@ final class ParametersFileTests: XCTestCase {
         XCTAssertGreaterThan(p.mapDownload.timeoutSec, 0)
         XCTAssertGreaterThan(p.mapDownload.tileSizeDeg, 0)
     }
+
+    func testShopHistoryValuesArrive() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        XCTAssertEqual(p.shopHistory.passageRadiusM, 30, accuracy: 0.001)
+    }
 }

@@ -60,6 +60,9 @@
     "timeout_sec": 60,
     "tile_size_deg": 0.05
   },
+  "shop_history": {
+    "passage_radius_m": 30
+  },
   "greeting": {
     "windows": [
       {
