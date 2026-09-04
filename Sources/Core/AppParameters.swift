@@ -178,6 +178,10 @@ public struct AppParameters: Codable, Equatable {
     public struct ShopHistorySettings: Codable, Equatable {
         /// 店舗の前を通ったとみなす距離 [m]。初期値は 30 m。
         public var passageRadiusM: Double
+        /// 店舗候補を取得する範囲 [m]。API の検索半径で、通過判定の 30 m とは分ける。
+        public var searchRadiusM: Double
+        /// 通過判定に使う fix の水平精度の上限 [m]。これより悪い位置では記録しない。
+        public var maxHorizontalAccuracyM: Double
     }
 
     /// 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない)

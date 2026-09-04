@@ -73,6 +73,8 @@ final class WalkSessionController: ObservableObject {
     private let shopHistory: ShopHistoryService
     /// この散歩ですでに通過として数えた店舗。同じ散歩中の往復は 1 回にまとめる
     private var shopPassageSession = ShopPassageSession()
+    /// 終了時の店舗一括判定で、できるだけ実際の通過時刻を戻すための時刻付き経路
+    private var shopPassageRoute: [TimedGeoPoint] = []
     /// 進行中の誘導に振った番号。ログの行と経路図の印を突き合わせるために添える。
     /// **最初の 1 音が鳴った時に振る**(鳴らずに終わった誘導は番号を持たない)
     private var guidanceNumber: Int?
@@ -141,7 +143,11 @@ final class WalkSessionController: ObservableObject {
         shadowDetector = HeadGestureDetector(params: params.gesture)
         shopHistory = ShopHistoryService(provider: EmptyShopCandidateProvider(),
                                          store: LocalShopHistoryStore(),
-                                         passageRadiusM: params.shopHistory.passageRadiusM)
+                                         settings: ShopHistoryService.Settings(
+                                            passageRadiusM: params.shopHistory.passageRadiusM,
+                                            searchRadiusM: params.shopHistory.searchRadiusM,
+                                            maxHorizontalAccuracyM:
+                                                params.shopHistory.maxHorizontalAccuracyM))
         home = HomeStore.load()
         speed = SpeedStore.load()
         lastSummary = SummaryStore.load()
@@ -225,6 +231,7 @@ final class WalkSessionController: ObservableObject {
         guidanceTimer?.invalidate()
         summary = WalkSummary(startedAt: Date(), home: home)
         shopPassageSession = shopHistory.startSession()
+        shopPassageRoute = []
         // **位置が確定したこの時点で、地図の選び直しが要るか見る。**
         // タイルがある端末だけ(初期化時は位置が無く、近傍の絞り込みも選択も
         // 位置なしで行っている。旅行先ではタイルのほうが現在地を覆うことがある)
@@ -871,7 +878,9 @@ final class WalkSessionController: ObservableObject {
             // 経路図の線。**間引きの基準は経路長と同じ**にして、図と距離が食い違わないようにする
             summary?.add(p, minSegmentM: params.budget.pathSegmentMinM,
                          maxPoints: params.summary.maxTrackPoints)
-            recordShopPassages(at: p, now: now)
+            shopPassageRoute.append(TimedGeoPoint(point: p, date: now))
+            recordShopPassages(at: p, fix: fix, now: now)
+            refreshShopCandidates(around: p)
         }
         if commuteLearning {
             grid.markExcluded(at: p)
@@ -1441,9 +1450,10 @@ final class WalkSessionController: ObservableObject {
     private func finishSummary() {
         guard var s = summary else { return }
         let finishedAt = Date()
-        recordShopPassages(along: s.track, now: finishedAt)
+        recordShopPassages(along: shopPassageRoute, now: finishedAt)
         s.finish(at: finishedAt, pathLengthM: walkMetrics.pathLengthM)
         summary = nil
+        shopPassageRoute = []
         guidanceNumber = nil
         lastSummary = s
         SummaryStore.save(s)
@@ -1451,18 +1461,26 @@ final class WalkSessionController: ObservableObject {
                    s.pathLengthM, s.durationSec / 60, s.guidanceEvents.count))
     }
 
-    private func recordShopPassages(at p: GeoPoint, now: Date) {
-        let updates = shopHistory.recordPassages(near: p,
-                                                 session: &shopPassageSession,
-                                                 at: now)
+    private func recordShopPassages(at p: GeoPoint, fix: MotionFix, now: Date) {
+        let updates = shopHistory.recordCachedPassages(near: p,
+                                                       horizontalAccuracyM: fix.horizontalAccuracyM,
+                                                       session: &shopPassageSession,
+                                                       at: now)
         logShopPassages(updates)
     }
 
-    private func recordShopPassages(along route: [GeoPoint], now: Date) {
-        let updates = shopHistory.recordPassages(along: route,
-                                                 session: &shopPassageSession,
-                                                 at: now)
+    private func recordShopPassages(along route: [TimedGeoPoint], now: Date) {
+        let updates = shopHistory.recordCachedPassages(along: route,
+                                                       session: &shopPassageSession,
+                                                       fallbackDate: now)
         logShopPassages(updates)
+    }
+
+    private func refreshShopCandidates(around p: GeoPoint) {
+        let service = shopHistory
+        Task.detached(priority: .utility) {
+            await service.refreshCache(around: p)
+        }
     }
 
     private func logShopPassages(_ updates: [ShopPassageUpdate]) {

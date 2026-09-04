@@ -94,4 +94,55 @@ final class ShopHistoryTests: XCTestCase {
         XCTAssertEqual(history.historiesByShopID["near-route"]?.passCount, 1)
         XCTAssertNil(history.historiesByShopID["far-route"])
     }
+
+    func testPoorHorizontalAccuracyDoesNotRecordPassage() {
+        var history = ShopHistory()
+        var session = ShopPassageSession()
+        let s = shop("a", distanceM: 10)
+
+        let poor = history.recordPassages(near: origin,
+                                          horizontalAccuracyM: 80,
+                                          candidates: [s],
+                                          session: &session,
+                                          at: Date(),
+                                          radiusM: 30,
+                                          maxHorizontalAccuracyM: 50)
+        let invalid = history.recordPassages(near: origin,
+                                             horizontalAccuracyM: -1,
+                                             candidates: [s],
+                                             session: &session,
+                                             at: Date(),
+                                             radiusM: 30,
+                                             maxHorizontalAccuracyM: 50)
+
+        XCTAssertTrue(poor.isEmpty)
+        XCTAssertTrue(invalid.isEmpty)
+        XCTAssertNil(history.historiesByShopID["a"])
+    }
+
+    func testRoutePassageUsesNearestRouteTime() {
+        var history = ShopHistory()
+        var session = ShopPassageSession()
+        let north = Geo.destination(from: origin, bearingDeg: 0, distanceM: 100)
+        let route = [
+            TimedGeoPoint(point: origin, date: Date(timeIntervalSince1970: 1_000)),
+            TimedGeoPoint(point: north, date: Date(timeIntervalSince1970: 1_100))
+        ]
+        let halfway = Geo.destination(from: origin, bearingDeg: 0, distanceM: 50)
+        let nearHalfway = Shop(shopID: "mid", name: "中間", latitude: halfway.latitude,
+                               longitude: halfway.longitude, category: "cafe")
+
+        let updates = history.recordPassages(along: route,
+                                             candidates: [nearHalfway],
+                                             session: &session,
+                                             fallbackDate: Date(timeIntervalSince1970: 2_000),
+                                             radiusM: 30)
+
+        XCTAssertEqual(updates.first?.passedAt.timeIntervalSince1970 ?? 0,
+                       1_050,
+                       accuracy: 0.01)
+        XCTAssertEqual(history.historiesByShopID["mid"]?.firstPassedAt.timeIntervalSince1970 ?? 0,
+                       1_050,
+                       accuracy: 0.01)
+    }
 }

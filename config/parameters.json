@@ -61,7 +61,9 @@
     "tile_size_deg": 0.05
   },
   "shop_history": {
-    "passage_radius_m": 30
+    "passage_radius_m": 30,
+    "search_radius_m": 120,
+    "max_horizontal_accuracy_m": 50
   },
   "greeting": {
     "windows": [

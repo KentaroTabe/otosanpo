@@ -3,6 +3,8 @@ import Foundation
 /// 店舗通過の判定に使う既定値。設定ファイルから上書きして使う。
 public enum ShopPassageRules {
     public static let defaultPassageRadiusM = 30.0
+    public static let defaultSearchRadiusM = 120.0
+    public static let defaultMaxHorizontalAccuracyM = 50.0
 }
 
 /// 店舗そのものの情報。通過履歴とは分けて保存する。
@@ -73,6 +75,17 @@ public struct ShopPassageUpdate: Equatable, Sendable {
     public var distanceM: Double
 }
 
+/// 位置と、その位置を実際に通った時刻。終了時の一括判定でも通過時刻を近似する。
+public struct TimedGeoPoint: Equatable, Sendable {
+    public var point: GeoPoint
+    public var date: Date
+
+    public init(point: GeoPoint, date: Date) {
+        self.point = point
+        self.date = date
+    }
+}
+
 /// 店舗データと通過履歴を分けて保持する端末内アーカイブ。
 public struct ShopHistory: Codable, Equatable, Sendable {
     public var shopsByID: [String: Shop]
@@ -94,15 +107,22 @@ public struct ShopHistory: Codable, Equatable, Sendable {
 
     @discardableResult
     public mutating func recordPassages(near position: GeoPoint,
+                                        horizontalAccuracyM: Double? = 0,
                                         candidates: [Shop],
                                         session: inout ShopPassageSession,
                                         at date: Date,
-                                        radiusM: Double = ShopPassageRules.defaultPassageRadiusM)
+                                        radiusM: Double = ShopPassageRules.defaultPassageRadiusM,
+                                        maxHorizontalAccuracyM: Double =
+                                            ShopPassageRules.defaultMaxHorizontalAccuracyM)
         -> [ShopPassageUpdate] {
-        let nearby = candidates.compactMap { shop -> (shop: Shop, distanceM: Double)? in
+        guard Self.isUsable(horizontalAccuracyM: horizontalAccuracyM,
+                            maxHorizontalAccuracyM: maxHorizontalAccuracyM) else {
+            return []
+        }
+        let nearby = candidates.compactMap { shop -> (shop: Shop, distanceM: Double, date: Date)? in
             let distance = Geo.distanceM(position, shop.location)
             guard distance <= radiusM else { return nil }
-            return (shop, distance)
+            return (shop, distance, date)
         }
         return record(nearby, session: &session, at: date)
     }
@@ -114,12 +134,25 @@ public struct ShopHistory: Codable, Equatable, Sendable {
                                         at date: Date,
                                         radiusM: Double = ShopPassageRules.defaultPassageRadiusM)
         -> [ShopPassageUpdate] {
-        let nearby = candidates.compactMap { shop -> (shop: Shop, distanceM: Double)? in
+        let timedRoute = route.map { TimedGeoPoint(point: $0, date: date) }
+        return recordPassages(along: timedRoute, candidates: candidates,
+                              session: &session, fallbackDate: date, radiusM: radiusM)
+    }
+
+    @discardableResult
+    public mutating func recordPassages(along route: [TimedGeoPoint],
+                                        candidates: [Shop],
+                                        session: inout ShopPassageSession,
+                                        fallbackDate: Date,
+                                        radiusM: Double = ShopPassageRules.defaultPassageRadiusM)
+        -> [ShopPassageUpdate] {
+        let nearby = candidates.compactMap { shop -> (shop: Shop, distanceM: Double, date: Date)? in
             guard let distance = Self.distanceM(from: shop.location, to: route),
                   distance <= radiusM else { return nil }
-            return (shop, distance)
+            let date = Self.passageDate(for: shop.location, along: route) ?? fallbackDate
+            return (shop, distance, date)
         }
-        return record(nearby, session: &session, at: date)
+        return record(nearby, session: &session, fallbackDate: fallbackDate)
     }
 
     public static func distanceM(from point: GeoPoint, to route: [GeoPoint]) -> Double? {
@@ -134,9 +167,45 @@ public struct ShopHistory: Codable, Equatable, Sendable {
         return best
     }
 
-    private mutating func record(_ passages: [(shop: Shop, distanceM: Double)],
+    public static func distanceM(from point: GeoPoint, to route: [TimedGeoPoint]) -> Double? {
+        distanceM(from: point, to: route.map(\.point))
+    }
+
+    public static func passageDate(for point: GeoPoint, along route: [TimedGeoPoint]) -> Date? {
+        guard let first = route.first else { return nil }
+        guard route.count >= 2 else { return first.date }
+
+        var best: (distanceM: Double, index: Int, t: Double)?
+        for i in 0..<(route.count - 1) {
+            let nearest = Geo.nearestPointOnSegment(point, from: route[i].point, to: route[i + 1].point)
+            if best == nil || nearest.distanceM < best!.distanceM {
+                best = (nearest.distanceM, i, nearest.t)
+            }
+        }
+        guard let best else { return first.date }
+        let start = route[best.index].date
+        let end = route[best.index + 1].date
+        return start.addingTimeInterval(end.timeIntervalSince(start) * best.t)
+    }
+
+    public static func isUsable(horizontalAccuracyM: Double?,
+                                maxHorizontalAccuracyM: Double) -> Bool {
+        guard let horizontalAccuracyM,
+              horizontalAccuracyM >= 0,
+              maxHorizontalAccuracyM >= 0 else { return false }
+        return horizontalAccuracyM <= maxHorizontalAccuracyM
+    }
+
+    private mutating func record(_ passages: [(shop: Shop, distanceM: Double, date: Date)],
                                  session: inout ShopPassageSession,
                                  at date: Date) -> [ShopPassageUpdate] {
+        record(passages.map { (shop: $0.shop, distanceM: $0.distanceM, date: date) },
+               session: &session, fallbackDate: date)
+    }
+
+    private mutating func record(_ passages: [(shop: Shop, distanceM: Double, date: Date)],
+                                 session: inout ShopPassageSession,
+                                 fallbackDate: Date) -> [ShopPassageUpdate] {
         passages
             .sorted {
                 if $0.distanceM != $1.distanceM { return $0.distanceM < $1.distanceM }
@@ -149,6 +218,7 @@ public struct ShopHistory: Codable, Equatable, Sendable {
                 session.markPassed(shop.shopID)
                 shopsByID[shop.shopID] = shop
                 let isFirstPassage = historiesByShopID[shop.shopID] == nil
+                let date = passage.date
 
                 if var history = historiesByShopID[shop.shopID] {
                     history.lastPassedAt = date
