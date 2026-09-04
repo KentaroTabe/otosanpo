@@ -53,7 +53,7 @@ final class ParametersFileTests: XCTestCase {
     func testShopHistoryValuesArrive() throws {
         let p = try ConfigLoader.load(from: repositoryParametersURL())
         XCTAssertEqual(p.shopHistory.passageRadiusM, 30, accuracy: 0.001)
-        XCTAssertEqual(p.shopHistory.searchRadiusM, 120, accuracy: 0.001)
+        XCTAssertEqual(p.shopHistory.searchRadiusM, 300, accuracy: 0.001)
         XCTAssertEqual(p.shopHistory.maxHorizontalAccuracyM, 50, accuracy: 0.001)
     }
 }

@@ -145,4 +145,30 @@ final class ShopHistoryTests: XCTestCase {
                        1_050,
                        accuracy: 0.01)
     }
+
+    func testRoutePassageIgnoresPoorAccuracyPoints() {
+        var history = ShopHistory()
+        var session = ShopPassageSession()
+        let poorPoint = Geo.destination(from: origin, bearingDeg: 90, distanceM: 100)
+        let shopNearPoorPoint = Shop(shopID: "poor", name: "精度不良点の店",
+                                     latitude: poorPoint.latitude,
+                                     longitude: poorPoint.longitude,
+                                     category: "cafe")
+        let route = [
+            TimedGeoPoint(point: origin, date: Date(timeIntervalSince1970: 1_000),
+                          horizontalAccuracyM: 10),
+            TimedGeoPoint(point: poorPoint, date: Date(timeIntervalSince1970: 1_100),
+                          horizontalAccuracyM: 80)
+        ]
+
+        let updates = history.recordPassages(along: route,
+                                             candidates: [shopNearPoorPoint],
+                                             session: &session,
+                                             fallbackDate: Date(timeIntervalSince1970: 2_000),
+                                             radiusM: 30,
+                                             maxHorizontalAccuracyM: 50)
+
+        XCTAssertTrue(updates.isEmpty)
+        XCTAssertNil(history.historiesByShopID["poor"])
+    }
 }

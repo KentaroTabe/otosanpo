@@ -62,7 +62,7 @@
   },
   "shop_history": {
     "passage_radius_m": 30,
-    "search_radius_m": 120,
+    "search_radius_m": 300,
     "max_horizontal_accuracy_m": 50
   },
   "greeting": {

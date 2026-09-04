@@ -1,7 +1,7 @@
 import Foundation
 
 /// 店舗候補の取得口。Hot Pepper API などの本接続はこの protocol の実装として差し替える。
-protocol ShopCandidateProviding {
+protocol ShopCandidateProviding: Sendable {
     func shops(near position: GeoPoint, searchRadiusM: Double) async throws -> [Shop]
     func shops(along route: [GeoPoint], searchRadiusM: Double) async throws -> [Shop]
 }
@@ -12,7 +12,7 @@ struct EmptyShopCandidateProvider: ShopCandidateProviding {
     func shops(along route: [GeoPoint], searchRadiusM: Double) async throws -> [Shop] { [] }
 }
 
-protocol ShopHistoryStoring {
+protocol ShopHistoryStoring: Sendable {
     func load() -> ShopHistory
     func save(_ history: ShopHistory)
 }
@@ -51,7 +51,7 @@ struct LocalShopHistoryStore: ShopHistoryStoring {
 }
 
 /// 店舗候補の取得と通過履歴の更新をつなぐサービス層。
-final class ShopHistoryService: @unchecked Sendable {
+actor ShopHistoryService {
     struct Settings: Equatable, Sendable {
         var passageRadiusM: Double
         var searchRadiusM: Double
@@ -66,26 +66,34 @@ final class ShopHistoryService: @unchecked Sendable {
         }
     }
 
-    struct CacheArea: Hashable, Sendable {
-        var latIndex: Int
-        var lonIndex: Int
+    struct SearchRegion: Equatable, Sendable {
+        var center: GeoPoint
+        var searchRadiusM: Double
+
+        func covers(_ position: GeoPoint, passageRadiusM: Double) -> Bool {
+            Geo.distanceM(center, position) < searchRadiusM - passageRadiusM
+        }
+    }
+
+    private struct CachedRegion: Sendable {
+        var region: SearchRegion
+        var shops: [Shop]
+    }
+
+    private struct PendingRegion: Sendable {
+        var region: SearchRegion
+        var task: Task<[Shop], Error>
     }
 
     private let provider: ShopCandidateProviding
     private let store: ShopHistoryStoring
     let settings: Settings
-    private let lock = NSLock()
-    private var state: State
 
-    var history: ShopHistory {
-        lock.withLock { state.history }
-    }
-
-    private struct State {
-        var history: ShopHistory
-        var cacheByArea: [CacheArea: [Shop]] = [:]
-        var routeCache: [String: Shop] = [:]
-    }
+    private var history: ShopHistory
+    private var session = ShopPassageSession()
+    private var verifiedRoute: [TimedGeoPoint] = []
+    private var cachedRegions: [CachedRegion] = []
+    private var pendingRegions: [PendingRegion] = []
 
     init(provider: ShopCandidateProviding,
          store: ShopHistoryStoring,
@@ -93,92 +101,119 @@ final class ShopHistoryService: @unchecked Sendable {
         self.provider = provider
         self.store = store
         self.settings = settings
-        state = State(history: store.load())
+        history = store.load()
     }
 
-    func startSession() -> ShopPassageSession {
-        ShopPassageSession()
+    func currentHistory() -> ShopHistory {
+        history
     }
 
-    func refreshCache(around position: GeoPoint) async {
-        let area = Self.cacheArea(containing: position, searchRadiusM: settings.searchRadiusM)
-        if lock.withLock({ state.cacheByArea[area] != nil }) { return }
-        guard let shops = try? await provider.shops(near: position,
-                                                    searchRadiusM: settings.searchRadiusM) else {
-            return
-        }
-        lock.withLock {
-            state.cacheByArea[area] = shops
-        }
-    }
-
-    func refreshCache(along route: [GeoPoint]) async {
-        guard !route.isEmpty else { return }
-        guard let shops = try? await provider.shops(along: route,
-                                                    searchRadiusM: settings.searchRadiusM) else {
-            return
-        }
-        lock.withLock {
-            for shop in shops { state.routeCache[shop.shopID] = shop }
-        }
+    func startSession() {
+        session = ShopPassageSession()
+        verifiedRoute = []
     }
 
     @discardableResult
-    func recordCachedPassages(near position: GeoPoint,
-                              horizontalAccuracyM: Double?,
-                              session: inout ShopPassageSession,
-                              at date: Date = Date()) -> [ShopPassageUpdate] {
-        let candidates = cachedCandidates()
-        return updateHistory { history in
-            history.recordPassages(near: position,
-                                   horizontalAccuracyM: horizontalAccuracyM,
-                                   candidates: candidates,
-                                   session: &session,
-                                   at: date,
-                                   radiusM: settings.passageRadiusM,
+    func recordPosition(_ position: GeoPoint,
+                        horizontalAccuracyM: Double?,
+                        at date: Date = Date()) -> [ShopPassageUpdate] {
+        guard ShopHistory.isUsable(horizontalAccuracyM: horizontalAccuracyM,
                                    maxHorizontalAccuracyM: settings.maxHorizontalAccuracyM)
+        else { return [] }
+
+        verifiedRoute.append(TimedGeoPoint(point: position, date: date))
+        return recordNear(position, horizontalAccuracyM: horizontalAccuracyM, at: date)
+    }
+
+    func refreshCacheIfNeeded(around position: GeoPoint) async -> [ShopPassageUpdate] {
+        guard !isCoveredByCachedRegion(position) else { return [] }
+        if let pending = pendingCovering(position) {
+            return await finishPending(pending)
+        }
+
+        let region = SearchRegion(center: position, searchRadiusM: settings.searchRadiusM)
+        let provider = provider
+        let radius = settings.searchRadiusM
+        let task = Task<[Shop], Error> {
+            try await provider.shops(near: position, searchRadiusM: radius)
+        }
+        let pending = PendingRegion(region: region, task: task)
+        pendingRegions.append(pending)
+        return await finishPending(pending)
+    }
+
+    func finishSession(finalRoute: [TimedGeoPoint], fallbackDate: Date = Date()) async
+        -> [ShopPassageUpdate] {
+        verifiedRoute = finalRoute
+        var updates: [ShopPassageUpdate] = []
+        for pending in pendingRegions {
+            updates.append(contentsOf: await finishPending(pending))
+        }
+        updates.append(contentsOf: recordRoute(fallbackDate: fallbackDate))
+        return updates
+    }
+
+    private func finishPending(_ pending: PendingRegion) async -> [ShopPassageUpdate] {
+        do {
+            let shops = try await pending.task.value
+            guard let index = pendingRegions.firstIndex(where: { $0.region == pending.region })
+            else { return [] }
+            pendingRegions.remove(at: index)
+            cachedRegions.append(CachedRegion(region: pending.region, shops: shops))
+            return recordRoute(fallbackDate: Date())
+        } catch {
+            pendingRegions.removeAll { $0.region == pending.region }
+            return []
         }
     }
 
-    @discardableResult
-    func recordCachedPassages(along route: [TimedGeoPoint],
-                              session: inout ShopPassageSession,
-                              fallbackDate: Date = Date()) -> [ShopPassageUpdate] {
-        let candidates = cachedCandidates()
-        return updateHistory { history in
-            history.recordPassages(along: route,
-                                   candidates: candidates,
-                                   session: &session,
-                                   fallbackDate: fallbackDate,
-                                   radiusM: settings.passageRadiusM)
-        }
+    private func recordNear(_ position: GeoPoint,
+                            horizontalAccuracyM: Double?,
+                            at date: Date) -> [ShopPassageUpdate] {
+        let updates = history.recordPassages(near: position,
+                                             horizontalAccuracyM: horizontalAccuracyM,
+                                             candidates: cachedCandidates(),
+                                             session: &session,
+                                             at: date,
+                                             radiusM: settings.passageRadiusM,
+                                             maxHorizontalAccuracyM: settings.maxHorizontalAccuracyM)
+        saveIfNeeded(updates)
+        return updates
+    }
+
+    private func recordRoute(fallbackDate: Date) -> [ShopPassageUpdate] {
+        let updates = history.recordPassages(along: verifiedRoute,
+                                             candidates: cachedCandidates(),
+                                             session: &session,
+                                             fallbackDate: fallbackDate,
+                                             radiusM: settings.passageRadiusM,
+                                             maxHorizontalAccuracyM:
+                                                settings.maxHorizontalAccuracyM)
+        saveIfNeeded(updates)
+        return updates
+    }
+
+    private func saveIfNeeded(_ updates: [ShopPassageUpdate]) {
+        if !updates.isEmpty { store.save(history) }
     }
 
     private func cachedCandidates() -> [Shop] {
-        lock.withLock {
-            var byID = state.routeCache
-            for shops in state.cacheByArea.values {
-                for shop in shops { byID[shop.shopID] = shop }
-            }
-            return Array(byID.values)
+        var byID: [String: Shop] = [:]
+        for region in cachedRegions {
+            for shop in region.shops { byID[shop.shopID] = shop }
+        }
+        return Array(byID.values)
+    }
+
+    private func isCoveredByCachedRegion(_ position: GeoPoint) -> Bool {
+        cachedRegions.contains {
+            $0.region.covers(position, passageRadiusM: settings.passageRadiusM)
         }
     }
 
-    private func updateHistory(_ body: (inout ShopHistory) -> [ShopPassageUpdate])
-        -> [ShopPassageUpdate] {
-        let result = lock.withLock { () -> (updates: [ShopPassageUpdate], history: ShopHistory?) in
-            let updates = body(&state.history)
-            return (updates, updates.isEmpty ? nil : state.history)
+    private func pendingCovering(_ position: GeoPoint) -> PendingRegion? {
+        pendingRegions.first {
+            $0.region.covers(position, passageRadiusM: settings.passageRadiusM)
         }
-        if let history = result.history { store.save(history) }
-        return result.updates
-    }
-
-    static func cacheArea(containing position: GeoPoint, searchRadiusM: Double) -> CacheArea {
-        let cellM = max(searchRadiusM, 1)
-        let latIndex = Int(floor(position.latitude * Geo.metersPerDegreeLat / cellM))
-        let lonScale = Geo.metersPerDegreeLat * cos(position.latitude * .pi / 180)
-        let lonIndex = Int(floor(position.longitude * max(lonScale, 1) / cellM))
-        return CacheArea(latIndex: latIndex, lonIndex: lonIndex)
     }
 }

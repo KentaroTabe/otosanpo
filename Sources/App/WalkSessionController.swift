@@ -71,8 +71,7 @@ final class WalkSessionController: ObservableObject {
     private var summary: WalkSummary?
     /// 散歩中に通った店舗の履歴。候補取得は Services の provider で後から差し替える
     private let shopHistory: ShopHistoryService
-    /// この散歩ですでに通過として数えた店舗。同じ散歩中の往復は 1 回にまとめる
-    private var shopPassageSession = ShopPassageSession()
+    private var shopHistorySessionTask: Task<Void, Never>?
     /// 終了時の店舗一括判定で、できるだけ実際の通過時刻を戻すための時刻付き経路
     private var shopPassageRoute: [TimedGeoPoint] = []
     /// 進行中の誘導に振った番号。ログの行と経路図の印を突き合わせるために添える。
@@ -230,8 +229,9 @@ final class WalkSessionController: ObservableObject {
         target = nil
         guidanceTimer?.invalidate()
         summary = WalkSummary(startedAt: Date(), home: home)
-        shopPassageSession = shopHistory.startSession()
         shopPassageRoute = []
+        let shopHistory = shopHistory
+        shopHistorySessionTask = Task { await shopHistory.startSession() }
         // **位置が確定したこの時点で、地図の選び直しが要るか見る。**
         // タイルがある端末だけ(初期化時は位置が無く、近傍の絞り込みも選択も
         // 位置なしで行っている。旅行先ではタイルのほうが現在地を覆うことがある)
@@ -878,7 +878,12 @@ final class WalkSessionController: ObservableObject {
             // 経路図の線。**間引きの基準は経路長と同じ**にして、図と距離が食い違わないようにする
             summary?.add(p, minSegmentM: params.budget.pathSegmentMinM,
                          maxPoints: params.summary.maxTrackPoints)
-            shopPassageRoute.append(TimedGeoPoint(point: p, date: now))
+            if ShopHistory.isUsable(horizontalAccuracyM: fix.horizontalAccuracyM,
+                                    maxHorizontalAccuracyM:
+                                        params.shopHistory.maxHorizontalAccuracyM) {
+                shopPassageRoute.append(TimedGeoPoint(point: p, date: now,
+                                                      horizontalAccuracyM: fix.horizontalAccuracyM))
+            }
             recordShopPassages(at: p, fix: fix, now: now)
             refreshShopCandidates(around: p)
         }
@@ -1450,7 +1455,8 @@ final class WalkSessionController: ObservableObject {
     private func finishSummary() {
         guard var s = summary else { return }
         let finishedAt = Date()
-        recordShopPassages(along: shopPassageRoute, now: finishedAt)
+        let finalShopPassageRoute = shopPassageRoute
+        finishShopPassages(along: finalShopPassageRoute, now: finishedAt)
         s.finish(at: finishedAt, pathLengthM: walkMetrics.pathLengthM)
         summary = nil
         shopPassageRoute = []
@@ -1462,24 +1468,35 @@ final class WalkSessionController: ObservableObject {
     }
 
     private func recordShopPassages(at p: GeoPoint, fix: MotionFix, now: Date) {
-        let updates = shopHistory.recordCachedPassages(near: p,
+        let service = shopHistory
+        let sessionTask = shopHistorySessionTask
+        Task {
+            await sessionTask?.value
+            let updates = await service.recordPosition(p,
                                                        horizontalAccuracyM: fix.horizontalAccuracyM,
-                                                       session: &shopPassageSession,
                                                        at: now)
-        logShopPassages(updates)
+            logShopPassages(updates)
+        }
     }
 
-    private func recordShopPassages(along route: [TimedGeoPoint], now: Date) {
-        let updates = shopHistory.recordCachedPassages(along: route,
-                                                       session: &shopPassageSession,
-                                                       fallbackDate: now)
-        logShopPassages(updates)
+    private func finishShopPassages(along route: [TimedGeoPoint], now: Date) {
+        let service = shopHistory
+        let sessionTask = shopHistorySessionTask
+        Task {
+            await sessionTask?.value
+            let updates = await service.finishSession(finalRoute: route, fallbackDate: now)
+            logShopPassages(updates)
+        }
     }
 
     private func refreshShopCandidates(around p: GeoPoint) {
         let service = shopHistory
+        let sessionTask = shopHistorySessionTask
         Task.detached(priority: .utility) {
-            await service.refreshCache(around: p)
+            await sessionTask?.value
+            let updates = await service.refreshCacheIfNeeded(around: p)
+            if updates.isEmpty { return }
+            await MainActor.run { [weak self] in self?.logShopPassages(updates) }
         }
     }
 

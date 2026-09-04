@@ -3,7 +3,7 @@ import Foundation
 /// 店舗通過の判定に使う既定値。設定ファイルから上書きして使う。
 public enum ShopPassageRules {
     public static let defaultPassageRadiusM = 30.0
-    public static let defaultSearchRadiusM = 120.0
+    public static let defaultSearchRadiusM = 300.0
     public static let defaultMaxHorizontalAccuracyM = 50.0
 }
 
@@ -79,10 +79,12 @@ public struct ShopPassageUpdate: Equatable, Sendable {
 public struct TimedGeoPoint: Equatable, Sendable {
     public var point: GeoPoint
     public var date: Date
+    public var horizontalAccuracyM: Double?
 
-    public init(point: GeoPoint, date: Date) {
+    public init(point: GeoPoint, date: Date, horizontalAccuracyM: Double? = nil) {
         self.point = point
         self.date = date
+        self.horizontalAccuracyM = horizontalAccuracyM
     }
 }
 
@@ -144,12 +146,19 @@ public struct ShopHistory: Codable, Equatable, Sendable {
                                         candidates: [Shop],
                                         session: inout ShopPassageSession,
                                         fallbackDate: Date,
-                                        radiusM: Double = ShopPassageRules.defaultPassageRadiusM)
+                                        radiusM: Double = ShopPassageRules.defaultPassageRadiusM,
+                                        maxHorizontalAccuracyM: Double =
+                                            ShopPassageRules.defaultMaxHorizontalAccuracyM)
         -> [ShopPassageUpdate] {
+        let usableRoute = route.filter {
+            $0.horizontalAccuracyM == nil
+                || Self.isUsable(horizontalAccuracyM: $0.horizontalAccuracyM,
+                                 maxHorizontalAccuracyM: maxHorizontalAccuracyM)
+        }
         let nearby = candidates.compactMap { shop -> (shop: Shop, distanceM: Double, date: Date)? in
-            guard let distance = Self.distanceM(from: shop.location, to: route),
+            guard let distance = Self.distanceM(from: shop.location, to: usableRoute),
                   distance <= radiusM else { return nil }
-            let date = Self.passageDate(for: shop.location, along: route) ?? fallbackDate
+            let date = Self.passageDate(for: shop.location, along: usableRoute) ?? fallbackDate
             return (shop, distance, date)
         }
         return record(nearby, session: &session, fallbackDate: fallbackDate)
