@@ -71,9 +71,7 @@ final class WalkSessionController: ObservableObject {
     private var summary: WalkSummary?
     /// 散歩中に通った店舗の履歴。候補取得は Services の provider で後から差し替える
     private let shopHistory: ShopHistoryService
-    private var shopHistorySessionTask: Task<Void, Never>?
-    /// 終了時の店舗一括判定で、できるだけ実際の通過時刻を戻すための時刻付き経路
-    private var shopPassageRoute: [TimedGeoPoint] = []
+    private var shopHistorySessionTask: Task<ShopHistorySessionID, Never>?
     /// 進行中の誘導に振った番号。ログの行と経路図の印を突き合わせるために添える。
     /// **最初の 1 音が鳴った時に振る**(鳴らずに終わった誘導は番号を持たない)
     private var guidanceNumber: Int?
@@ -229,7 +227,6 @@ final class WalkSessionController: ObservableObject {
         target = nil
         guidanceTimer?.invalidate()
         summary = WalkSummary(startedAt: Date(), home: home)
-        shopPassageRoute = []
         let shopHistory = shopHistory
         shopHistorySessionTask = Task { await shopHistory.startSession() }
         // **位置が確定したこの時点で、地図の選び直しが要るか見る。**
@@ -878,14 +875,7 @@ final class WalkSessionController: ObservableObject {
             // 経路図の線。**間引きの基準は経路長と同じ**にして、図と距離が食い違わないようにする
             summary?.add(p, minSegmentM: params.budget.pathSegmentMinM,
                          maxPoints: params.summary.maxTrackPoints)
-            if ShopHistory.isUsable(horizontalAccuracyM: fix.horizontalAccuracyM,
-                                    maxHorizontalAccuracyM:
-                                        params.shopHistory.maxHorizontalAccuracyM) {
-                shopPassageRoute.append(TimedGeoPoint(point: p, date: now,
-                                                      horizontalAccuracyM: fix.horizontalAccuracyM))
-            }
             recordShopPassages(at: p, fix: fix, now: now)
-            refreshShopCandidates(around: p)
         }
         if commuteLearning {
             grid.markExcluded(at: p)
@@ -1455,11 +1445,9 @@ final class WalkSessionController: ObservableObject {
     private func finishSummary() {
         guard var s = summary else { return }
         let finishedAt = Date()
-        let finalShopPassageRoute = shopPassageRoute
-        finishShopPassages(along: finalShopPassageRoute, now: finishedAt)
+        finishShopPassages(now: finishedAt)
         s.finish(at: finishedAt, pathLengthM: walkMetrics.pathLengthM)
         summary = nil
-        shopPassageRoute = []
         guidanceNumber = nil
         lastSummary = s
         SummaryStore.save(s)
@@ -1471,32 +1459,23 @@ final class WalkSessionController: ObservableObject {
         let service = shopHistory
         let sessionTask = shopHistorySessionTask
         Task {
-            await sessionTask?.value
-            let updates = await service.recordPosition(p,
-                                                       horizontalAccuracyM: fix.horizontalAccuracyM,
-                                                       at: now)
+            guard let sessionID = await sessionTask?.value else { return }
+            let updates = await service.recordPositionAndRefreshIfNeeded(
+                p,
+                sessionID: sessionID,
+                horizontalAccuracyM: fix.horizontalAccuracyM,
+                at: now)
             logShopPassages(updates)
         }
     }
 
-    private func finishShopPassages(along route: [TimedGeoPoint], now: Date) {
+    private func finishShopPassages(now: Date) {
         let service = shopHistory
         let sessionTask = shopHistorySessionTask
         Task {
-            await sessionTask?.value
-            let updates = await service.finishSession(finalRoute: route, fallbackDate: now)
+            guard let sessionID = await sessionTask?.value else { return }
+            let updates = await service.finishSession(sessionID, fallbackDate: now)
             logShopPassages(updates)
-        }
-    }
-
-    private func refreshShopCandidates(around p: GeoPoint) {
-        let service = shopHistory
-        let sessionTask = shopHistorySessionTask
-        Task.detached(priority: .utility) {
-            await sessionTask?.value
-            let updates = await service.refreshCacheIfNeeded(around: p)
-            if updates.isEmpty { return }
-            await MainActor.run { [weak self] in self?.logShopPassages(updates) }
         }
     }
 
