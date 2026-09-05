@@ -18,6 +18,8 @@ final class WalkSessionController: ObservableObject {
     /// 直近の散歩の記録(経路・距離・時間・番号を振ったイベント)。
     /// 歩いている最中は書き留められないので、帰ってから振り返るために残す
     @Published private(set) var lastSummary: WalkSummary?
+    /// 累積した店舗通過履歴。MAP 画面は保存済み履歴だけを読む
+    @Published private(set) var shopHistoryRecords: [ShopHistoryRecord] = []
     /// 操作が通らなかったことを画面で知らせる(nil で非表示)
     @Published var alertMessage: String?
     /// 出発の一言(nil で非表示)。**画面を見るのは開始の瞬間だけ**なので、ここに出す。
@@ -131,20 +133,23 @@ final class WalkSessionController: ObservableObject {
     private var timeUpTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
 
-    init(params: AppParameters) {
+    init(params: AppParameters,
+         shopHistory injectedShopHistory: ShopHistoryService? = nil,
+         startLocationServices: Bool = true) {
         self.params = params
         durationMin = params.session.defaultDurationMin
         grid = GridStore.load(cellSizeM: params.route.cellSizeM,
                               halfLifeM: params.route.visitHalfLifeM)
         detector = HeadGestureDetector(params: params.gesture)
         shadowDetector = HeadGestureDetector(params: params.gesture)
-        shopHistory = ShopHistoryService(provider: HotPepperShopCandidateProvider.configuredOrEmpty(),
-                                         store: LocalShopHistoryStore(),
-                                         settings: ShopHistoryService.Settings(
-                                            passageRadiusM: params.shopHistory.passageRadiusM,
-                                            searchRadiusM: params.shopHistory.searchRadiusM,
-                                            maxHorizontalAccuracyM:
-                                                params.shopHistory.maxHorizontalAccuracyM))
+        shopHistory = injectedShopHistory
+            ?? ShopHistoryService(provider: HotPepperShopCandidateProvider.configuredOrEmpty(),
+                                  store: LocalShopHistoryStore(),
+                                  settings: ShopHistoryService.Settings(
+                                    passageRadiusM: params.shopHistory.passageRadiusM,
+                                    searchRadiusM: params.shopHistory.searchRadiusM,
+                                    maxHorizontalAccuracyM:
+                                        params.shopHistory.maxHorizontalAccuracyM))
         home = HomeStore.load()
         speed = SpeedStore.load()
         lastSummary = SummaryStore.load()
@@ -162,9 +167,12 @@ final class WalkSessionController: ObservableObject {
         motion.onConnectionChange = { [weak self] connected in
             Task { @MainActor in self?.onHeadphoneConnectionChange(connected) }
         }
-        location.requestPermission()
-        // 起動時から取得しておく。ボタンを押した時に fix が無くて失敗するのを避ける
-        location.startForeground()
+        Task { await refreshShopHistoryRecords() }
+        if startLocationServices {
+            location.requestPermission()
+            // 起動時から取得しておく。ボタンを押した時に fix が無くて失敗するのを避ける
+            location.startForeground()
+        }
     }
 
     // MARK: - UI から呼ばれる操作
@@ -1480,11 +1488,17 @@ final class WalkSessionController: ObservableObject {
     }
 
     private func logShopPassages(_ updates: [ShopPassageUpdate]) {
+        guard !updates.isEmpty else { return }
         for update in updates {
             logToFile("shop_pass shop_id=\(update.shopID)"
                       + " first=\(update.isFirstPassage ? "yes" : "no")"
                       + " distance=\(String(format: "%.1f", update.distanceM))m")
         }
+        Task { await refreshShopHistoryRecords() }
+    }
+
+    func refreshShopHistoryRecords() async {
+        shopHistoryRecords = await shopHistory.currentHistory().records
     }
 
     /// 経路図の下地になる道。地図が無ければ空(経路と印だけの図になる)
