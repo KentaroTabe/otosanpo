@@ -4,9 +4,10 @@
 
 出発前に時間だけ決めれば、歩行中は短い効果音が普段通らない道への寄り道を提案する。
 時間が来たら音で知らせ、うなずきで帰路開始、首振りで延長。帰路は音が自宅へ導く。
-移動履歴は端末内にのみ保存し、外部へ送信しない。
-外へ出るのは地図を取得する時(散歩開始時の自動取得と画面のボタン)だけで、
-送るのは**その区画(約 5 km 角)の番号**のみ。揃っていれば通信しない
+移動履歴は端末内に保存する。
+周辺店舗候補を取得する時だけ、検索中心として現在地を Hot Pepper グルメサーチ API へ送る。
+地図を取得する時(散歩開始時の自動取得と画面のボタン)に送るのは
+**その区画(約 5 km 角)の番号**のみ。揃っていれば通信しない
 (→ [docs/12](docs/12_map_delivery.md))。
 
 > **試してくれる方へ: [docs/09_tester_guide.md](docs/09_tester_guide.md) を読んでください。**
@@ -104,6 +105,7 @@ project.yml              XcodeGen 定義(*.xcodeproj は生成物)
 
 - `Sources/Core/ShopHistory.swift`: 店舗データ、通過履歴、散歩単位の重複除外、通過判定。
 - `Sources/Services/ShopHistoryService.swift`: 店舗候補取得 protocol、空 provider、端末内 JSON 永続化、Core への橋渡し。
+- `Sources/Services/HotPepperShopCandidateProvider.swift`: Hot Pepper グルメサーチ API から店舗候補を取得する provider。
 - `Sources/App/WalkSessionController.swift`: 散歩開始時に店舗通過セッションを初期化し、位置更新中と散歩終了時の経路に店舗判定を接続。
 - `Sources/Core/AppParameters.swift` / `config/parameters.json`: 通過判定距離 `shop_history.passage_radius_m` を追加。初期値は 30 m。
 - `Tests/ShopHistoryTests.swift` / `Tests/ParametersFileTests.swift`: 店舗履歴ロジックと設定値のテストを追加。
@@ -124,7 +126,29 @@ project.yml              XcodeGen 定義(*.xcodeproj は生成物)
 別の散歩で再度通った場合は `passCount` を +1 し、`lastPassedAt` を更新する。初回だけ `firstPassedAt` と `lastPassedAt` が同じ日時になる。
 
 店舗候補の取得口は `ShopCandidateProviding` で分離している。
-現時点では `EmptyShopCandidateProvider` を接続しており、Hot Pepper API などへの本接続は行わない。
+API キーが設定されていれば `HotPepperShopCandidateProvider` が Hot Pepper グルメサーチ API から候補を取得する。
+候補取得時は、周辺検索のため現在地の緯度・経度を Hot Pepper グルメサーチ API へ送信する。
+API キーが未設定なら `EmptyShopCandidateProvider` に戻り、店舗候補取得は行わない。この場合も散歩、音声、帰宅誘導はそのまま動く。
+
+### Hot Pepper API キーの設定
+
+実キーはリポジトリにコミットしない。`Support/Signing.xcconfig` は `.gitignore` 済みなので、手元のこのファイルにだけ次を追加する。
+
+```xcconfig
+HOTPEPPER_API_KEY = your_api_key_here
+```
+
+`project.yml` から生成される `Info.plist` の `HotPepperAPIKey` にこの値が入り、アプリ起動時にキーが空でなければ Hot Pepper provider を使う。
+`$(HOTPEPPER_API_KEY)` のまま、または空文字の場合は未設定として扱う。
+
+### 実機で店舗候補取得を確認する
+
+1. `Support/Signing.xcconfig` に `DEVELOPMENT_TEAM` と `HOTPEPPER_API_KEY` を設定する。
+2. `xcodegen generate` を実行して `OtoSanpo.xcodeproj` を更新する。
+3. 実機にインストールし、位置情報を許可して散歩を開始する。
+4. 店舗の近くを通り、終了後に `field-logs` の `shop_pass shop_id=...` 行を確認する。
+
+API 通信が HTTP エラー、JSON デコードエラー、Hot Pepper レスポンス本文内のエラーで失敗しても、候補が空扱いになるだけで散歩は停止しない。
 
 ### テスト内容
 
@@ -137,7 +161,7 @@ project.yml              XcodeGen 定義(*.xcodeproj は生成物)
 
 ### 次に shop-map を実装するときに必要なこと
 
-- `ShopCandidateProviding` の実装を追加し、Hot Pepper API などから現在地周辺または経路沿いの候補店舗を返す。
+- 店舗履歴の表示 UI、散歩レシート、ランキングなどを追加する。
 - API の店舗ID、店名、緯度、経度、カテゴリを `Shop` に正規化する。
 - API 呼び出し頻度、キャッシュ、失敗時の扱いを `Services` 側に置き、Core の `ShopHistory` には候補配列だけ渡す。
 - MAP UI では `ShopHistory.records` を読めば、店舗データと通過履歴を結合した一覧・ピン表示に使える。

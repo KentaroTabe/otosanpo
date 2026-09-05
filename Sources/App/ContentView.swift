@@ -153,7 +153,7 @@ struct ContentView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        Text("送るのは取得する区画(約 5 km 角)の番号だけです。"
+                        Text("地図取得で送るのは取得する区画(約 5 km 角)の番号だけです。"
                              + "正確な位置・歩いた経路・自宅は送りません")
                             .font(.caption)
                             .foregroundStyle(.secondary)

@@ -99,6 +99,7 @@ actor ShopHistoryService {
 
     private var history: ShopHistory
     private var cachedRegions: [CachedRegion] = []
+    private var pendingRegions: [PendingRegion] = []
     private var sessions: [ShopHistorySessionID: SessionState] = [:]
 
     private struct SessionState: Sendable {
@@ -167,6 +168,11 @@ actor ShopHistoryService {
         if let pending = pendingCovering(position, in: session) {
             return await finishPending(pending, sessionID: sessionID)
         }
+        if let pending = pendingCovering(position, in: pendingRegions) {
+            session.pendingRegions.append(pending)
+            sessions[sessionID] = session
+            return await finishPending(pending, sessionID: sessionID)
+        }
 
         let region = SearchRegion(center: position, searchRadiusM: settings.searchRadiusM)
         let provider = provider
@@ -175,6 +181,7 @@ actor ShopHistoryService {
             try await provider.shops(near: position, searchRadiusM: radius)
         }
         let pending = PendingRegion(region: region, task: task)
+        pendingRegions.append(pending)
         session.pendingRegions.append(pending)
         sessions[sessionID] = session
         return await finishPending(pending, sessionID: sessionID)
@@ -207,6 +214,7 @@ actor ShopHistoryService {
                   let index = session.pendingRegions.firstIndex(where: { $0.region == pending.region })
             else { return [] }
             session.pendingRegions.remove(at: index)
+            pendingRegions.removeAll { $0.region == pending.region }
             cachedRegions.append(CachedRegion(region: pending.region, shops: shops))
             let updates = recordRoute(&session, fallbackDate: Date())
             sessions[sessionID] = session
@@ -214,6 +222,7 @@ actor ShopHistoryService {
         } catch {
             guard var session = sessions[sessionID] else { return [] }
             session.pendingRegions.removeAll { $0.region == pending.region }
+            pendingRegions.removeAll { $0.region == pending.region }
             sessions[sessionID] = session
             return []
         }
@@ -268,7 +277,12 @@ actor ShopHistoryService {
 
     private func pendingCovering(_ position: GeoPoint,
                                  in session: SessionState) -> PendingRegion? {
-        session.pendingRegions.first {
+        pendingCovering(position, in: session.pendingRegions)
+    }
+
+    private func pendingCovering(_ position: GeoPoint,
+                                 in pendingRegions: [PendingRegion]) -> PendingRegion? {
+        pendingRegions.first {
             $0.region.covers(position, passageRadiusM: settings.passageRadiusM)
         }
     }

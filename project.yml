@@ -57,18 +57,19 @@ targets:
         # App Store Connect は同じ番号を 2 度受け付けないので、2 回目の配信で弾かれる
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        HotPepperAPIKey: $(HOTPEPPER_API_KEY)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIBackgroundModes: [audio, location]
-        # **位置の履歴は送らない。** 地図の取得で外へ出るのは「取得する区画の番号」
-        # (約 5 km 角)だけで、これは利用者がボタンを押した時のみ(docs/12)
+        # 散歩履歴は端末内に保存する。店舗候補を取得する時だけ、周辺検索の中心として
+        # 現在地を Hot Pepper グルメサーチ API へ送る。
         NSLocationWhenInUseUsageDescription: >-
-          散歩中の現在地から、寄り道の提案と帰路の方向案内を行うために使用します。
-          位置の履歴は端末内にのみ保存され、外部に送信されません。
-          地図を取得する時だけ、その区画(約 5 km 角)の番号を配信元へ送ります。
+          散歩中の寄り道提案、帰路案内、周辺店舗候補の記録に現在地を使用します。
+          散歩履歴は端末内に保存します。
+          周辺店舗候補を取得する時は、検索中心として現在地を Hot Pepper グルメサーチ API へ送信します。
         NSLocationAlwaysAndWhenInUseUsageDescription: >-
           ポケットに入れたままでも案内を続けるため、バックグラウンドでも位置情報を使用します。
-          履歴は端末内にのみ保存されます。
+          散歩履歴は端末内に保存し、周辺店舗候補の取得時だけ現在地を Hot Pepper グルメサーチ API へ送信します。
         NSMotionUsageDescription: >-
           うなずき・首振りの応答を検出するため、AirPods のモーションデータを使用します。
         ITSAppUsesNonExemptEncryption: false

@@ -138,7 +138,7 @@ final class WalkSessionController: ObservableObject {
                               halfLifeM: params.route.visitHalfLifeM)
         detector = HeadGestureDetector(params: params.gesture)
         shadowDetector = HeadGestureDetector(params: params.gesture)
-        shopHistory = ShopHistoryService(provider: EmptyShopCandidateProvider(),
+        shopHistory = ShopHistoryService(provider: HotPepperShopCandidateProvider.configuredOrEmpty(),
                                          store: LocalShopHistoryStore(),
                                          settings: ShopHistoryService.Settings(
                                             passageRadiusM: params.shopHistory.passageRadiusM,
