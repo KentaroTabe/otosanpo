@@ -57,6 +57,28 @@ final class ShopHistoryServiceTests: XCTestCase {
         XCTAssertEqual(provider.nearRequests.count, 1)
     }
 
+    func testPendingRefreshCanBeSharedAcrossSessions() async {
+        let provider = DelayedProvider()
+        let service = ShopHistoryService(
+            provider: provider,
+            store: MemoryShopHistoryStore(),
+            settings: ShopHistoryService.Settings(passageRadiusM: 30,
+                                                  searchRadiusM: 300,
+                                                  maxHorizontalAccuracyM: 50))
+        let firstID = await service.startSession()
+        let secondID = await service.startSession()
+
+        async let first: [ShopPassageUpdate] = service.refreshCacheIfNeeded(around: origin,
+                                                                            sessionID: firstID)
+        async let second: [ShopPassageUpdate] = service.refreshCacheIfNeeded(around: origin,
+                                                                             sessionID: secondID)
+        await provider.waitForRequests(1)
+        provider.completeAll(with: [])
+        _ = await (first, second)
+
+        XCTAssertEqual(provider.nearRequests.count, 1)
+    }
+
     func testMovingNearCacheEdgeStartsAnotherFetch() async {
         let provider = LockedProvider()
         let service = ShopHistoryService(

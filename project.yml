@@ -57,6 +57,7 @@ targets:
         # App Store Connect は同じ番号を 2 度受け付けないので、2 回目の配信で弾かれる
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        HotPepperAPIKey: $(HOTPEPPER_API_KEY)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIBackgroundModes: [audio, location]
