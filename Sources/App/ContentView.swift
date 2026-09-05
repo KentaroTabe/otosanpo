@@ -93,6 +93,13 @@ struct ContentView: View {
                     }
                 }
 
+                Section("街の発見") {
+                    LabeledContent("通った店", value: "\(controller.shopHistoryRecords.count) 軒")
+                    NavigationLink("通った店をMAPで見る") {
+                        ShopMapView(records: controller.shopHistoryRecords)
+                    }
+                }
+
                 // 歩かずに符号と手応えを決めるための机上テスト。
                 // 姿勢(yaw)の系統は散歩 1 回を丸ごと潰した前科があるので、
                 // 角速度の系統は先にここで確かめる(docs/08)
