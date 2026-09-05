@@ -69,6 +69,9 @@ final class WalkSessionController: ObservableObject {
     private var lastBeacon: (relDeg: Double, at: Date)?
     /// 記録中の散歩。終了時に閉じて `lastSummary` へ移す
     private var summary: WalkSummary?
+    /// 散歩中に通った店舗の履歴。候補取得は Services の provider で後から差し替える
+    private let shopHistory: ShopHistoryService
+    private var shopHistorySessionTask: Task<ShopHistorySessionID, Never>?
     /// 進行中の誘導に振った番号。ログの行と経路図の印を突き合わせるために添える。
     /// **最初の 1 音が鳴った時に振る**(鳴らずに終わった誘導は番号を持たない)
     private var guidanceNumber: Int?
@@ -135,6 +138,13 @@ final class WalkSessionController: ObservableObject {
                               halfLifeM: params.route.visitHalfLifeM)
         detector = HeadGestureDetector(params: params.gesture)
         shadowDetector = HeadGestureDetector(params: params.gesture)
+        shopHistory = ShopHistoryService(provider: EmptyShopCandidateProvider(),
+                                         store: LocalShopHistoryStore(),
+                                         settings: ShopHistoryService.Settings(
+                                            passageRadiusM: params.shopHistory.passageRadiusM,
+                                            searchRadiusM: params.shopHistory.searchRadiusM,
+                                            maxHorizontalAccuracyM:
+                                                params.shopHistory.maxHorizontalAccuracyM))
         home = HomeStore.load()
         speed = SpeedStore.load()
         lastSummary = SummaryStore.load()
@@ -217,6 +227,8 @@ final class WalkSessionController: ObservableObject {
         target = nil
         guidanceTimer?.invalidate()
         summary = WalkSummary(startedAt: Date(), home: home)
+        let shopHistory = shopHistory
+        shopHistorySessionTask = Task { await shopHistory.startSession() }
         // **位置が確定したこの時点で、地図の選び直しが要るか見る。**
         // タイルがある端末だけ(初期化時は位置が無く、近傍の絞り込みも選択も
         // 位置なしで行っている。旅行先ではタイルのほうが現在地を覆うことがある)
@@ -863,6 +875,7 @@ final class WalkSessionController: ObservableObject {
             // 経路図の線。**間引きの基準は経路長と同じ**にして、図と距離が食い違わないようにする
             summary?.add(p, minSegmentM: params.budget.pathSegmentMinM,
                          maxPoints: params.summary.maxTrackPoints)
+            recordShopPassages(at: p, fix: fix, now: now)
         }
         if commuteLearning {
             grid.markExcluded(at: p)
@@ -1431,13 +1444,47 @@ final class WalkSessionController: ObservableObject {
     /// 記録を閉じて保存する。距離は計測側(GaitMetrics)の値をそのまま使う
     private func finishSummary() {
         guard var s = summary else { return }
-        s.finish(at: Date(), pathLengthM: walkMetrics.pathLengthM)
+        let finishedAt = Date()
+        finishShopPassages(now: finishedAt)
+        s.finish(at: finishedAt, pathLengthM: walkMetrics.pathLengthM)
         summary = nil
         guidanceNumber = nil
         lastSummary = s
         SummaryStore.save(s)
         log(String(format: "記録: %.0fm・%.0f 分・イベント %d 件",
                    s.pathLengthM, s.durationSec / 60, s.guidanceEvents.count))
+    }
+
+    private func recordShopPassages(at p: GeoPoint, fix: MotionFix, now: Date) {
+        let service = shopHistory
+        let sessionTask = shopHistorySessionTask
+        Task {
+            guard let sessionID = await sessionTask?.value else { return }
+            let updates = await service.recordPositionAndRefreshIfNeeded(
+                p,
+                sessionID: sessionID,
+                horizontalAccuracyM: fix.horizontalAccuracyM,
+                at: now)
+            logShopPassages(updates)
+        }
+    }
+
+    private func finishShopPassages(now: Date) {
+        let service = shopHistory
+        let sessionTask = shopHistorySessionTask
+        Task {
+            guard let sessionID = await sessionTask?.value else { return }
+            let updates = await service.finishSession(sessionID, fallbackDate: now)
+            logShopPassages(updates)
+        }
+    }
+
+    private func logShopPassages(_ updates: [ShopPassageUpdate]) {
+        for update in updates {
+            logToFile("shop_pass shop_id=\(update.shopID)"
+                      + " first=\(update.isFirstPassage ? "yes" : "no")"
+                      + " distance=\(String(format: "%.1f", update.distanceM))m")
+        }
     }
 
     /// 経路図の下地になる道。地図が無ければ空(経路と印だけの図になる)

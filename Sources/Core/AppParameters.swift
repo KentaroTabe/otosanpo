@@ -13,6 +13,7 @@ public struct AppParameters: Codable, Equatable {
     public var location: Location
     public var summary: Summary
     public var mapDownload: MapDownloadSettings
+    public var shopHistory: ShopHistorySettings
     public var greeting: Greeting
 
     public struct Session: Codable, Equatable {
@@ -171,6 +172,16 @@ public struct AppParameters: Codable, Equatable {
 
         /// 取得を出してよいか。空の設定を「機能なし」として扱う
         public var isConfigured: Bool { !baseUrl.isEmpty }
+    }
+
+    /// 散歩中に通った店舗の記録。店舗候補の取得自体は Services 側で差し替える。
+    public struct ShopHistorySettings: Codable, Equatable {
+        /// 店舗の前を通ったとみなす距離 [m]。初期値は 30 m。
+        public var passageRadiusM: Double
+        /// 店舗候補を取得する範囲 [m]。API の検索半径で、通過判定の 30 m とは分ける。
+        public var searchRadiusM: Double
+        /// 通過判定に使う fix の水平精度の上限 [m]。これより悪い位置では記録しない。
+        public var maxHorizontalAccuracyM: Double
     }
 
     /// 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない)

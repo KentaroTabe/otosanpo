@@ -98,6 +98,51 @@ scripts/                 setup / build / test / ログ取り込み / 再生
 project.yml              XcodeGen 定義(*.xcodeproj は生成物)
 ```
 
+## 店舗通過履歴の基盤(feature/shop-history)
+
+### 変更したファイル
+
+- `Sources/Core/ShopHistory.swift`: 店舗データ、通過履歴、散歩単位の重複除外、通過判定。
+- `Sources/Services/ShopHistoryService.swift`: 店舗候補取得 protocol、空 provider、端末内 JSON 永続化、Core への橋渡し。
+- `Sources/App/WalkSessionController.swift`: 散歩開始時に店舗通過セッションを初期化し、位置更新中と散歩終了時の経路に店舗判定を接続。
+- `Sources/Core/AppParameters.swift` / `config/parameters.json`: 通過判定距離 `shop_history.passage_radius_m` を追加。初期値は 30 m。
+- `Tests/ShopHistoryTests.swift` / `Tests/ParametersFileTests.swift`: 店舗履歴ロジックと設定値のテストを追加。
+
+### 新しく追加したデータ構造
+
+- `Shop`: 店舗ID、店名、緯度、経度、カテゴリを持つ店舗データ。
+- `ShopPassageHistory`: 店舗ID、初めて通った日時、最後に通った日時、通過回数を持つユーザー履歴。
+- `ShopHistory`: `shopsByID` と `historiesByShopID` を別々に保持する端末内アーカイブ。
+- `ShopPassageSession`: 1 回の散歩中にすでに数えた店舗IDを保持し、同じ散歩中の往復を 1 回にまとめる。
+- `ShopPassageUpdate`: 通過記録の更新結果。`isFirstPassage` で初回通過か判定できる。
+
+### 通過判定の仕組み
+
+散歩中は現在地と店舗座標の距離が `shop_history.passage_radius_m` 以下なら通過として扱う。
+散歩終了後は記録された経路の折れ線に対する最短距離で判定する。
+同じ店舗IDが同じ `ShopPassageSession` にすでに記録済みなら更新しないため、同じ散歩中に店の前を何度往復しても通過回数は 1 回だけ増える。
+別の散歩で再度通った場合は `passCount` を +1 し、`lastPassedAt` を更新する。初回だけ `firstPassedAt` と `lastPassedAt` が同じ日時になる。
+
+店舗候補の取得口は `ShopCandidateProviding` で分離している。
+現時点では `EmptyShopCandidateProvider` を接続しており、Hot Pepper API などへの本接続は行わない。
+
+### テスト内容
+
+- 初回通過で `Shop` と `ShopPassageHistory` が分離して保存され、`isFirstPassage` が true になること。
+- 別散歩で同じ店を再訪すると `passCount` が増え、初回日時を残したまま最終通過日時だけ更新されること。
+- 同じ散歩中の同じ店は 2 回目以降カウントされないこと。
+- 30 m の通過判定距離で、29 m の店は通過、31 m の店は対象外になること。
+- 散歩終了後の経路判定で、経路の折れ線から 30 m 以内の店だけ通過になること。
+- `config/parameters.json` の `shop_history.passage_radius_m` が実際にデコードされること。
+
+### 次に shop-map を実装するときに必要なこと
+
+- `ShopCandidateProviding` の実装を追加し、Hot Pepper API などから現在地周辺または経路沿いの候補店舗を返す。
+- API の店舗ID、店名、緯度、経度、カテゴリを `Shop` に正規化する。
+- API 呼び出し頻度、キャッシュ、失敗時の扱いを `Services` 側に置き、Core の `ShopHistory` には候補配列だけ渡す。
+- MAP UI では `ShopHistory.records` を読めば、店舗データと通過履歴を結合した一覧・ピン表示に使える。
+- 通過判定距離を調整したい場合は `config/parameters.json` の `shop_history.passage_radius_m` を変更する。
+
 ## 既知の制限(2026-08-21 時点)
 
 - **音はコード合成のサイン波。** デザインされた音源への差し替えは保留中
