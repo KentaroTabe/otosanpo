@@ -20,6 +20,8 @@ final class WalkSessionController: ObservableObject {
     @Published private(set) var lastSummary: WalkSummary?
     /// 累積した店舗通過履歴。MAP 画面は保存済み履歴だけを読む
     @Published private(set) var shopHistoryRecords: [ShopHistoryRecord] = []
+    /// 直近の散歩で見つけた店舗などの記録。散歩中は公開せず、終了後にだけ入る
+    @Published private(set) var lastDiscoverySummary: WalkDiscoverySummary?
     /// 操作が通らなかったことを画面で知らせる(nil で非表示)
     @Published var alertMessage: String?
     /// 出発の一言(nil で非表示)。**画面を見るのは開始の瞬間だけ**なので、ここに出す。
@@ -71,6 +73,7 @@ final class WalkSessionController: ObservableObject {
     private var lastBeacon: (relDeg: Double, at: Date)?
     /// 記録中の散歩。終了時に閉じて `lastSummary` へ移す
     private var summary: WalkSummary?
+    private var discoverySummary: WalkDiscoverySummary?
     /// 散歩中に通った店舗の履歴。候補取得は Services の provider で後から差し替える
     private let shopHistory: ShopHistoryService
     private var shopHistorySessionTask: Task<ShopHistorySessionID, Never>?
@@ -132,11 +135,14 @@ final class WalkSessionController: ObservableObject {
     private var promptTimer: Timer?
     private var timeUpTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
+    private let shouldStartLocationServices: Bool
 
     init(params: AppParameters,
          shopHistory injectedShopHistory: ShopHistoryService? = nil,
+         initialHome: GeoPoint? = nil,
          startLocationServices: Bool = true) {
         self.params = params
+        shouldStartLocationServices = startLocationServices
         durationMin = params.session.defaultDurationMin
         grid = GridStore.load(cellSizeM: params.route.cellSizeM,
                               halfLifeM: params.route.visitHalfLifeM)
@@ -150,9 +156,10 @@ final class WalkSessionController: ObservableObject {
                                     searchRadiusM: params.shopHistory.searchRadiusM,
                                     maxHorizontalAccuracyM:
                                         params.shopHistory.maxHorizontalAccuracyM))
-        home = HomeStore.load()
+        home = initialHome ?? HomeStore.load()
         speed = SpeedStore.load()
         lastSummary = SummaryStore.load()
+        lastDiscoverySummary = DiscoverySummaryStore.load()
         // 地図は手動ファイルとタイルの 2 系統から選ぶ(初期化時は位置が無く手動優先)
         reloadMap()
 
@@ -168,7 +175,7 @@ final class WalkSessionController: ObservableObject {
             Task { @MainActor in self?.onHeadphoneConnectionChange(connected) }
         }
         Task { await refreshShopHistoryRecords() }
-        if startLocationServices {
+        if shouldStartLocationServices {
             location.requestPermission()
             // 起動時から取得しておく。ボタンを押した時に fix が無くて失敗するのを避ける
             location.startForeground()
@@ -234,7 +241,10 @@ final class WalkSessionController: ObservableObject {
         guidanceNumber = nil
         target = nil
         guidanceTimer?.invalidate()
-        summary = WalkSummary(startedAt: Date(), home: home)
+        let startedAt = Date()
+        let walkID = WalkID()
+        summary = WalkSummary(walkID: walkID, startedAt: startedAt, home: home)
+        beginDiscoverySummary(walkID: walkID, startedAt: startedAt)
         let shopHistory = shopHistory
         shopHistorySessionTask = Task { await shopHistory.startSession() }
         // **位置が確定したこの時点で、地図の選び直しが要るか見る。**
@@ -249,10 +259,12 @@ final class WalkSessionController: ObservableObject {
             autoFetchTiles(around: p)
         }
         sessionEnd = Date().addingTimeInterval(durationMin * 60)
-        location.start()
-        // 未接続でも start する(後から装着された時点で更新が始まる)
-        motion.start()
-        pedometer.start()
+        if shouldStartLocationServices {
+            location.start()
+            // 未接続でも start する(後から装着された時点で更新が始まる)
+            motion.start()
+            pedometer.start()
+        }
         log("歩調: 利用可能=\(PedometerService.isAvailable ? "はい" : "いいえ")"
             + " 許可=\(pedometer.authorizationLabel)")
         log("ヘッドフォンモーション: 利用可能=\(motion.isAvailable ? "はい" : "いいえ")"
@@ -1484,17 +1496,38 @@ final class WalkSessionController: ObservableObject {
             guard let sessionID = await sessionTask?.value else { return }
             let updates = await service.finishSession(sessionID, fallbackDate: now)
             logShopPassages(updates)
+            await refreshShopHistoryRecords()
+            finishDiscoverySummary(at: now)
         }
     }
 
     private func logShopPassages(_ updates: [ShopPassageUpdate]) {
         guard !updates.isEmpty else { return }
+        recordDiscoveryUpdates(updates)
         for update in updates {
             logToFile("shop_pass shop_id=\(update.shopID)"
                       + " first=\(update.isFirstPassage ? "yes" : "no")"
+                      + " pass_number=\(update.passNumber)"
                       + " distance=\(String(format: "%.1f", update.distanceM))m")
         }
         Task { await refreshShopHistoryRecords() }
+    }
+
+    func recordDiscoveryUpdates(_ updates: [ShopPassageUpdate]) {
+        discoverySummary?.record(updates)
+    }
+
+    func beginDiscoverySummary(walkID: WalkID, startedAt: Date) {
+        discoverySummary = WalkDiscoverySummary(walkID: walkID, startedAt: startedAt)
+        lastDiscoverySummary = nil
+    }
+
+    func finishDiscoverySummary(at date: Date) {
+        guard var discovery = discoverySummary else { return }
+        discovery.finish(at: date)
+        discoverySummary = nil
+        lastDiscoverySummary = discovery
+        DiscoverySummaryStore.save(discovery)
     }
 
     func refreshShopHistoryRecords() async {

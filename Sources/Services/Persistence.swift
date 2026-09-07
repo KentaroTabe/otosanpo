@@ -73,6 +73,36 @@ enum SummaryStore {
     }
 }
 
+/// 直近の散歩で見つけたものの永続化。`WalkSummary` と同じライフサイクルで 1 件だけ残す。
+enum DiscoverySummaryStore {
+    static func fileURL() throws -> URL {
+        let dir = try FileManager.default.url(for: .applicationSupportDirectory,
+                                              in: .userDomainMask,
+                                              appropriateFor: nil, create: true)
+        return dir.appendingPathComponent("walk_discovery_summary.json")
+    }
+
+    static func load() -> WalkDiscoverySummary? {
+        guard let url = try? fileURL() else { return nil }
+        return load(from: url)
+    }
+
+    static func load(from url: URL) -> WalkDiscoverySummary? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(WalkDiscoverySummary.self, from: data)
+    }
+
+    static func save(_ s: WalkDiscoverySummary) {
+        guard let url = try? fileURL() else { return }
+        save(s, to: url)
+    }
+
+    static func save(_ s: WalkDiscoverySummary, to url: URL) {
+        guard let data = try? JSONEncoder().encode(s) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
 /// 自宅座標の永続化(UserDefaults)
 /// 経路データ(WalkMap)の読み込み。
 /// Documents に置かれたファイルを読むだけで、取得も生成も行わない。

@@ -338,6 +338,40 @@ final class ShopHistoryServiceTests: XCTestCase {
         XCTAssertEqual(history.historiesByShopID["a"]?.passCount, 2)
     }
 
+    func testPassNumberMatchesCumulativeShopHistoryCount() async {
+        let shop = Shop(shopID: "a", name: "店", latitude: origin.latitude,
+                        longitude: origin.longitude, category: "cafe")
+        let store = MemoryShopHistoryStore()
+        store.historyToLoad = ShopHistory(
+            shopsByID: ["a": shop],
+            historiesByShopID: [
+                "a": ShopPassageHistory(shopID: "a",
+                                        firstPassedAt: Date(timeIntervalSince1970: 1_000),
+                                        lastPassedAt: Date(timeIntervalSince1970: 2_000),
+                                        passCount: 3)
+            ])
+        let provider = LockedProvider()
+        provider.shopsToReturn = [shop]
+        let service = ShopHistoryService(
+            provider: provider,
+            store: store,
+            settings: ShopHistoryService.Settings(passageRadiusM: 30,
+                                                  searchRadiusM: 300,
+                                                  maxHorizontalAccuracyM: 50))
+
+        let sessionID = await service.startSession()
+        _ = await service.refreshCacheIfNeeded(around: origin, sessionID: sessionID)
+        let updates = await service.recordPosition(origin,
+                                                   sessionID: sessionID,
+                                                   horizontalAccuracyM: 10,
+                                                   at: Date(timeIntervalSince1970: 3_000))
+
+        XCTAssertEqual(updates.map(\.passNumber), [4])
+        let history = await service.currentHistory()
+        XCTAssertEqual(history.historiesByShopID["a"]?.passCount, 4)
+        XCTAssertEqual(history.records.map(\.shop.shopID), ["a"])
+    }
+
     func testLocalStoreRoundTripsHistory() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -477,7 +511,7 @@ private final class QueuedProvider: ShopCandidateProviding, @unchecked Sendable 
 
 private final class MemoryShopHistoryStore: ShopHistoryStoring, @unchecked Sendable {
     private let lock = NSLock()
-    private var history = ShopHistory()
+    var historyToLoad = ShopHistory()
     private var lockedSavedHistories: [ShopHistory] = []
 
     var savedHistories: [ShopHistory] {
@@ -485,12 +519,12 @@ private final class MemoryShopHistoryStore: ShopHistoryStoring, @unchecked Senda
     }
 
     func load() -> ShopHistory {
-        lock.withLock { history }
+        lock.withLock { historyToLoad }
     }
 
     func save(_ history: ShopHistory) {
         lock.withLock {
-            self.history = history
+            historyToLoad = history
             lockedSavedHistories.append(history)
         }
     }

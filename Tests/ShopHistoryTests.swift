@@ -21,7 +21,8 @@ final class ShopHistoryTests: XCTestCase {
 
         XCTAssertEqual(updates, [
             ShopPassageUpdate(shopID: "a", isFirstPassage: true,
-                              passedAt: now, distanceM: Geo.distanceM(origin, s.location))
+                              passedAt: now, distanceM: Geo.distanceM(origin, s.location),
+                              passNumber: 1)
         ])
         XCTAssertEqual(history.shopsByID["a"], s)
         XCTAssertEqual(history.historiesByShopID["a"],
@@ -43,6 +44,7 @@ final class ShopHistoryTests: XCTestCase {
                                              session: &secondSession, at: second, radiusM: 30)
 
         XCTAssertEqual(updates.map(\.isFirstPassage), [false])
+        XCTAssertEqual(updates.map(\.passNumber), [2])
         XCTAssertEqual(history.historiesByShopID["a"]?.firstPassedAt, first)
         XCTAssertEqual(history.historiesByShopID["a"]?.lastPassedAt, second)
         XCTAssertEqual(history.historiesByShopID["a"]?.passCount, 2)
