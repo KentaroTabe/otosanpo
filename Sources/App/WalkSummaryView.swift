@@ -10,12 +10,28 @@ struct WalkSummaryView: View {
     let summary: WalkSummary
     let marginM: Double
     let minSpanM: Double
+    let discoveredShops: [WalkReceiptShopItem]
+    let showsDiscoveredShops: Bool
     /// 下地の道を取り出す。地図の走査は重いので、図を開いた時に 1 回だけ呼ぶ
     let roadsProvider: (MapFrame) -> [RoadSegment]
 
     @State private var roads: [RoadSegment] = []
 
     private var frame: MapFrame? { summary.frame(marginM: marginM, minSpanM: minSpanM) }
+
+    init(summary: WalkSummary,
+         marginM: Double,
+         minSpanM: Double,
+         discoveredShops: [WalkReceiptShopItem] = [],
+         showsDiscoveredShops: Bool = false,
+         roadsProvider: @escaping (MapFrame) -> [RoadSegment]) {
+        self.summary = summary
+        self.marginM = marginM
+        self.minSpanM = minSpanM
+        self.discoveredShops = discoveredShops
+        self.showsDiscoveredShops = showsDiscoveredShops
+        self.roadsProvider = roadsProvider
+    }
 
     var body: some View {
         List {
@@ -42,6 +58,22 @@ struct WalkSummaryView: View {
                     Text("経路が記録されていません")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+            }
+
+            if showsDiscoveredShops {
+                if !discoveredShops.isEmpty {
+                    Section("見つけた店") {
+                        ForEach(discoveredShops) { shop in
+                            shopRow(shop)
+                        }
+                    }
+                } else {
+                    Section("見つけた店") {
+                        Text("今日は新しい店との出会いはありませんでした")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -146,6 +178,24 @@ struct WalkSummaryView: View {
                     .foregroundStyle(.secondary)
             }
             Text(detail(e)).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func shopRow(_ shop: WalkReceiptShopItem) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(shop.name)
+                    .font(.subheadline)
+                if let category = shop.category, !category.isEmpty {
+                    Text(category)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Text(shop.passageLabel)
+                .font(.caption.bold())
+                .foregroundStyle(shop.isNew ? Color.accentColor : Color.secondary)
         }
     }
 
