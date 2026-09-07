@@ -91,6 +91,30 @@ struct ContentView: View {
                                             roadsProvider: { controller.roadSegments(in: $0) })
                         }
                     }
+
+                    if let discovery = controller.lastDiscoverySummary,
+                       discovery.walkID == s.walkID {
+                        Section("今日の音さんぽ") {
+                            LabeledContent("時間", value: String(format: "%.0f 分", s.durationSec / 60))
+                            LabeledContent("距離", value: String(format: "%.1f km", s.pathLengthM / 1_000))
+                        }
+                        Section("街の発見") {
+                            LabeledContent("NEW", value: "\(discovery.newShopCount) 軒")
+                            LabeledContent("通った店", value: "\(discovery.shopCount) 軒")
+                        }
+                        Section("今日見つけた店") {
+                            let shops = shopsByID
+                            if discovery.shopDiscoveries.isEmpty {
+                                Text("すれ違った店はありません")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(discovery.shopDiscoveries, id: \.shopID) { item in
+                                    discoveryRow(item, shop: shops[item.shopID])
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Section("街の発見") {
@@ -231,6 +255,28 @@ struct ContentView: View {
         case .promptingReturn: "帰りますか?(うなずき=帰る / 首振り=延長)"
         case .returning: "帰路(ビーコン案内中)"
         case .arrived: "到着"
+        }
+    }
+
+    private var shopsByID: [String: Shop] {
+        Dictionary(uniqueKeysWithValues: controller.shopHistoryRecords.map { ($0.shop.shopID, $0.shop) })
+    }
+
+    private func discoveryRow(_ discovery: WalkShopDiscovery, shop: Shop?) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(shop?.name ?? discovery.shopID)
+                    .font(.subheadline)
+                if let category = shop?.category, !category.isEmpty {
+                    Text(category)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Text(discovery.isNew ? "NEW" : "\(discovery.passNumber)回目")
+                .font(.caption.bold())
+                .foregroundStyle(discovery.isNew ? Color.accentColor : Color.secondary)
         }
     }
 }

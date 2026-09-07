@@ -73,6 +73,19 @@ public struct ShopPassageUpdate: Equatable, Sendable {
     public var isFirstPassage: Bool
     public var passedAt: Date
     public var distanceM: Double
+    public var passNumber: Int
+
+    public init(shopID: String,
+                isFirstPassage: Bool,
+                passedAt: Date,
+                distanceM: Double,
+                passNumber: Int) {
+        self.shopID = shopID
+        self.isFirstPassage = isFirstPassage
+        self.passedAt = passedAt
+        self.distanceM = distanceM
+        self.passNumber = passNumber
+    }
 }
 
 /// 位置と、その位置を実際に通った時刻。終了時の一括判定でも通過時刻を近似する。
@@ -226,25 +239,29 @@ public struct ShopHistory: Codable, Equatable, Sendable {
 
                 session.markPassed(shop.shopID)
                 shopsByID[shop.shopID] = shop
-                let isFirstPassage = historiesByShopID[shop.shopID] == nil
                 let date = passage.date
 
                 if var history = historiesByShopID[shop.shopID] {
                     history.lastPassedAt = date
                     history.passCount += 1
                     historiesByShopID[shop.shopID] = history
+                    updates.append(ShopPassageUpdate(shopID: shop.shopID,
+                                                     isFirstPassage: false,
+                                                     passedAt: date,
+                                                     distanceM: passage.distanceM,
+                                                     passNumber: history.passCount))
                 } else {
                     historiesByShopID[shop.shopID] = ShopPassageHistory(
                         shopID: shop.shopID,
                         firstPassedAt: date,
                         lastPassedAt: date,
                         passCount: 1)
+                    updates.append(ShopPassageUpdate(shopID: shop.shopID,
+                                                     isFirstPassage: true,
+                                                     passedAt: date,
+                                                     distanceM: passage.distanceM,
+                                                     passNumber: 1))
                 }
-
-                updates.append(ShopPassageUpdate(shopID: shop.shopID,
-                                                 isFirstPassage: isFirstPassage,
-                                                 passedAt: date,
-                                                 distanceM: passage.distanceM))
             }
     }
 }

@@ -59,10 +59,79 @@ final class ShopHistoryControllerTests: XCTestCase {
         XCTAssertEqual(controller.shopHistoryRecords.first?.history.passCount, 1)
     }
 
+    func testDiscoveryUpdatesAreNotPublishedBeforeWalkFinishes() async throws {
+        let service = ShopHistoryService(provider: EmptyShopCandidateProvider(),
+                                         store: MemoryStore())
+        let controller = try makeController(service: service)
+
+        controller.beginDiscoverySummary(walkID: WalkID(), startedAt: Date(timeIntervalSince1970: 900))
+        controller.recordDiscoveryUpdates([
+            ShopPassageUpdate(shopID: "a",
+                              isFirstPassage: true,
+                              passedAt: Date(timeIntervalSince1970: 1_000),
+                              distanceM: 12,
+                              passNumber: 1)
+        ])
+
+        XCTAssertNil(controller.lastDiscoverySummary)
+    }
+
+    func testWalkDiscoverySummaryIsFinalizedAfterWalkEnds() async throws {
+        let service = ShopHistoryService(provider: EmptyShopCandidateProvider(),
+                                         store: MemoryStore())
+        let controller = try makeController(service: service)
+
+        controller.beginDiscoverySummary(walkID: WalkID(), startedAt: Date(timeIntervalSince1970: 900))
+        controller.recordDiscoveryUpdates([
+            ShopPassageUpdate(shopID: "a",
+                              isFirstPassage: true,
+                              passedAt: Date(timeIntervalSince1970: 1_000),
+                              distanceM: 12,
+                              passNumber: 1)
+        ])
+        controller.finishDiscoverySummary(at: Date(timeIntervalSince1970: 1_600))
+
+        XCTAssertEqual(controller.lastDiscoverySummary?.shopDiscoveries.map(\.shopID), ["a"])
+        XCTAssertEqual(controller.lastDiscoverySummary?.newShopCount, 1)
+        XCTAssertNotNil(controller.lastDiscoverySummary?.endedAt)
+    }
+
+    func testStartingAnotherWalkDoesNotMixPreviousDiscoveryData() async throws {
+        let service = ShopHistoryService(provider: EmptyShopCandidateProvider(),
+                                         store: MemoryStore())
+        let controller = try makeController(service: service)
+
+        controller.beginDiscoverySummary(walkID: WalkID(), startedAt: Date(timeIntervalSince1970: 900))
+        controller.recordDiscoveryUpdates([
+            ShopPassageUpdate(shopID: "first",
+                              isFirstPassage: true,
+                              passedAt: Date(timeIntervalSince1970: 1_000),
+                              distanceM: 12,
+                              passNumber: 1)
+        ])
+        controller.finishDiscoverySummary(at: Date(timeIntervalSince1970: 1_600))
+        let firstWalkID = controller.lastDiscoverySummary?.walkID
+
+        controller.beginDiscoverySummary(walkID: WalkID(), startedAt: Date(timeIntervalSince1970: 1_900))
+        XCTAssertNil(controller.lastDiscoverySummary)
+        controller.recordDiscoveryUpdates([
+            ShopPassageUpdate(shopID: "second",
+                              isFirstPassage: true,
+                              passedAt: Date(timeIntervalSince1970: 2_000),
+                              distanceM: 9,
+                              passNumber: 1)
+        ])
+        controller.finishDiscoverySummary(at: Date(timeIntervalSince1970: 2_600))
+
+        XCTAssertEqual(controller.lastDiscoverySummary?.shopDiscoveries.map(\.shopID), ["second"])
+        XCTAssertNotEqual(controller.lastDiscoverySummary?.walkID, firstWalkID)
+    }
+
     private func makeController(service: ShopHistoryService) throws -> WalkSessionController {
         let params = try ConfigLoader.load(from: repositoryParametersURL())
         return WalkSessionController(params: params,
                                      shopHistory: service,
+                                     initialHome: origin,
                                      startLocationServices: false)
     }
 

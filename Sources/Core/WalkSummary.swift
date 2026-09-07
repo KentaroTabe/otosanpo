@@ -83,6 +83,7 @@ public struct WalkSummary: Codable, Equatable {
 
     public private(set) var startedAt: Date
     public private(set) var endedAt: Date?
+    public private(set) var walkID: WalkID
     /// 出発時の自宅。図に印を置き、枠にも含める
     public private(set) var home: GeoPoint?
     public private(set) var track: [GeoPoint] = []
@@ -94,9 +95,36 @@ public struct WalkSummary: Codable, Equatable {
     private var thinScale: Double = 1
     private var guidanceCount = 0
 
-    public init(startedAt: Date, home: GeoPoint?) {
+    public init(walkID: WalkID = WalkID(), startedAt: Date, home: GeoPoint?) {
+        self.walkID = walkID
         self.startedAt = startedAt
         self.home = home
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case startedAt
+        case endedAt
+        case walkID
+        case home
+        case track
+        case events
+        case pathLengthM
+        case thinScale
+        case guidanceCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        walkID = try c.decodeIfPresent(WalkID.self, forKey: .walkID) ?? WalkID()
+        startedAt = try c.decode(Date.self, forKey: .startedAt)
+        endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
+        home = try c.decodeIfPresent(GeoPoint.self, forKey: .home)
+        track = try c.decodeIfPresent([GeoPoint].self, forKey: .track) ?? []
+        events = try c.decodeIfPresent([Event].self, forKey: .events) ?? []
+        pathLengthM = try c.decodeIfPresent(Double.self, forKey: .pathLengthM) ?? 0
+        thinScale = try c.decodeIfPresent(Double.self, forKey: .thinScale) ?? 1
+        guidanceCount = try c.decodeIfPresent(Int.self, forKey: .guidanceCount)
+            ?? events.compactMap(\.number).max() ?? 0
     }
 
     /// 位置更新を経路に足す。`minSegmentM` 未満の動きは GPS の揺れとして捨てる
