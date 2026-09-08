@@ -10,11 +10,36 @@ final class MusicSpotTests: XCTestCase {
     private let origin = GeoPoint(latitude: 35.0, longitude: 137.0)
 
     private func params(target: Double = 80, max: Double = 100,
-                        reached: Double = 15, step: Double = 30) -> MusicSpot.Params {
+                        reached: Double = 15, step: Double = 30,
+                        tolerance: Double = 0.001) -> MusicSpot.Params {
         MusicSpot.Params(
             maxDistanceM: max, targetDistanceM: target, reachedM: reached,
-            bearingStepDeg: step,
+            bearingStepDeg: step, sameDistanceToleranceM: tolerance,
             gainNear: 0.9, gainFar: 0.25, nearDistanceM: 15, farDistanceM: 100)
+    }
+
+    /// **同点の許容は設定で効く。**
+    ///
+    /// 許容より小さい差は同点として先頭を残し、大きい差なら後続へ乗り換える。
+    /// これが 0 だと、同点の決まり方が浮動小数の誤差で決まる(2026-09-09 に踏んだ)
+    func testTheSameDistanceToleranceDecidesWhoWins() {
+        // 誤差 10 m の候補を先頭に、そこから 0.5 mm / 2 mm だけ良い候補を続ける
+        let base = Geo.destination(from: origin, bearingDeg: 0, distanceM: 70)
+        let slightlyBetter = Geo.destination(from: origin, bearingDeg: 90,
+                                             distanceM: 70 + 0.0005)
+        let clearlyBetter = Geo.destination(from: origin, bearingDeg: 180, distanceM: 70 + 0.002)
+
+        let p = params(target: 80, tolerance: 0.001)
+        // 0.5 mm 差は同点 → 先頭が残る
+        let tied = MusicSpot.choose(from: [base, slightlyBetter], start: origin, p: p)
+        XCTAssertEqual(tied?.center.latitude ?? 0, base.latitude, accuracy: 1e-9)
+        // 2 mm 差なら乗り換える
+        let better = MusicSpot.choose(from: [base, clearlyBetter], start: origin, p: p)
+        XCTAssertEqual(better?.center.latitude ?? 0, clearlyBetter.latitude, accuracy: 1e-9)
+        // 許容を広げれば 2 mm 差も同点になる
+        let wide = MusicSpot.choose(from: [base, clearlyBetter], start: origin,
+                                    p: params(target: 80, tolerance: 0.01))
+        XCTAssertEqual(wide?.center.latitude ?? 0, base.latitude, accuracy: 1e-9)
     }
 
     /// 刻みが 0 以下なら候補を作らない。**既定値で埋めない**(設定の誤りに気づけなくなる)

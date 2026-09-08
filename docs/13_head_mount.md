@@ -101,6 +101,7 @@ experiment: {                    // ここに enabled は無い。スイッチ�
   music_spot_max_distance_m: 100,    // 上限。これを超える所には置かない
   music_spot_reached_m: 15,          // これより近づいたら着いたとして止める
   music_spot_bearing_step_deg: 30,   // 候補を探す方位の刻み
+  music_spot_same_distance_tolerance_m: 0.001, // これ未満の差は同点(触る必要はない)
   music_spot_gain_near: 0.9,         // 音量の範囲と、
   music_spot_gain_far: 0.25,         //   それが最大・最小になる距離
   music_spot_near_distance_m: 15,

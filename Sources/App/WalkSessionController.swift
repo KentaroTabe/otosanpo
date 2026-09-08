@@ -1235,13 +1235,22 @@ final class WalkSessionController: ObservableObject {
             stopMusicSpot("着いた")
             return
         }
-        // 基準はビーコンや誘導と同じ resolver。頭部固定が効いていれば首の向きに追従する
+        // 基準はビーコンや誘導と同じ resolver。頭部固定が効いていれば首の向きに追従する。
+        // **基準が取れなくても音量は更新する** — 距離は方位の有無と関係なく変わるので、
+        // 早期に return すると近づいても音が大きくならない(2026-09-09 の検証で指摘)。
+        // 向きだけ中央へ退避させる
         let travel = currentTravel(location.motionFix())
-        guard let reference = placementReference(travel) else { return }
-        let placed = spot.placement(from: p, referenceBearingDeg: reference.deg, p: sp)
-        synth?.setMusicPlacement(relativeBearingDeg: placed.relDeg, gain: placed.gain)
-        logToFile(String(format: "音楽 距離=%.0fm 向き=%+.0f° 音量=%.2f 基準=%@",
-                         placed.distanceM, placed.relDeg, placed.gain, reference.source))
+        let reference = placementReference(travel)
+        let placed = spot.placement(from: p,
+                                    referenceBearingDeg: reference?.deg
+                                        ?? Geo.bearingDeg(from: p, to: spot.center),
+                                    p: sp)
+        synth?.setMusicPlacement(relativeBearingDeg: reference == nil ? 0 : placed.relDeg,
+                                 gain: placed.gain)
+        logToFile(String(format: "音楽 距離=%.0fm 向き=%@ 音量=%.2f 基準=%@",
+                         placed.distanceM,
+                         reference == nil ? "中央" : String(format: "%+.0f°", placed.relDeg),
+                         placed.gain, reference?.source ?? "なし"))
     }
 
     private func stopMusicSpot(_ reason: String) {
@@ -1303,7 +1312,17 @@ final class WalkSessionController: ObservableObject {
            now.timeIntervalSince(last) < params.experiment.validityPulseSec { return }
         let resumed = lastValidityPulseAt == nil
         lastValidityPulseAt = now
-        synth?.play(.validityPulse, gain: params.experiment.validityPulseGain)
+        // **鳴らせなかった時に「再生」と書かない。** 音が出ていないのに記録だけ残ると、
+        // 「鳴っていたはず」の時刻が嘘になる(2026-09-09 の検証で指摘)
+        guard let synth else {
+            logToFile("有効性パルス 再生失敗(音声エンジンがありません)")
+            return
+        }
+        synth.play(.validityPulse, gain: params.experiment.validityPulseGain)
+        guard synth.isRunning else {
+            logToFile("有効性パルス 再生失敗(音声エンジンが停止しています)")
+            return
+        }
         // **鳴らしたことを毎回残す。** 間隔があるので埋まらないし、
         // 「鳴っていたはずの時刻」を後から数えられる
         logToFile(resumed ? "有効性パルス 再生(再開・使用可能になった)" : "有効性パルス 再生")

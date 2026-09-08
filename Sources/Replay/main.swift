@@ -1117,8 +1117,10 @@ if headSamples.isEmpty {
         if noCourse > 0 { missing.append("course= が \(noCourse) 件") }
         print("  ※ 不完全な入力: fix \(sortedFixes.count) 件のうち "
               + "\(missing.joined(separator: " / ")) 欠けています。")
-        print("     その区間は course なしとして扱われ、**学習も検疫も進みません**。"
-              + "下の数字は実機より低く出ます")
+        print("     その区間は course なしとして扱われ、**学習も検疫も進みません**。")
+        print("     下の数字は実機と食い違います。**高く出ることも低く出ることもあります** —")
+        print("     欠けたのが「合っていた区間」なら低く、「ずれていた区間」なら"
+              + "退避を再現できず高く出ます")
     }
     func rawCourse(at t: Date) -> Double? {
         // t 以下で最も新しい fix を二分探索で拾う

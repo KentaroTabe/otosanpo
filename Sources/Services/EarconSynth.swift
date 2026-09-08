@@ -255,9 +255,12 @@ final class EarconSynth {
     private func recover(reason: String) {
         guard !engine.isRunning else { return }
         // 再起動すると再生位置は失われる。**勝手に鳴らし直さない**
-        // (「一度だけ鳴る」という約束を、こちらの都合で破らない)
+        // (「一度だけ鳴る」という約束を、こちらの都合で破らない)。
+        // **旗を降ろすだけでは足りない** — 予約済みの音源はノードに残るので、
+        // stop() で明示的に解除しないと再開しない保証が無い(2026-09-09 の検証で指摘)
         let wasPlayingMusic = isMusicPlaying
         isMusicPlaying = false
+        if wasPlayingMusic { musicPlayer.stop() }
         do {
             try Self.configureSession()
             connectGraph()

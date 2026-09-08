@@ -27,6 +27,13 @@ public struct MusicSpot: Equatable {
         public var reachedM: Double
         /// 候補を探す方位の刻み [deg]
         public var bearingStepDeg: Double
+        /// 距離の差がこれ未満なら「同じ距離」とみなす [m]。
+        ///
+        /// `Geo.destination` は平面近似、`Geo.distanceM` は haversine なので、
+        /// 同じ距離を指定して往復させても方位によってごく小さな差が出る。
+        /// **これが 0 だと、同点の決まり方が浮動小数の誤差で決まる**(2026-09-09 に踏んだ)。
+        /// 触る必要のある値ではないが、**候補の選ばれ方を変える閾値**なので設定に置く
+        public var sameDistanceToleranceM: Double
         /// 音量の範囲 [0..1] と、それが最大・最小になる距離 [m]。
         /// 写像はビーコンと同じもの(`BeaconRhythm.gain`)を使う
         public var gainNear: Double
@@ -35,12 +42,14 @@ public struct MusicSpot: Equatable {
         public var farDistanceM: Double
 
         public init(maxDistanceM: Double, targetDistanceM: Double, reachedM: Double,
-                    bearingStepDeg: Double, gainNear: Double, gainFar: Double,
+                    bearingStepDeg: Double, sameDistanceToleranceM: Double,
+                    gainNear: Double, gainFar: Double,
                     nearDistanceM: Double, farDistanceM: Double) {
             self.maxDistanceM = maxDistanceM
             self.targetDistanceM = targetDistanceM
             self.reachedM = reachedM
             self.bearingStepDeg = bearingStepDeg
+            self.sameDistanceToleranceM = sameDistanceToleranceM
             self.gainNear = gainNear
             self.gainFar = gainFar
             self.nearDistanceM = nearDistanceM
@@ -82,22 +91,13 @@ public struct MusicSpot: Equatable {
             let d = Geo.distanceM(start, c)
             guard d <= p.maxDistanceM else { continue }
             let error = abs(d - p.targetDistanceM)
-            // 差がミリメートル未満なら同点とみなし、**最初のものを残す**(= 並び順で決まる)
-            if best == nil || error < best!.error - Self.sameDistanceToleranceM {
+            // 差がこの許容より小さければ同点とみなし、**最初のものを残す**(= 並び順で決まる)
+            if best == nil || error < best!.error - p.sameDistanceToleranceM {
                 best = (c, error)
             }
         }
         return best.map { MusicSpot(center: $0.point) }
     }
-
-    /// 距離の差がこれ未満なら「同じ距離」とみなす [m]。
-    ///
-    /// **調整する値ではないので設定に出さない。** `Geo.destination` は平面近似、
-    /// `Geo.distanceM` は haversine で、同じ距離を指定して往復させても
-    /// 方位によってミリメートル未満の差が出る。それを同点として扱うための単位の下限で、
-    /// ここを動かしても体験は変わらない(動かせるようにすると、意味のない旋回を招く)。
-    /// **これを外すと、同点の決まり方が浮動小数の誤差で決まる**(2026-09-09 に踏んだ)
-    private static let sameDistanceToleranceM = 0.001
 
     /// 聴取者から見た**畳まない**相対方位と、距離から決めた音量。
     ///
