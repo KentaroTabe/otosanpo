@@ -113,10 +113,14 @@ final class ToneDirectionalityTests: XCTestCase {
     /// ここが守るのは「実験の値がうっかり配布物へ混ざらないこと」。
     /// **実験するときは 5 つとも変える**(片方だけ変えると機種差になる)。
     /// 値を上げて配ると決めた時は、この検査の期待値も一緒に更新する
-    func testShippedTonesAreUniformSoPlatformsMatch() throws {
-        let p = try ConfigLoader.load(from: URL(fileURLWithPath: #filePath)
+    private func shippedConfig() throws -> AppParameters {
+        try ConfigLoader.load(from: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("config/parameters.json"))
+    }
+
+    func testShippedTonesAreUniformSoPlatformsMatch() throws {
+        let p = try shippedConfig()
         let tones = [("提案音", p.audio.tones.suggestion),
                      ("時間到来", p.audio.tones.timeUpPrompt),
                      ("確認音", p.audio.tones.returnAck),
@@ -127,5 +131,52 @@ final class ToneDirectionalityTests: XCTestCase {
             XCTAssertEqual(tone.attackRatio, 0.5, accuracy: 1e-9,
                            "\(name): 配る値は配布版と同じ左右対称の窓のはず")
         }
+    }
+
+    /// **実験のスイッチはコミットされた設定で切れていること**(2026-09-08)。
+    ///
+    /// 倍音とアタックは「散歩の前提条件」に昇格したが、**実験ビルドだけ**に載せる
+    /// (利用者判断)。スイッチは `head_mount.enabled` ただ 1 つで、
+    /// これが false なら音も挙動も配布版とまったく同じになる。
+    ///
+    /// 前回は判断待ちの値が Android の APK にだけ焼き込まれて配布版と違う音になった。
+    /// **その経路をここで塞ぐ** — 実験のために true にしたまま
+    /// コミットすれば、この検査が落ちる
+    func testTheExperimentSwitchIsOffInTheShippedConfig() throws {
+        let p = try shippedConfig()
+        XCTAssertFalse(p.headMount.enabled,
+                       "実験のスイッチを true のままコミットしてはいけない"
+                       + "(有効性パルスと実験用の音色が配布物に載る)")
+    }
+
+    /// 実験用の音色は**方向を担う音にだけ**載る。
+    /// 周波数・長さ・間隔は元のまま(音の意味を変えず、手がかりだけ足す)
+    func testExperimentToneOverlayKeepsThePitchAndOnlyChangesTheCues() throws {
+        let p = try shippedConfig()
+        let base = p.audio.tones.homeBeacon
+        let rich = p.experiment.applied(to: base)
+        XCTAssertEqual(rich.freqsHz, base.freqsHz, "音程は変えない")
+        XCTAssertEqual(rich.blipSec, base.blipSec, accuracy: 1e-9, "長さは変えない")
+        XCTAssertEqual(rich.gapSec, base.gapSec, accuracy: 1e-9, "間隔は変えない")
+        XCTAssertEqual(rich.harmonics, p.experiment.directionalHarmonics)
+        XCTAssertEqual(rich.attackRatio, p.experiment.directionalAttackRatio, accuracy: 1e-9)
+        XCTAssertGreaterThan(rich.harmonics, base.harmonics,
+                             "実験の値は配布版より倍音が多いはず(そうでなければ実験にならない)")
+        XCTAssertLessThan(rich.attackRatio, base.attackRatio,
+                          "実験の値は配布版より立ち上がりが鋭いはず")
+    }
+
+    /// 上書きした音が**実際に高域を持つ**ことまで確かめる。
+    /// 設定値を読み替えただけで、音が変わっていなければ意味が無い
+    func testExperimentToneActuallyProducesTheILDBand() throws {
+        let p = try shippedConfig()
+        let sr = 44100.0
+        let plain = ToneRenderer.samples(p.audio.tones.homeBeacon, sampleRate: sr, gain: 1)
+        let rich = ToneRenderer.samples(p.experiment.applied(to: p.audio.tones.homeBeacon),
+                                        sampleRate: sr, gain: 1)
+        XCTAssertLessThan(highBandRatio(plain, sampleRate: sr, above: 1500), 0.05,
+                          "配布版のビーコンは純音で高域を持たない")
+        XCTAssertGreaterThan(highBandRatio(rich, sampleRate: sr, above: 1500), 0.08,
+                             "実験用の値で 1.5kHz 超の成分が出ていない")
     }
 }

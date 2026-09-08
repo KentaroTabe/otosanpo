@@ -109,7 +109,27 @@
     "offset_min_samples": 200,
     "offset_half_life_sec": 300,
     "offset_min_concentration": 0.8,
-    "log_interval_sec": 1
+    "log_interval_sec": 1,
+    "stale_sec": 1.0
+  },
+  "experiment": {
+    "validity_pulse_sec": 30,
+    "validity_pulse_gain": 0.35,
+    "validity_pulse_tone": {
+      "freqs_hz": [
+        2093.0,
+        2093.0
+      ],
+      "blip_sec": 0.035,
+      "gap_sec": 0.05,
+      "noise_mix": 0.0,
+      "harmonics": 1,
+      "harmonic_decay": 0.7,
+      "attack_ratio": 0.5
+    },
+    "directional_harmonics": 4,
+    "directional_harmonic_decay": 0.7,
+    "directional_attack_ratio": 0.05
   },
   "gesture": {
     "nod_pitch_threshold_deg": 8,

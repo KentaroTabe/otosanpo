@@ -34,7 +34,12 @@ final class EarconSynth {
 
     var isRunning: Bool { engine.isRunning }
 
-    init(audio: AppParameters.Audio) throws {
+    /// - Parameters:
+    ///   - experiment: 実験装置を着けた時だけ使う設定(音色の差し替えと有効性パルス)
+    ///   - experimentActive: `head_mount.enabled`。**スイッチはこれ 1 つ**(→ AppParameters.Experiment)。
+    ///     false なら音は配布版とまったく同じで、有効性パルスの音は作られもしない
+    init(audio: AppParameters.Audio, experiment: AppParameters.Experiment,
+         experimentActive: Bool) throws {
         // 3D 音響(HRTF)は **モノラル入力にしか効かない**。ステレオのままでは
         // AVAudioEnvironmentNode が定位を付けず、黙って素通りする
         guard let mono = AVAudioFormat(standardFormatWithSampleRate: audio.sampleRate, channels: 1),
@@ -59,15 +64,29 @@ final class EarconSynth {
         let format = mono
         let gain = audio.earconGain
         let lead = audio.earconLeadSilenceSec
-        buffers[.suggestion] = Self.render(audio.tones.suggestion, format: format, gain: gain, leadSilenceSec: lead)
+        // **方向を担う 2 種だけ**に実験用の音色(倍音とアタック)を載せる。
+        // 曲がり角の誘導もこの 2 種を使う(WalkMachine.guidanceEarcon)ので、
+        // 方向を持つ音はこれで全部。時間到来・確認音・到着は方向を持たないので触らない
+        // — 無関係な音色変更を実験に混ぜないため(2026-09-08 合議)
+        let suggestionTone = experimentActive
+            ? experiment.applied(to: audio.tones.suggestion) : audio.tones.suggestion
+        let beaconTone = experimentActive
+            ? experiment.applied(to: audio.tones.homeBeacon) : audio.tones.homeBeacon
+        buffers[.suggestion] = Self.render(suggestionTone, format: format, gain: gain, leadSilenceSec: lead)
         buffers[.timeUpPrompt] = Self.render(audio.tones.timeUpPrompt, format: format, gain: gain, leadSilenceSec: lead)
         buffers[.returnAck] = Self.render(audio.tones.returnAck, format: format, gain: gain, leadSilenceSec: lead)
-        buffers[.homeBeacon] = Self.render(audio.tones.homeBeacon, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.homeBeacon] = Self.render(beaconTone, format: format, gain: gain, leadSilenceSec: lead)
         buffers[.arrival] = Self.render(audio.tones.arrival, format: format, gain: gain, leadSilenceSec: lead)
+        // 有効性パルスは**実験のときだけ作る**。作らなければ play が黙って何もしないので、
+        // 配布版で鳴る経路が存在しないことがここで担保される
+        if experimentActive {
+            buffers[.validityPulse] = Self.render(experiment.validityPulseTone,
+                                                  format: format, gain: gain, leadSilenceSec: lead)
+        }
         // ビーコンだけは「真後ろ」用の変種を持つ。周波数を下げて雑音成分を削り、
         // 耳介で高域が遮られた音(= 背後から来る音)に寄せる
         behindBuffers[.homeBeacon] = Self.render(
-            Self.darken(audio.tones.homeBeacon, by: audio.behindDarkness),
+            Self.darken(beaconTone, by: audio.behindDarkness),
             format: format, gain: gain, leadSilenceSec: lead)
 
         try Self.configureSession()
