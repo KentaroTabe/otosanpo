@@ -133,6 +133,7 @@ project.yml              XcodeGen 定義(*.xcodeproj は生成物)
 | [12 地図の配り方](docs/12_map_delivery.md) | タイル配信・自動取得・通信の約束 |
 | [13 スマホ頭部固定](docs/13_head_mount.md) | B・C 共通の実験基盤(絶対方位・磁気の検疫) |
 | [14 方針 B: 道の先から音がする](docs/14_direction_b.md) | 先導ビーコンの設計(帰路の一般化) |
+| [16 2 者で作る手順](docs/16_two_agent_workflow.md) | 片方が実装し、もう片方が検証する運用と道具 |
 
 配る側(署名・配信・審査)の手順は `docs/09_distribution_private.md` に分けてあり、
 **gitignore 対象なのでここには無い**。手順書をそのまま共有できる状態に保つため。
