@@ -14,10 +14,15 @@ final class MusicSpotTests: XCTestCase {
         MusicSpot.Params(
             maxDistanceM: max, targetDistanceM: target, reachedM: reached,
             bearingStepDeg: step,
-            rhythm: BeaconRhythm.Params(stepsPerTone: 0, minIntervalSec: 0, maxIntervalSec: 0,
-                                        fallbackIntervalSec: 0,
-                                        gainFar: 0.25, gainNear: 0.9,
-                                        nearDistanceM: 15, farDistanceM: 100))
+            gainNear: 0.9, gainFar: 0.25, nearDistanceM: 15, farDistanceM: 100)
+    }
+
+    /// 刻みが 0 以下なら候補を作らない。**既定値で埋めない**(設定の誤りに気づけなくなる)
+    func testNoCandidatesWhenTheBearingStepIsNotPositive() {
+        XCTAssertTrue(MusicSpot.candidates(around: origin, p: params(step: 0)).isEmpty)
+        XCTAssertTrue(MusicSpot.candidates(around: origin, p: params(step: -30)).isEmpty)
+        XCTAssertNil(MusicSpot.choose(from: [], start: origin, p: params()),
+                     "候補が無ければスポットも作らない")
     }
 
     /// 候補は**方位を刻んで並べる**。同じ出発点なら毎回同じ並びになる(再現できること)
@@ -105,8 +110,8 @@ final class MusicSpotTests: XCTestCase {
                                   referenceBearingDeg: 0, p: p)
         XCTAssertLessThan(far.gain, mid.gain)
         XCTAssertLessThan(mid.gain, near.gain)
-        XCTAssertLessThanOrEqual(near.gain, p.rhythm.gainNear)
-        XCTAssertGreaterThanOrEqual(far.gain, p.rhythm.gainFar)
+        XCTAssertLessThanOrEqual(near.gain, p.gainNear)
+        XCTAssertGreaterThanOrEqual(far.gain, p.gainFar)
     }
 
     /// 着いたら止める(**一度だけ鳴る**という約束)

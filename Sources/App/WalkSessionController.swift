@@ -336,8 +336,11 @@ final class WalkSessionController: ObservableObject {
 
     // MARK: - 左右の聴き比べ(実験ビルドのみ)
 
-    /// 聴き比べで鳴らす向き。左右を交互に、各半分で 4 音
-    private static let abBearingsDeg: [Double] = [-90, 90, -90, 90]
+    /// 聴き比べで鳴らす向き。左右を交互に、各半分で 4 音。角度は設定から取る
+    private var abBearingsDeg: [Double] {
+        let d = params.experiment.abBearingDeg
+        return [-d, d, -d, d]
+    }
     private var abStep = 0
     private var abEarcon: Earcon = .homeBeacon
     private var abTimer: Timer?
@@ -367,14 +370,14 @@ final class WalkSessionController: ObservableObject {
 
     private func fireABStep() {
         abTimer?.invalidate()
-        let count = Self.abBearingsDeg.count
+        let count = abBearingsDeg.count
         guard abStep < count * 2 else {
             log("聴き比べ 終了")
             return
         }
         // 前半が配布版、後半が実験値
         let useShipped = abStep < count
-        synth?.play(abEarcon, relativeBearingDeg: Self.abBearingsDeg[abStep % count],
+        synth?.play(abEarcon, relativeBearingDeg: abBearingsDeg[abStep % count],
                     useShipped: useShipped)
         abStep += 1
         // 前半と後半の切れ目だけ長めに空ける(どちらを聴いているか分かるように)
@@ -1132,10 +1135,14 @@ final class WalkSessionController: ObservableObject {
         let nowDate = Date()
         let now = nowDate.timeIntervalSinceReferenceDate
         let course = rawCourseBearing(now: nowDate)
+        // **取り込む前に、古い標本のまま judge する。**
+        // アプリが止められていた場合、時計も受信も一緒に止まる。復帰したときに
+        // 先に取り込んでしまうと「その間ずっと古かった」事実を観測できず、
+        // 退避もパルスの停止も記録に残らない(2026-09-09 の検証で指摘)
+        tickHeadMount(now: nowDate)
         headMountFusion.ingest(headingDeg: headingDeg, rawCourseDeg: course,
                                at: now, p: params.headMount.fusion)
-        // **状態の判定とパルスはここでは行わない。** 受信が止まった時に呼ばれないので、
-        // 鮮度切れを捕まえられない。判定は tickHeadMount(時計仕掛け)が行う
+        // 取り込んだ後にもう一度。**使用可能へ戻った瞬間に鳴らし直す**ため
         tickHeadMount(now: nowDate)
 
         guard state == .wandering || state == .returning else { return }
@@ -1192,21 +1199,32 @@ final class WalkSessionController: ObservableObject {
             log("音楽スポット: 置ける場所が見つかりませんでした")
             return
         }
-        musicSpot = spot
         ensureSynth()
-        synth?.onMusicStopped = { [weak self] reason in
+        guard let synth else {
+            log("音楽スポット: 音声エンジンを用意できませんでした")
+            return
+        }
+        synth.onMusicStopped = { [weak self] reason in
             Task { @MainActor in self?.stopMusicSpot(reason) }
         }
+        // **鳴らす前に置き場所を決める。** 既定の音量・正面のまま鳴り出さないように。
+        // 出発時は進行方位も頭部方位も無いことが多いので、向きは中央で始める
+        let reference = placementReference(currentTravel(location.motionFix()))
+        let placed = spot.placement(from: start,
+                                    referenceBearingDeg: reference?.deg
+                                        ?? Geo.bearingDeg(from: start, to: spot.center),
+                                    p: p)
         do {
-            try synth?.startMusic(url: url)
-            let d = Geo.distanceM(start, spot.center)
-            let b = Geo.bearingDeg(from: start, to: spot.center)
-            log(String(format: "音楽スポット: %.0fm 先 方位 %.0f°(%@)", d, b,
-                       url.lastPathComponent))
+            try synth.startMusic(url: url, relativeBearingDeg: placed.relDeg, gain: placed.gain)
         } catch {
-            musicSpot = nil
             log("音楽スポット: 音源を開けませんでした(\(error.localizedDescription))")
+            return
         }
+        // **鳴り始めてから覚える。** 失敗した時に「開始済み」を残さない
+        musicSpot = spot
+        log(String(format: "音楽スポット: %.0fm 先 方位 %.0f° 音量 %.2f(%@)",
+                   placed.distanceM, Geo.bearingDeg(from: start, to: spot.center),
+                   placed.gain, url.lastPathComponent))
     }
 
     /// 位置が動くたびに、音源の向きと音量を付け直す。**前半球へ畳まない**
@@ -1264,7 +1282,15 @@ final class WalkSessionController: ObservableObject {
     /// - 応答待ち(`promptingReturn`)の間は鳴らさない。時間到来の音と応答を妨げない
     private func fireValidityPulse(_ use: HeadMountFusion.Use, now: Date) {
         guard params.headMount.enabled else { return }
-        guard state == .wandering || state == .returning else { return }
+        // 応答待ちの間は鳴らさない。**抑止は状態が変わった時に 1 回だけ記録する**
+        // (周期ごとに書くとログが埋まる)
+        guard state == .wandering || state == .returning else {
+            if lastValidityPulseAt != nil {
+                lastValidityPulseAt = nil
+                logToFile("有効性パルス 抑止(応答待ち)")
+            }
+            return
+        }
         guard use.isUsable else {
             // 使えなくなったら「次に使えるようになった瞬間」に鳴らし直せるよう時計を捨てる
             if lastValidityPulseAt != nil {
@@ -1275,10 +1301,12 @@ final class WalkSessionController: ObservableObject {
         }
         if let last = lastValidityPulseAt,
            now.timeIntervalSince(last) < params.experiment.validityPulseSec { return }
-        let first = lastValidityPulseAt == nil
+        let resumed = lastValidityPulseAt == nil
         lastValidityPulseAt = now
         synth?.play(.validityPulse, gain: params.experiment.validityPulseGain)
-        if first { logToFile("有効性パルス 開始(頭部方位が使用可能になった)") }
+        // **鳴らしたことを毎回残す。** 間隔があるので埋まらないし、
+        // 「鳴っていたはずの時刻」を後から数えられる
+        logToFile(resumed ? "有効性パルス 再生(再開・使用可能になった)" : "有効性パルス 再生")
     }
 
     /// 姿勢の基準が変わったときに、検出器と診断の窓を捨てる

@@ -27,16 +27,24 @@ public struct MusicSpot: Equatable {
         public var reachedM: Double
         /// 候補を探す方位の刻み [deg]
         public var bearingStepDeg: Double
-        /// 距離から音量を決める設定(ビーコンと同じ形を使う)
-        public var rhythm: BeaconRhythm.Params
+        /// 音量の範囲 [0..1] と、それが最大・最小になる距離 [m]。
+        /// 写像はビーコンと同じもの(`BeaconRhythm.gain`)を使う
+        public var gainNear: Double
+        public var gainFar: Double
+        public var nearDistanceM: Double
+        public var farDistanceM: Double
 
         public init(maxDistanceM: Double, targetDistanceM: Double, reachedM: Double,
-                    bearingStepDeg: Double, rhythm: BeaconRhythm.Params) {
+                    bearingStepDeg: Double, gainNear: Double, gainFar: Double,
+                    nearDistanceM: Double, farDistanceM: Double) {
             self.maxDistanceM = maxDistanceM
             self.targetDistanceM = targetDistanceM
             self.reachedM = reachedM
             self.bearingStepDeg = bearingStepDeg
-            self.rhythm = rhythm
+            self.gainNear = gainNear
+            self.gainFar = gainFar
+            self.nearDistanceM = nearDistanceM
+            self.farDistanceM = farDistanceM
         }
     }
 
@@ -52,13 +60,15 @@ public struct MusicSpot: Equatable {
     ///
     /// 刻みは北から時計回り。**順序が決まっている**ので、同じ出発点なら同じ候補が出る
     public static func candidates(around start: GeoPoint, p: Params) -> [GeoPoint] {
-        let step = max(1, p.bearingStepDeg)
+        // 刻みが 0 以下なら候補は作れない(無限ループを避ける)。
+        // **既定値を代わりに置かない** — 設定の誤りを黙って埋めると気づけなくなる
+        guard p.bearingStepDeg > 0 else { return [] }
         var out: [GeoPoint] = []
         var bearing = 0.0
         while bearing < 360 {
             out.append(Geo.destination(from: start, bearingDeg: bearing,
                                        distanceM: p.targetDistanceM))
-            bearing += step
+            bearing += p.bearingStepDeg
         }
         return out
     }
@@ -72,12 +82,22 @@ public struct MusicSpot: Equatable {
             let d = Geo.distanceM(start, c)
             guard d <= p.maxDistanceM else { continue }
             let error = abs(d - p.targetDistanceM)
-            if best == nil || error < best!.error - 1e-9 {
+            // 差がミリメートル未満なら同点とみなし、**最初のものを残す**(= 並び順で決まる)
+            if best == nil || error < best!.error - Self.sameDistanceToleranceM {
                 best = (c, error)
             }
         }
         return best.map { MusicSpot(center: $0.point) }
     }
+
+    /// 距離の差がこれ未満なら「同じ距離」とみなす [m]。
+    ///
+    /// **調整する値ではないので設定に出さない。** `Geo.destination` は平面近似、
+    /// `Geo.distanceM` は haversine で、同じ距離を指定して往復させても
+    /// 方位によってミリメートル未満の差が出る。それを同点として扱うための単位の下限で、
+    /// ここを動かしても体験は変わらない(動かせるようにすると、意味のない旋回を招く)。
+    /// **これを外すと、同点の決まり方が浮動小数の誤差で決まる**(2026-09-09 に踏んだ)
+    private static let sameDistanceToleranceM = 0.001
 
     /// 聴取者から見た**畳まない**相対方位と、距離から決めた音量。
     ///
@@ -87,7 +107,9 @@ public struct MusicSpot: Equatable {
         let bearing = Geo.bearingDeg(from: listener, to: center)
         let distance = Geo.distanceM(listener, center)
         return (Geo.angularDiffDeg(bearing, referenceBearingDeg),
-                BeaconRhythm.gain(distanceM: distance, p: p.rhythm),
+                BeaconRhythm.gain(distanceM: distance,
+                                  nearDistanceM: p.nearDistanceM, farDistanceM: p.farDistanceM,
+                                  gainNear: p.gainNear, gainFar: p.gainFar),
                 distance)
     }
 

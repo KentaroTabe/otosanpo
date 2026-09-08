@@ -89,9 +89,26 @@ experiment: {                    // ここに enabled は無い。スイッチ�
   validity_pulse_tone: { … },    // 同・音色(既存 5 種を流用しない)
   directional_harmonics: 4,      // 方向を担う 2 種に載せる倍音の数
   directional_harmonic_decay: 0.7,
-  directional_attack_ratio: 0.05 // 小さいほど鋭い(ITD の手がかり)
+  directional_attack_ratio: 0.05, // 小さいほど鋭い(ITD の手がかり)
+
+  // 左右の聴き比べ(アプリ内・実機の音響経路で判定する)
+  ab_tone_interval_sec: 0.7,     // 1 音ごとに空ける時間
+  ab_gap_sec: 1.0,               // 配布版と実験値の間に足す時間
+  ab_bearing_deg: 90,            // 左右へ振る角度
+
+  // 音楽スポット(→ docs/08)。**出発前に選んだ時だけ**動く
+  music_spot_target_distance_m: 80,  // 狙う距離
+  music_spot_max_distance_m: 100,    // 上限。これを超える所には置かない
+  music_spot_reached_m: 15,          // これより近づいたら着いたとして止める
+  music_spot_bearing_step_deg: 30,   // 候補を探す方位の刻み
+  music_spot_gain_near: 0.9,         // 音量の範囲と、
+  music_spot_gain_far: 0.25,         //   それが最大・最小になる距離
+  music_spot_near_distance_m: 15,
+  music_spot_far_distance_m: 100
 }
 ```
+
+音楽スポットの数値は**すべて仮置き**。連続音の音量と距離の対応は歩かないと決まらない。
 
 `experiment` の音色が載るのは **`suggestion` と `home_beacon` の 2 種だけ**
 (曲がり角の誘導もこの 2 種を使うので、方向を持つ音はこれで全部)。

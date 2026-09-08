@@ -168,21 +168,32 @@ final class ToneDirectionalityTests: XCTestCase {
                           "実験の値は配布版より立ち上がりが鋭いはず")
     }
 
-    /// **方向を持たない 3 種には実験の値を載せない**(2026-09-08 合議)。
-    /// 無関係な音色変更が実験に混ざると、何を聴いているのか分からなくなる
-    func testExperimentOverlayIsNotAppliedToTheNonDirectionalTones() throws {
+    /// **実験ビルドで差し替わるのは方向を担う 2 種だけ**(2026-09-08 合議)。
+    ///
+    /// 無関係な音色変更が実験に混ざると、何を聴いているのか分からなくなる。
+    /// 以前はこの判断が `EarconSynth`(Services)の中にあり、**検査できなかった**。
+    /// Core の `Experiment.tones(from:active:)` に出したので、ここで直接押さえる
+    func testOnlyTheDirectionalTonesAreReplacedInTheExperimentBuild() throws {
         let p = try shippedConfig()
-        // 実験ビルドで差し替えるのは suggestion と home_beacon だけ。
-        // ここでは「上書きすると別物になる」ことを示し、
-        // 実際に上書きされる対象が 2 種であることは EarconSynth 側の責務として分ける
-        for (name, tone) in [("時間到来", p.audio.tones.timeUpPrompt),
-                             ("確認音", p.audio.tones.returnAck),
-                             ("到着音", p.audio.tones.arrival)] {
-            let overlaid = p.experiment.applied(to: tone)
-            XCTAssertNotEqual(overlaid.harmonics, tone.harmonics,
-                              "\(name): 上書きすれば変わる値であることの確認"
-                              + "(この 3 種には上書きを適用しない、が設計)")
-        }
+        let shipped = p.audio.tones
+        let experimental = p.experiment.tones(from: shipped, active: true)
+
+        // 差し替わる 2 種
+        XCTAssertEqual(experimental.suggestion, p.experiment.applied(to: shipped.suggestion))
+        XCTAssertEqual(experimental.homeBeacon, p.experiment.applied(to: shipped.homeBeacon))
+        XCTAssertNotEqual(experimental.suggestion, shipped.suggestion)
+        XCTAssertNotEqual(experimental.homeBeacon, shipped.homeBeacon)
+
+        // 方向を持たない 3 種は**まったく同じ**
+        XCTAssertEqual(experimental.timeUpPrompt, shipped.timeUpPrompt, "時間到来は触らない")
+        XCTAssertEqual(experimental.returnAck, shipped.returnAck, "確認音は触らない")
+        XCTAssertEqual(experimental.arrival, shipped.arrival, "到着音は触らない")
+    }
+
+    /// 実験を切れば **5 種とも配布値のまま**。「音も挙動も一切変わらない」の担保
+    func testNothingChangesWhenTheExperimentIsOff() throws {
+        let p = try shippedConfig()
+        XCTAssertEqual(p.experiment.tones(from: p.audio.tones, active: false), p.audio.tones)
     }
 
     /// 上書きした音が**実際に高域を持つ**ことまで確かめる。

@@ -28,6 +28,8 @@ final class EarconSynth {
     private(set) var isMusicPlaying = false
     /// 音源の形式。**エンジンが再起動すると接続が壊れる**ので、繋ぎ直すために覚えておく
     private var musicFormat: AVAudioFormat?
+    /// 再生の世代。完了通知が遅れて届いたときに、**次の再生を止めない**ための識別
+    private var musicGeneration: UInt64 = 0
     private let environment = AVAudioEnvironmentNode()
     private var buffers: [Earcon: AVAudioPCMBuffer] = [:]
     /// 真後ろ用の暗い音色。HRTF の前後判別は当てにならないため、音色で前後を分ける
@@ -92,15 +94,14 @@ final class EarconSynth {
         // 曲がり角の誘導もこの 2 種を使う(WalkMachine.guidanceEarcon)ので、
         // 方向を持つ音はこれで全部。時間到来・確認音・到着は方向を持たないので触らない
         // — 無関係な音色変更を実験に混ぜないため(2026-09-08 合議)
-        let suggestionTone = experimentActive
-            ? experiment.applied(to: audio.tones.suggestion) : audio.tones.suggestion
-        let beaconTone = experimentActive
-            ? experiment.applied(to: audio.tones.homeBeacon) : audio.tones.homeBeacon
-        buffers[.suggestion] = Self.render(suggestionTone, format: format, gain: gain, leadSilenceSec: lead)
-        buffers[.timeUpPrompt] = Self.render(audio.tones.timeUpPrompt, format: format, gain: gain, leadSilenceSec: lead)
-        buffers[.returnAck] = Self.render(audio.tones.returnAck, format: format, gain: gain, leadSilenceSec: lead)
-        buffers[.homeBeacon] = Self.render(beaconTone, format: format, gain: gain, leadSilenceSec: lead)
-        buffers[.arrival] = Self.render(audio.tones.arrival, format: format, gain: gain, leadSilenceSec: lead)
+        // **どの音に上書きするかの判断は Core に置いてある**(単体テストで押さえるため)
+        let tones = experiment.tones(from: audio.tones, active: experimentActive)
+        buffers[.suggestion] = Self.render(tones.suggestion, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.timeUpPrompt] = Self.render(tones.timeUpPrompt, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.returnAck] = Self.render(tones.returnAck, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.homeBeacon] = Self.render(tones.homeBeacon, format: format, gain: gain, leadSilenceSec: lead)
+        buffers[.arrival] = Self.render(tones.arrival, format: format, gain: gain, leadSilenceSec: lead)
+        let beaconTone = tones.homeBeacon
         // 有効性パルスは**実験のときだけ作る**。作らなければ play が黙って何もしないので、
         // 配布版で鳴る経路が存在しないことがここで担保される
         if experimentActive {
@@ -147,9 +148,13 @@ final class EarconSynth {
         // player 側は接続時に音源の形式へ合わせる(startMusic で繋ぎ直す)
         if useSpatialAudio {
             engine.connect(musicMixer, to: environment, format: monoFormat)
+            // **定位は環境ノードに直結したノードに設定する。**
+            // AVAudioMixing の position / renderingAlgorithm が効くのは
+            // 「その接続先が持つ入力バス」で、ここでは musicMixer → environment の側。
+            // 上流の musicPlayer に設定しても効かない(2026-09-09 の検証で判明)
+            musicMixer.renderingAlgorithm = .HRTF
         } else {
             engine.connect(musicMixer, to: engine.mainMixerNode, format: monoFormat)
-            musicPlayer.pan = 0
         }
         // **音源側も繋ぎ直す。** エンジンが再起動すると接続は全部壊れるので、
         // ここで戻さないと「音楽だけが黙って鳴らなくなる」(2026-09-09 に自分で踏んだ)
@@ -160,8 +165,13 @@ final class EarconSynth {
 
     // MARK: - 音楽スポット(実験)
 
-    /// 音源を鳴らし始める。**一度だけ**再生し、終わったら `onMusicFinished` を呼ぶ
-    func startMusic(url: URL) throws {
+    /// 音源を鳴らし始める。**一度だけ**再生し、止まったら `onMusicStopped` を呼ぶ。
+    ///
+    /// - Parameters:
+    ///   - relativeBearingDeg: 鳴らし始める向き。**鳴らす前に置く** —
+    ///     既定の音量・正面のまま鳴り出すと、最初の一瞬だけ間違った大きさで聞こえる
+    ///   - gain: 同上。距離から決めた音量
+    func startMusic(url: URL, relativeBearingDeg: Double, gain: Double) throws {
         stopMusic()
         let file = try AVAudioFile(forReading: url)
         // 音源の形式で繋ぎ直す(ステレオ / モノラル・標本化周波数が音源ごとに違う)
@@ -169,15 +179,20 @@ final class EarconSynth {
         engine.disconnectNodeOutput(musicPlayer)
         engine.connect(musicPlayer, to: musicMixer, format: file.processingFormat)
         if !engine.isRunning { recover(reason: "音楽の再生前") }
-        if useSpatialAudio {
-            musicPlayer.renderingAlgorithm = .HRTF
-        }
+        // **鳴らす前に置く。** 位置と音量を決めてから再生を始める
+        setMusicPlacement(relativeBearingDeg: relativeBearingDeg, gain: gain)
+        // **世代を進める。** 前の再生の完了通知が遅れて届いても、
+        // 新しい再生を止めないようにする(「一度だけ」の約束が競合で崩れないため)
+        musicGeneration &+= 1
+        let generation = musicGeneration
         isMusicPlaying = true
         musicPlayer.scheduleFile(file, at: nil) { [weak self] in
             // 再生スレッドから来るのでメインへ渡す。
-            // **停止で呼ばれることもある**ので、鳴っている時だけ「鳴り終わった」と扱う
+            // **停止でも呼ばれる**ので、同じ世代で鳴っている時だけ「鳴り終わった」と扱う
             DispatchQueue.main.async {
-                guard let self, self.isMusicPlaying else { return }
+                guard let self, self.isMusicPlaying, self.musicGeneration == generation else {
+                    return
+                }
                 self.isMusicPlaying = false
                 self.onMusicStopped?("最後まで鳴り終わった")
             }
@@ -186,15 +201,19 @@ final class EarconSynth {
     }
 
     /// 音楽の置き場所と音量を更新する。
+    ///
     /// **前半球へ畳まない**(利用者判断・2026-09-08)。通り過ぎれば後ろにあるのが自然で、
-    /// 畳むと通り過ぎたことが分からなくなる
+    /// 畳むと通り過ぎたことが分からなくなる。
+    ///
+    /// 設定するのは **`musicMixer`**(環境ノードに直結している側)。
+    /// 上流の `musicPlayer` に設定しても定位には効かない
     func setMusicPlacement(relativeBearingDeg deg: Double, gain: Double) {
-        musicPlayer.volume = Float(max(0, min(1, gain)))
+        musicMixer.volume = Float(max(0, min(1, gain)))
         if isSpatial {
             let p = SoundPlacement.position(relativeBearingDeg: deg)
-            musicPlayer.position = AVAudio3DPoint(x: Float(p.x), y: Float(p.y), z: Float(p.z))
+            musicMixer.position = AVAudio3DPoint(x: Float(p.x), y: Float(p.y), z: Float(p.z))
         } else {
-            musicPlayer.pan = Float(max(-1, min(1, SoundPlacement.pan(relativeBearingDeg: deg))))
+            musicMixer.pan = Float(max(-1, min(1, SoundPlacement.pan(relativeBearingDeg: deg))))
         }
     }
 

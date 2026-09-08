@@ -1094,16 +1094,31 @@ if headSamples.isEmpty {
     let sortedFixes = all.sorted { $0.time < $1.time }
     // 製品と同じ規則で course を出すには、fix 行に速度と course が要る。
     // **欠けたまま「成立せず・0%」と出すと、実装の問題と読み違える**(→ E6)
-    let fixesWithSpeed = sortedFixes.filter { $0.speedMps != nil }.count
-    let fixesWithCourse = sortedFixes.filter { $0.courseDeg != nil }.count
-    if fixesWithSpeed == 0 || fixesWithCourse == 0 {
+    /// 判定を出してよいか。必要な列が丸ごと無ければ false にして、数字を出さない
+    var headMountJudged = true
+    let noSpeed = sortedFixes.filter { $0.speedMps == nil }.count
+    let noCourse = sortedFixes.filter { $0.courseDeg == nil }.count
+    if noSpeed == sortedFixes.count || noCourse == sortedFixes.count {
+        // **全件欠けていれば計算しない。** 「0%・成立せず」を結果として出すと、
+        // 実装の問題と読み違える(2026-09-09 の検証で指摘)
         var missing: [String] = []
-        if fixesWithSpeed == 0 { missing.append("速度=") }
-        if fixesWithCourse == 0 { missing.append("course=") }
+        if noSpeed == sortedFixes.count { missing.append("速度=") }
+        if noCourse == sortedFixes.count { missing.append("course=") }
         print("  判定不能: fix 行に \(missing.joined(separator: " と ")) がありません"
               + "(\(sortedFixes.count) 件すべて)。")
         print("  生の course を復元できないので、学習も検疫も評価できません。")
         print("  これらの列を持つ版でログを取り直してください。")
+        print("  **使用可能率も学習の成立時刻も出しません**(0% ではなく、判定できない)。")
+        headMountJudged = false
+    } else if noSpeed > 0 || noCourse > 0 {
+        // 部分的な欠落は「不完全な入力」として明示する。数字は出すが、鵜呑みにさせない
+        var missing: [String] = []
+        if noSpeed > 0 { missing.append("速度= が \(noSpeed) 件") }
+        if noCourse > 0 { missing.append("course= が \(noCourse) 件") }
+        print("  ※ 不完全な入力: fix \(sortedFixes.count) 件のうち "
+              + "\(missing.joined(separator: " / ")) 欠けています。")
+        print("     その区間は course なしとして扱われ、**学習も検疫も進みません**。"
+              + "下の数字は実機より低く出ます")
     }
     func rawCourse(at t: Date) -> Double? {
         // t 以下で最も新しい fix を二分探索で拾う
@@ -1169,6 +1184,11 @@ if headSamples.isEmpty {
     }
 
     func secs(_ v: Double?) -> String { v.map { String(format: "%.0f 秒", $0) } ?? "成立せず" }
+    guard headMountJudged else {
+        // 必要な列が無い。**数字を出さずに終える**(判定不能と失敗を混ぜない)
+        print("  ※ 上記のとおり判定できないため、使用可能率・成立時刻・遷移は出しません。")
+        exit(0)
+    }
     print("  最初に学習が成立: \(secs(firstLearnedAt))")
     print("  最初に使用可能: \(secs(firstUsableAt))")
     print(String(format: "  使用可能だった割合: %.0f%%(%d / %d 件)",

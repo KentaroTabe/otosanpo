@@ -319,20 +319,32 @@ public struct AppParameters: Codable, Equatable {
         public var musicSpotNearDistanceM: Double
         public var musicSpotFarDistanceM: Double
 
-        /// MusicSpot に渡す設定値。音量の形はビーコンと同じものを使う
-        /// (間隔の項目は音楽では使わないので、鳴らす間隔には 0 を置く)
+        /// 左右の聴き比べで音を置く角度 [deg]。左右へ交互に振る
+        public var abBearingDeg: Double
+
+        /// MusicSpot に渡す設定値
         public var musicSpot: MusicSpot.Params {
             MusicSpot.Params(
                 maxDistanceM: musicSpotMaxDistanceM,
                 targetDistanceM: musicSpotTargetDistanceM,
                 reachedM: musicSpotReachedM,
                 bearingStepDeg: musicSpotBearingStepDeg,
-                rhythm: BeaconRhythm.Params(
-                    stepsPerTone: 0, minIntervalSec: 0, maxIntervalSec: 0,
-                    fallbackIntervalSec: 0,
-                    gainFar: musicSpotGainFar, gainNear: musicSpotGainNear,
-                    nearDistanceM: musicSpotNearDistanceM,
-                    farDistanceM: musicSpotFarDistanceM))
+                gainNear: musicSpotGainNear, gainFar: musicSpotGainFar,
+                nearDistanceM: musicSpotNearDistanceM,
+                farDistanceM: musicSpotFarDistanceM)
+        }
+
+        /// 実験ビルドで実際に鳴らす音色を決める。
+        ///
+        /// **どの音に上書きするかの判断をここに置く**(2026-09-09)。
+        /// EarconSynth の中に書いていた頃は、その判断を単体テストで押さえられなかった。
+        /// 方向を担う 2 種だけを差し替え、方向を持たない 3 種は配布値のまま
+        public func tones(from shipped: Audio.Tones, active: Bool) -> Audio.Tones {
+            guard active else { return shipped }
+            var out = shipped
+            out.suggestion = applied(to: shipped.suggestion)
+            out.homeBeacon = applied(to: shipped.homeBeacon)
+            return out
         }
 
         /// 方向を担う音に実験用の値を載せる。
