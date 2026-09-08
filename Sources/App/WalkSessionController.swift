@@ -1194,8 +1194,8 @@ final class WalkSessionController: ObservableObject {
         }
         musicSpot = spot
         ensureSynth()
-        synth?.onMusicFinished = { [weak self] in
-            Task { @MainActor in self?.stopMusicSpot("最後まで鳴り終わった") }
+        synth?.onMusicStopped = { [weak self] reason in
+            Task { @MainActor in self?.stopMusicSpot(reason) }
         }
         do {
             try synth?.startMusic(url: url)

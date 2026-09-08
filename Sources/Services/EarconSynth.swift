@@ -22,9 +22,12 @@ final class EarconSynth {
     /// ステレオの音源はミキサでモノラルへ落としてから環境ノードへ入れる
     private let musicPlayer = AVAudioPlayerNode()
     private let musicMixer = AVAudioMixerNode()
-    /// 音楽が最後まで鳴り終わったときに呼ばれる(**一度だけ**鳴らす約束のため)
-    var onMusicFinished: (() -> Void)?
+    /// 音楽が止まったときに理由つきで呼ばれる(**一度だけ**鳴らす約束のため)。
+    /// 鳴り終わった場合と、音声経路が切れて中断した場合を区別する
+    var onMusicStopped: ((String) -> Void)?
     private(set) var isMusicPlaying = false
+    /// 音源の形式。**エンジンが再起動すると接続が壊れる**ので、繋ぎ直すために覚えておく
+    private var musicFormat: AVAudioFormat?
     private let environment = AVAudioEnvironmentNode()
     private var buffers: [Earcon: AVAudioPCMBuffer] = [:]
     /// 真後ろ用の暗い音色。HRTF の前後判別は当てにならないため、音色で前後を分ける
@@ -148,6 +151,11 @@ final class EarconSynth {
             engine.connect(musicMixer, to: engine.mainMixerNode, format: monoFormat)
             musicPlayer.pan = 0
         }
+        // **音源側も繋ぎ直す。** エンジンが再起動すると接続は全部壊れるので、
+        // ここで戻さないと「音楽だけが黙って鳴らなくなる」(2026-09-09 に自分で踏んだ)
+        if let musicFormat {
+            engine.connect(musicPlayer, to: musicMixer, format: musicFormat)
+        }
     }
 
     // MARK: - 音楽スポット(実験)
@@ -157,6 +165,7 @@ final class EarconSynth {
         stopMusic()
         let file = try AVAudioFile(forReading: url)
         // 音源の形式で繋ぎ直す(ステレオ / モノラル・標本化周波数が音源ごとに違う)
+        musicFormat = file.processingFormat
         engine.disconnectNodeOutput(musicPlayer)
         engine.connect(musicPlayer, to: musicMixer, format: file.processingFormat)
         if !engine.isRunning { recover(reason: "音楽の再生前") }
@@ -165,11 +174,12 @@ final class EarconSynth {
         }
         isMusicPlaying = true
         musicPlayer.scheduleFile(file, at: nil) { [weak self] in
-            // 再生スレッドから来るのでメインへ渡す
+            // 再生スレッドから来るのでメインへ渡す。
+            // **停止で呼ばれることもある**ので、鳴っている時だけ「鳴り終わった」と扱う
             DispatchQueue.main.async {
                 guard let self, self.isMusicPlaying else { return }
                 self.isMusicPlaying = false
-                self.onMusicFinished?()
+                self.onMusicStopped?("最後まで鳴り終わった")
             }
         }
         musicPlayer.play()
@@ -190,6 +200,8 @@ final class EarconSynth {
 
     func stopMusic() {
         guard isMusicPlaying || musicPlayer.isPlaying else { return }
+        // **先に旗を降ろす。** 完了ハンドラは stop でも呼ばれるので、
+        // これが後だと「鳴り終わった」と誤って通知される(一度だけの約束が崩れる)
         isMusicPlaying = false
         musicPlayer.stop()
     }
@@ -223,11 +235,16 @@ final class EarconSynth {
     /// 止まっていれば繋ぎ直して再開する。動いていれば何もしない
     private func recover(reason: String) {
         guard !engine.isRunning else { return }
+        // 再起動すると再生位置は失われる。**勝手に鳴らし直さない**
+        // (「一度だけ鳴る」という約束を、こちらの都合で破らない)
+        let wasPlayingMusic = isMusicPlaying
+        isMusicPlaying = false
         do {
             try Self.configureSession()
             connectGraph()
             try engine.start()
             onEvent?("音声エンジンを再開しました(\(reason))")
+            if wasPlayingMusic { onMusicStopped?("音声経路が切れて中断した") }
         } catch {
             onEvent?("音声エンジンの再開に失敗(\(reason)): \(error.localizedDescription)")
         }
