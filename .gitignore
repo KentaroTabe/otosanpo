@@ -33,3 +33,6 @@ android/app/src/main/assets/parameters.json
 android/app/src/main/assets/otosanpo-map.json
 android/build/
 android/*/build/
+# Codex との往復の生ログ(scripts/ask_codex.sh の出力)。
+# **決まったことは docs/ へ書き写す。** 生ログは長く、読み返す価値が薄い
+codex-exchange/
