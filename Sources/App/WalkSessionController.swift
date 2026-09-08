@@ -318,6 +318,58 @@ final class WalkSessionController: ObservableObject {
             + "・エンジン\(synth.isRunning ? "稼働" : "停止"))")
     }
 
+    // MARK: - 左右の聴き比べ(実験ビルドのみ)
+
+    /// 聴き比べで鳴らす向き。左右を交互に、各半分で 4 音
+    private static let abBearingsDeg: [Double] = [-90, 90, -90, 90]
+    private var abStep = 0
+    private var abEarcon: Earcon = .homeBeacon
+    private var abTimer: Timer?
+
+    /// **散歩に出てよいかの判定**(→ docs/05 の前提条件)。
+    ///
+    /// 配布版の音色 4 音 → 実験値の音色 4 音を、左右交互に鳴らす。
+    /// `build-demo/ab-*.wav` と同じ並びだが、**こちらは実機の音響経路(HRTF)を通る**。
+    /// wav は等パワーのパンによる近似で、判定したい経路とは別物なので、
+    /// 「後半で左右が分かれるか」はここで判断する(2026-09-08)。
+    ///
+    /// 実験ビルド(`head_mount.enabled`)でだけ意味を持つ。
+    /// 配布ビルドでは変種を持たないので、前半と後半が同じ音になる
+    func debugPlayABComparison(_ e: Earcon) {
+        guard params.headMount.enabled else { return }
+        ensureSynth()
+        guard synth != nil else {
+            log("音声エンジンの初期化に失敗しました")
+            return
+        }
+        abTimer?.invalidate()
+        abEarcon = e
+        abStep = 0
+        log("聴き比べ(\(e.rawValue)): 前半 4 音 = 配布版 / 後半 4 音 = 実験値")
+        fireABStep()
+    }
+
+    private func fireABStep() {
+        abTimer?.invalidate()
+        let count = Self.abBearingsDeg.count
+        guard abStep < count * 2 else {
+            log("聴き比べ 終了")
+            return
+        }
+        // 前半が配布版、後半が実験値
+        let useShipped = abStep < count
+        synth?.play(abEarcon, relativeBearingDeg: Self.abBearingsDeg[abStep % count],
+                    useShipped: useShipped)
+        abStep += 1
+        // 前半と後半の切れ目だけ長めに空ける(どちらを聴いているか分かるように)
+        let atHalfway = abStep == count
+        let wait = params.experiment.abToneIntervalSec
+            + (atHalfway ? params.experiment.abGapSec : 0)
+        abTimer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.fireABStep() }
+        }
+    }
+
     // MARK: - 経路データの取得
 
     /// どの地図で歩くかを決めて読み直す(→ docs/12)。

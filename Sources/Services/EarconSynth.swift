@@ -15,6 +15,10 @@ final class EarconSynth {
     private var buffers: [Earcon: AVAudioPCMBuffer] = [:]
     /// 真後ろ用の暗い音色。HRTF の前後判別は当てにならないため、音色で前後を分ける
     private var behindBuffers: [Earcon: AVAudioPCMBuffer] = [:]
+    /// **配布版の音色**。実験ビルドでだけ持つ(左右の聴き比べを実機の音響経路で行うため)。
+    /// `build-demo/ab-*.wav` は等パワーのパンによる近似で、実機の HRTF とは経路が違う。
+    /// 「散歩に出てよいか」の判定は、判定対象と同じ経路で行う(2026-09-08)
+    private var shippedBuffers: [Earcon: AVAudioPCMBuffer] = [:]
     /// 定位を前半球に畳むか(→ SoundPlacement.foldToFrontDeg)
     private let frontHemisphereOnly: Bool
     private let behindThresholdDeg: Double
@@ -82,6 +86,11 @@ final class EarconSynth {
         if experimentActive {
             buffers[.validityPulse] = Self.render(experiment.validityPulseTone,
                                                   format: format, gain: gain, leadSilenceSec: lead)
+            // 聴き比べの相手として配布版の音色も持つ。**実験ビルドでだけ**作る
+            shippedBuffers[.suggestion] = Self.render(audio.tones.suggestion, format: format,
+                                                      gain: gain, leadSilenceSec: lead)
+            shippedBuffers[.homeBeacon] = Self.render(audio.tones.homeBeacon, format: format,
+                                                      gain: gain, leadSilenceSec: lead)
         }
         // ビーコンだけは「真後ろ」用の変種を持つ。周波数を下げて雑音成分を削り、
         // 耳介で高域が遮られた音(= 背後から来る音)に寄せる
@@ -173,7 +182,10 @@ final class EarconSynth {
     /// - Parameter gain: 相対音量 [0..1]。曲がり角の誘導が「角までの近さ」を音量で表すため
     ///   (間隔の変化では距離が伝わらなかった。2026-08-18 実測)。
     ///   バッファは焼き直さず、再生ノードの音量で変える
-    func play(_ e: Earcon, relativeBearingDeg: Double? = nil, gain: Double = 1.0) {
+    /// - Parameter useShipped: 実験ビルドで**配布版の音色**を鳴らす(左右の聴き比べ用)。
+    ///   配布ビルドでは変種を持たないので、指定しても同じ音が鳴る
+    func play(_ e: Earcon, relativeBearingDeg: Double? = nil, gain: Double = 1.0,
+              useShipped: Bool = false) {
         // 鳴らす直前にも確かめる。通知を取りこぼしても無音のままにしない
         if !engine.isRunning { recover(reason: "再生前の点検") }
         // **前後は伝わらないチャネルなので、主張しない**(→ SoundPlacement.foldToFrontDeg)。
@@ -184,7 +196,8 @@ final class EarconSynth {
             : (relativeBearingDeg ?? 0)
         // 前後は定位では伝わらない(2026-08-18 実測)。畳まない場合は音色で分ける
         let useBehind = Self.isBehind(deg, thresholdDeg: behindThresholdDeg)
-        guard let b = (useBehind ? behindBuffers[e] : nil) ?? buffers[e] else { return }
+        let variant = useShipped ? shippedBuffers[e] : nil
+        guard let b = variant ?? (useBehind ? behindBuffers[e] : nil) ?? buffers[e] else { return }
         player.volume = Float(max(0, min(1, gain)))
         if isSpatial {
             let p = SoundPlacement.position(relativeBearingDeg: deg)

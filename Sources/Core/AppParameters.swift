@@ -301,6 +301,10 @@ public struct AppParameters: Codable, Equatable {
         public var directionalHarmonicDecay: Double
         /// 立ち上がりが音全体に占める割合 [0..1]。小さいほど鋭い(ITD の手がかり)
         public var directionalAttackRatio: Double
+        /// 左右の聴き比べで 1 音ごとに空ける時間 [sec]
+        public var abToneIntervalSec: Double
+        /// 聴き比べの前半(配布版)と後半(実験値)の間に足す時間 [sec]
+        public var abGapSec: Double
 
         /// 方向を担う音に実験用の値を載せる。
         /// **方向を持たない音(時間到来・確認音・到着)は触らない** — 無関係な

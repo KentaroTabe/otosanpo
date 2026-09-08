@@ -129,7 +129,9 @@
     },
     "directional_harmonics": 4,
     "directional_harmonic_decay": 0.7,
-    "directional_attack_ratio": 0.05
+    "directional_attack_ratio": 0.05,
+    "ab_tone_interval_sec": 0.7,
+    "ab_gap_sec": 1.0
   },
   "gesture": {
     "nod_pitch_threshold_deg": 8,
