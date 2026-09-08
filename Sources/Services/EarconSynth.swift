@@ -16,6 +16,15 @@ final class EarconSynth {
     /// 再生中の確認音の定位を動かしたり、後続の機能音をキューで待たせたりしうる。
     /// パルスは方向を持たない診断音なので、環境ノードを通さず直接ミキサへ出す
     private let pulsePlayer = AVAudioPlayerNode()
+    /// 音楽スポット(→ Core の MusicSpot)。**連続音は別のノードで回す** —
+    /// earcon を止めずに鳴らし続けるため。
+    /// `AVAudioEnvironmentNode` はモノラル入力にしか効かないので、
+    /// ステレオの音源はミキサでモノラルへ落としてから環境ノードへ入れる
+    private let musicPlayer = AVAudioPlayerNode()
+    private let musicMixer = AVAudioMixerNode()
+    /// 音楽が最後まで鳴り終わったときに呼ばれる(**一度だけ**鳴らす約束のため)
+    var onMusicFinished: (() -> Void)?
+    private(set) var isMusicPlaying = false
     private let environment = AVAudioEnvironmentNode()
     private var buffers: [Earcon: AVAudioPCMBuffer] = [:]
     /// 真後ろ用の暗い音色。HRTF の前後判別は当てにならないため、音色で前後を分ける
@@ -65,6 +74,8 @@ final class EarconSynth {
 
         engine.attach(player)
         engine.attach(pulsePlayer)
+        engine.attach(musicPlayer)
+        engine.attach(musicMixer)
         if audio.useSpatialAudio {
             engine.attach(environment)
             isSpatial = true
@@ -128,6 +139,59 @@ final class EarconSynth {
         // パルスは環境ノードを通さず直接ミキサへ。方向を持たないことが**構造で**保証され、
         // 機能音の定位・音量・再生順にも触れない
         engine.connect(pulsePlayer, to: engine.mainMixerNode, format: monoFormat)
+        // 音楽は「player → ミキサ(モノラルへ落とす)→ 環境ノード」。
+        // 環境ノードはモノラル入力にしか効かないので、ここでチャンネル数を落とす。
+        // player 側は接続時に音源の形式へ合わせる(startMusic で繋ぎ直す)
+        if useSpatialAudio {
+            engine.connect(musicMixer, to: environment, format: monoFormat)
+        } else {
+            engine.connect(musicMixer, to: engine.mainMixerNode, format: monoFormat)
+            musicPlayer.pan = 0
+        }
+    }
+
+    // MARK: - 音楽スポット(実験)
+
+    /// 音源を鳴らし始める。**一度だけ**再生し、終わったら `onMusicFinished` を呼ぶ
+    func startMusic(url: URL) throws {
+        stopMusic()
+        let file = try AVAudioFile(forReading: url)
+        // 音源の形式で繋ぎ直す(ステレオ / モノラル・標本化周波数が音源ごとに違う)
+        engine.disconnectNodeOutput(musicPlayer)
+        engine.connect(musicPlayer, to: musicMixer, format: file.processingFormat)
+        if !engine.isRunning { recover(reason: "音楽の再生前") }
+        if useSpatialAudio {
+            musicPlayer.renderingAlgorithm = .HRTF
+        }
+        isMusicPlaying = true
+        musicPlayer.scheduleFile(file, at: nil) { [weak self] in
+            // 再生スレッドから来るのでメインへ渡す
+            DispatchQueue.main.async {
+                guard let self, self.isMusicPlaying else { return }
+                self.isMusicPlaying = false
+                self.onMusicFinished?()
+            }
+        }
+        musicPlayer.play()
+    }
+
+    /// 音楽の置き場所と音量を更新する。
+    /// **前半球へ畳まない**(利用者判断・2026-09-08)。通り過ぎれば後ろにあるのが自然で、
+    /// 畳むと通り過ぎたことが分からなくなる
+    func setMusicPlacement(relativeBearingDeg deg: Double, gain: Double) {
+        musicPlayer.volume = Float(max(0, min(1, gain)))
+        if isSpatial {
+            let p = SoundPlacement.position(relativeBearingDeg: deg)
+            musicPlayer.position = AVAudio3DPoint(x: Float(p.x), y: Float(p.y), z: Float(p.z))
+        } else {
+            musicPlayer.pan = Float(max(-1, min(1, SoundPlacement.pan(relativeBearingDeg: deg))))
+        }
+    }
+
+    func stopMusic() {
+        guard isMusicPlaying || musicPlayer.isPlaying else { return }
+        isMusicPlaying = false
+        musicPlayer.stop()
     }
 
     /// **AirPods の着脱でエンジンが止まる。**

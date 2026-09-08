@@ -305,6 +305,35 @@ public struct AppParameters: Codable, Equatable {
         public var abToneIntervalSec: Double
         /// 聴き比べの前半(配布版)と後半(実験値)の間に足す時間 [sec]
         public var abGapSec: Double
+        /// 音楽スポットを置く狙いの距離 [m]
+        public var musicSpotTargetDistanceM: Double
+        /// 音楽スポットを置いてよい上限の距離 [m]
+        public var musicSpotMaxDistanceM: Double
+        /// これより近づいたら着いたとして止める [m]
+        public var musicSpotReachedM: Double
+        /// 候補を探す方位の刻み [deg]
+        public var musicSpotBearingStepDeg: Double
+        /// 音楽スポットの音量の範囲 [0..1] と、それが最小・最大になる距離 [m]
+        public var musicSpotGainFar: Double
+        public var musicSpotGainNear: Double
+        public var musicSpotNearDistanceM: Double
+        public var musicSpotFarDistanceM: Double
+
+        /// MusicSpot に渡す設定値。音量の形はビーコンと同じものを使う
+        /// (間隔の項目は音楽では使わないので、鳴らす間隔には 0 を置く)
+        public var musicSpot: MusicSpot.Params {
+            MusicSpot.Params(
+                maxDistanceM: musicSpotMaxDistanceM,
+                targetDistanceM: musicSpotTargetDistanceM,
+                reachedM: musicSpotReachedM,
+                bearingStepDeg: musicSpotBearingStepDeg,
+                rhythm: BeaconRhythm.Params(
+                    stepsPerTone: 0, minIntervalSec: 0, maxIntervalSec: 0,
+                    fallbackIntervalSec: 0,
+                    gainFar: musicSpotGainFar, gainNear: musicSpotGainNear,
+                    nearDistanceM: musicSpotNearDistanceM,
+                    farDistanceM: musicSpotFarDistanceM))
+        }
 
         /// 方向を担う音に実験用の値を載せる。
         /// **方向を持たない音(時間到来・確認音・到着)は触らない** — 無関係な

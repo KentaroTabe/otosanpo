@@ -109,6 +109,12 @@ final class WalkSessionController: ObservableObject {
     private var lastValidityPulseAt: Date?
     /// 頭部固定の状態を**時計で**評価する。受信が止まった時に鮮度切れを捕まえるため
     private var headMountTimer: Timer?
+    /// **出発前に選んだ時だけ**、100 m 以内に 1 つだけ作る音楽スポット(→ Core の MusicSpot)。
+    /// 連続音で方向が伝わるかを試すための実験(2026-09-08 利用者判断)
+    @Published var musicSpotWanted = false
+    private var musicSpot: MusicSpot?
+    /// 音源が Documents にあるか。無ければ画面に選択肢を出さない
+    var musicFileAvailable: Bool { MusicStore.firstFile() != nil }
     /// 机上で頭の追従を確かめている最中か(散歩とは独立に回す)
     @Published private(set) var headCheckActive = false
     /// 机上テストの現在値。画面に出して符号と追従を目で確かめる
@@ -272,6 +278,7 @@ final class WalkSessionController: ObservableObject {
             log("頭部固定: 有効(利用可能=\(headMountMotion.isAvailable ? "はい" : "いいえ")"
                 + " 取り付けのずれは歩きながら学習)")
         }
+        startMusicSpotIfWanted()
         log("歩調: 利用可能=\(PedometerService.isAvailable ? "はい" : "いいえ")"
             + " 許可=\(pedometer.authorizationLabel)")
         log("ヘッドフォンモーション: 利用可能=\(motion.isAvailable ? "はい" : "いいえ")"
@@ -699,6 +706,7 @@ final class WalkSessionController: ObservableObject {
             headMountMotion.stop()
             headMountTimer?.invalidate()
             headMountTimer = nil
+            stopMusicSpot("散歩が終わった")
             // 定位の基準を進行方位に戻す(次の散歩の検疫が通るまで使わない)。
             // 学習と検疫は散歩ごとに白紙なので、判断ごと捨てる
             latestFacingBearing = nil
@@ -1039,6 +1047,9 @@ final class WalkSessionController: ObservableObject {
             summary?.add(p, minSegmentM: params.budget.pathSegmentMinM,
                          maxPoints: params.summary.maxTrackPoints)
         }
+        if state == .wandering || state == .returning {
+            updateMusicSpot(at: p)
+        }
         if commuteLearning {
             grid.markExcluded(at: p)
         } else if state == .wandering || state == .returning {
@@ -1149,6 +1160,77 @@ final class WalkSessionController: ObservableObject {
                              offsetLabel, headMountFusion.concentration,
                              headMountFusion.use(at: now, p: params.headMount.fusion).label))
         }
+    }
+
+    // MARK: - 音楽スポット(実験・→ Core の MusicSpot)
+
+    /// 出発時に 1 つだけスポットを決めて鳴らし始める。**選んだ時だけ**動く。
+    ///
+    /// 置き場所は、地図があれば**道に乗せる**(候補を道へスナップする)。
+    /// 地図が無ければ候補をそのまま使う — 建物の中に置かれうるが、
+    /// 音源の方向へ歩くという体験自体は成立する(実験の最小形として割り切る)
+    private func startMusicSpotIfWanted() {
+        musicSpot = nil
+        guard musicSpotWanted, let start = location.position else { return }
+        guard let url = MusicStore.firstFile() else {
+            log("音楽スポット: 音源がありません(Finder の「iPhone > ファイル」に置いてください)")
+            return
+        }
+        let p = params.experiment.musicSpot
+        // 候補を道へ寄せる。スナップできたものだけを候補にする
+        let raw = MusicSpot.candidates(around: start, p: p)
+        let snapped: [GeoPoint]
+        if let graph, graph.map.covers(start) {
+            snapped = raw.compactMap {
+                graph.snap($0, maxDistanceM: params.route.snapMaxDistanceM)?.point
+            }
+        } else {
+            snapped = raw
+        }
+        guard let spot = MusicSpot.choose(from: snapped.isEmpty ? raw : snapped,
+                                          start: start, p: p) else {
+            log("音楽スポット: 置ける場所が見つかりませんでした")
+            return
+        }
+        musicSpot = spot
+        ensureSynth()
+        synth?.onMusicFinished = { [weak self] in
+            Task { @MainActor in self?.stopMusicSpot("最後まで鳴り終わった") }
+        }
+        do {
+            try synth?.startMusic(url: url)
+            let d = Geo.distanceM(start, spot.center)
+            let b = Geo.bearingDeg(from: start, to: spot.center)
+            log(String(format: "音楽スポット: %.0fm 先 方位 %.0f°(%@)", d, b,
+                       url.lastPathComponent))
+        } catch {
+            musicSpot = nil
+            log("音楽スポット: 音源を開けませんでした(\(error.localizedDescription))")
+        }
+    }
+
+    /// 位置が動くたびに、音源の向きと音量を付け直す。**前半球へ畳まない**
+    private func updateMusicSpot(at p: GeoPoint) {
+        guard let spot = musicSpot else { return }
+        let sp = params.experiment.musicSpot
+        if spot.isReached(from: p, p: sp) {
+            stopMusicSpot("着いた")
+            return
+        }
+        // 基準はビーコンや誘導と同じ resolver。頭部固定が効いていれば首の向きに追従する
+        let travel = currentTravel(location.motionFix())
+        guard let reference = placementReference(travel) else { return }
+        let placed = spot.placement(from: p, referenceBearingDeg: reference.deg, p: sp)
+        synth?.setMusicPlacement(relativeBearingDeg: placed.relDeg, gain: placed.gain)
+        logToFile(String(format: "音楽 距離=%.0fm 向き=%+.0f° 音量=%.2f 基準=%@",
+                         placed.distanceM, placed.relDeg, placed.gain, reference.source))
+    }
+
+    private func stopMusicSpot(_ reason: String) {
+        guard musicSpot != nil else { return }
+        musicSpot = nil
+        synth?.stopMusic()
+        log("音楽スポット: 終了(\(reason))")
     }
 
     /// 頭部固定の**状態を時計で評価する**(→ docs/13)。

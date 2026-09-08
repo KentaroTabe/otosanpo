@@ -131,7 +131,15 @@
     "directional_harmonic_decay": 0.7,
     "directional_attack_ratio": 0.05,
     "ab_tone_interval_sec": 0.7,
-    "ab_gap_sec": 1.0
+    "ab_gap_sec": 1.0,
+    "music_spot_target_distance_m": 80,
+    "music_spot_max_distance_m": 100,
+    "music_spot_reached_m": 15,
+    "music_spot_bearing_step_deg": 30,
+    "music_spot_gain_far": 0.25,
+    "music_spot_gain_near": 0.9,
+    "music_spot_near_distance_m": 15,
+    "music_spot_far_distance_m": 100
   },
   "gesture": {
     "nod_pitch_threshold_deg": 8,

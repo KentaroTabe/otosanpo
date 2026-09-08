@@ -49,6 +49,18 @@ struct ContentView: View {
                             step: 5) {
                         Text("散歩時間: \(Int(controller.durationMin)) 分")
                     }
+                    // **出発前にしか選べない**(歩き出したら画面は見えない)。
+                    // 音源が置かれていない端末には出さない
+                    if controller.musicFileAvailable {
+                        Toggle("音楽スポットを 1 つ作る(実験)", isOn: $controller.musicSpotWanted)
+                        if controller.musicSpotWanted {
+                            Text("出発したら 100 m 以内に 1 つだけ音楽の鳴る場所を作り、"
+                                 + "そこから聞こえるように鳴らします。着いたら止まります。"
+                                 + "連続音で方向が伝わるかを試すための実験です")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Toggle("通勤路の学習モード", isOn: $controller.commuteLearning)
                     if controller.commuteLearning {
                         Text("ON の間の移動経路は「日常の道」として記録され、以後の提案から除外されます")

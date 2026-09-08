@@ -23,6 +23,40 @@ enum ConfigLoader {
     }
 }
 
+/// 音楽スポットで鳴らす音源(→ Core の MusicSpot・docs/08)。
+///
+/// **リポジトリにもアプリにも同梱しない。** 地図と同じく Documents
+/// (Finder の「iPhone > ファイル」)に置いたものを読む。理由は 2 つ:
+///
+/// - **権利の話をリポジトリに持ち込まない**(→ docs/15)。実験用の BGM は
+///   その場で差し替わるもので、コミットして配るものではない
+/// - 曲を変えるのにビルドが要らない
+///
+/// 名前は問わない(地図の `MapFiles` と同じ考え方)。**並びを名前順に固定する**ので、
+/// 同じ端末なら毎回同じ曲が選ばれる
+enum MusicStore {
+    /// 読める拡張子。m4a を主に想定するが、AVAudioFile が開けるものは通す
+    static let extensions = ["m4a", "mp3", "wav", "aif", "aiff", "caf"]
+
+    static func documentsURL() -> URL? {
+        try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                     appropriateFor: nil, create: false)
+    }
+
+    /// Documents にある音源のうち、名前順で最初のもの。無ければ nil
+    static func firstFile() -> URL? {
+        guard let dir = documentsURL(),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return nil
+        }
+        return names
+            .filter { extensions.contains(($0 as NSString).pathExtension.lowercased()) }
+            .sorted()
+            .first
+            .map { dir.appendingPathComponent($0) }
+    }
+}
+
 /// 通過履歴グリッドの永続化。端末内(Application Support)にのみ保存し、送信しない。
 enum GridStore {
     static func fileURL() throws -> URL {
