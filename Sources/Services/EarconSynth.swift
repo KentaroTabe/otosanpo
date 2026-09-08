@@ -151,8 +151,13 @@ final class EarconSynth {
             // **定位は環境ノードに直結したノードに設定する。**
             // AVAudioMixing の position / renderingAlgorithm が効くのは
             // 「その接続先が持つ入力バス」で、ここでは musicMixer → environment の側。
-            // 上流の musicPlayer に設定しても効かない(2026-09-09 の検証で判明)
-            musicMixer.renderingAlgorithm = .HRTF
+            // 上流の musicPlayer に設定しても効かない(2026-09-09 の検証で判明)。
+            //
+            // **連続音は HRTFHQ。** 素の `.HRTF` は角度の分解能が粗く、
+            // 「向きの選択肢が数えるほどしかない」と感じられた(2026-09-08 の散歩)。
+            // 点の earcon は一瞬なので粗さが出にくいが、鳴り続ける音では効く。
+            // 計算量は増えるが、同時に鳴る連続音は 1 つだけ
+            musicMixer.renderingAlgorithm = .HRTFHQ
         } else {
             engine.connect(musicMixer, to: engine.mainMixerNode, format: monoFormat)
         }

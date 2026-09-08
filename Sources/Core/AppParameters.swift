@@ -315,6 +315,9 @@ public struct AppParameters: Codable, Equatable {
         public var musicSpotBearingStepDeg: Double
         /// 距離の差がこれ未満なら「同じ距離」とみなす [m](→ MusicSpot)
         public var musicSpotSameDistanceToleranceM: Double
+        /// 音楽の行をログに残す間隔 [sec]。**音は頭方位の受信ごと(10 Hz)に付け直す**が、
+        /// ログをその頻度で書くとファイルが音楽で埋まる
+        public var musicLogIntervalSec: Double
         /// 音楽スポットの音量の範囲 [0..1] と、それが最小・最大になる距離 [m]
         public var musicSpotGainFar: Double
         public var musicSpotGainNear: Double

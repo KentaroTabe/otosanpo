@@ -113,6 +113,10 @@ final class WalkSessionController: ObservableObject {
     /// 連続音で方向が伝わるかを試すための実験(2026-09-08 利用者判断)
     @Published var musicSpotWanted = false
     private var musicSpot: MusicSpot?
+    /// スポットに着いたことを 1 度だけ記録するための旗(**着いても止めない**)
+    private var musicSpotReached = false
+    /// 音楽の行を残した時刻。音は 10 Hz で付け直すが、ログはこの間隔に間引く
+    private var lastMusicLogAt: Date?
     /// 音源が Documents にあるか。無ければ画面に選択肢を出さない
     var musicFileAvailable: Bool { MusicStore.firstFile() != nil }
     /// 机上で頭の追従を確かめている最中か(散歩とは独立に回す)
@@ -1144,6 +1148,11 @@ final class WalkSessionController: ObservableObject {
                                at: now, p: params.headMount.fusion)
         // 取り込んだ後にもう一度。**使用可能へ戻った瞬間に鳴らし直す**ため
         tickHeadMount(now: nowDate)
+        // **連続音は基準が動いたら動かす。** 位置更新(約 1 Hz)だけに乗せていたときは、
+        // 首を回してから音が動くまで最大 1 秒かかっていた(2026-09-08 の散歩の指摘)
+        if let p = location.position, state == .wandering || state == .returning {
+            updateMusicSpot(at: p)
+        }
 
         guard state == .wandering || state == .returning else { return }
         // 生データを一定間隔で残す。**生 heading と有効な生 course の対があれば、
@@ -1178,6 +1187,8 @@ final class WalkSessionController: ObservableObject {
     /// 音源の方向へ歩くという体験自体は成立する(実験の最小形として割り切る)
     private func startMusicSpotIfWanted() {
         musicSpot = nil
+        musicSpotReached = false
+        lastMusicLogAt = nil
         guard musicSpotWanted, let start = location.position else { return }
         guard let url = MusicStore.firstFile() else {
             log("音楽スポット: 音源がありません(Finder の「iPhone > ファイル」に置いてください)")
@@ -1227,13 +1238,23 @@ final class WalkSessionController: ObservableObject {
                    placed.gain, url.lastPathComponent))
     }
 
-    /// 位置が動くたびに、音源の向きと音量を付け直す。**前半球へ畳まない**
+    /// 音源の向きと音量を付け直す。**前半球へ畳まない**。
+    ///
+    /// **位置更新(約 1 Hz)だけでなく、頭方位の受信(10 Hz)からも呼ぶ。**
+    /// 位置更新だけに乗せていたときは、首を回してから音が動くまで最大 1 秒かかり、
+    /// 「向きの選択肢が数えるほどしかない」ようにも聞こえた(2026-09-08 の散歩)。
+    /// 連続音は**基準が動いたら動く**必要がある。
+    ///
+    /// **着いても止めない**(2026-09-09)。スポットは出発点の 100 m 以内に置くので、
+    /// 出発点 = 自宅である以上、**帰り着く手前で必ず「着いた」が起きる**。
+    /// 止めていた頃は、着いてから帰宅までの 80 秒が無音になった(実測)。
+    /// 通り過ぎれば背後に回って自然に遠ざかるので、止める必要が無い
     private func updateMusicSpot(at p: GeoPoint) {
         guard let spot = musicSpot else { return }
         let sp = params.experiment.musicSpot
-        if spot.isReached(from: p, p: sp) {
-            stopMusicSpot("着いた")
-            return
+        if !musicSpotReached, spot.isReached(from: p, p: sp) {
+            musicSpotReached = true
+            log("音楽スポット: 着いた(鳴らし続ける)")
         }
         // 基準はビーコンや誘導と同じ resolver。頭部固定が効いていれば首の向きに追従する。
         // **基準が取れなくても音量は更新する** — 距離は方位の有無と関係なく変わるので、
@@ -1247,6 +1268,12 @@ final class WalkSessionController: ObservableObject {
                                     p: sp)
         synth?.setMusicPlacement(relativeBearingDeg: reference == nil ? 0 : placed.relDeg,
                                  gain: placed.gain)
+        // **音は毎回付け直すが、ログは間引く。** 10 Hz で書くとログが音楽で埋まる
+        let now = Date()
+        guard lastMusicLogAt == nil
+            || now.timeIntervalSince(lastMusicLogAt!) >= params.experiment.musicLogIntervalSec
+        else { return }
+        lastMusicLogAt = now
         logToFile(String(format: "音楽 距離=%.0fm 向き=%@ 音量=%.2f 基準=%@",
                          placed.distanceM,
                          reference == nil ? "中央" : String(format: "%+.0f°", placed.relDeg),
