@@ -331,7 +331,7 @@ B(docs/14)は「音に向かって歩く」の骨格を earcon だけで検証�
 「音楽が主役」の音量設計。これらは計画のまま(上記)。
 
 パラメータは `config/parameters.json` の `experiment` にある
-(`music_spot_*` の 8 項目。一覧は [docs/13](13_head_mount.md) の設定表)。
+(`music_spot_*` の 9 項目。一覧は [docs/13](13_head_mount.md) の設定表)。
 **すべて仮置き**で、連続音の音量と距離の対応は歩かないと決まらない。
 
 ### 音の経路(踏んだ落とし穴)
