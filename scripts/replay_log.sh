@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # 使い方:
-#   scripts/replay_log.sh              field-logs/ の最新ログを再生する
-#   scripts/replay_log.sh <ファイル>   指定したログを再生する
+#   scripts/replay_log.sh                     field-logs/ の最新ログを再生する
+#   scripts/replay_log.sh <ファイル>          指定したログを再生する
+#   scripts/replay_log.sh <ファイル> <設定>   閾値を振り直して比べる
+#     (設定 JSON を書き換えた版を渡す。歩き直さずに値を決めるための道具)
 #
 # 記録したフィールドログを Core の純粋ロジックに流し直し、経路長・迂回率・
 # フィルタの寄与を計算する。実機で歩き直さずに実装の正しさを確かめるための道具。
@@ -33,4 +35,10 @@ if [ -z "${SRC:-}" ] || [ ! -f "$SRC" ]; then
   exit 1
 fi
 
-"$BIN" "$SRC" config/parameters.json
+CONFIG="${2:-config/parameters.json}"
+if [ ! -f "$CONFIG" ]; then
+  echo "設定ファイルがありません: $CONFIG" >&2
+  exit 1
+fi
+
+"$BIN" "$SRC" "$CONFIG"

@@ -18,6 +18,10 @@ struct LoggedFix {
     let speedMps: Double?
     let courseDeg: Double?
     let accuracyM: Double?
+    /// course の許容誤差。**製品と同じ有効性判定を再現するのに要る**
+    let courseAccuracyDeg: Double?
+    /// この行を書いた時点での fix の古さ [sec]。後の時刻での古さは経過時間を足して求める
+    let ageSec: Double?
 }
 
 /// "…速度=1.23m/s…" のように、キーの直後の数値を取り出す。単位や括弧は無視される
@@ -56,7 +60,9 @@ func readFixes(_ path: String) -> [LoggedFix] {
             point: GeoPoint(latitude: lat, longitude: lon),
             speedMps: numberAfter("速度=", in: msg),
             courseDeg: numberAfter("course=", in: msg),
-            accuracyM: numberAfter("水平精度=", in: msg)
+            accuracyM: numberAfter("水平精度=", in: msg),
+            courseAccuracyDeg: numberAfter("course精度=", in: msg),
+            ageSec: numberAfter("経過=", in: msg)
         ))
     }
     return out
@@ -988,4 +994,182 @@ if v.used < 20 {
     } else {
         print("  → 符号は揃っている。yaw_sign は +1 のままでよい。")
     }
+}
+
+// MARK: - 頭部固定(学習・検疫・使用可能)を再生する
+//
+// docs/13 は「`頭方位` 行があるので閾値も学習の条件も再生で振り直せる(歩き直し不要)」と
+// 約束していたが、**その道具は存在しなかった**(2026-09-08 に判明)。ここがその実装。
+//
+// 判定には**製品と同じ Core の `HeadMountFusion`** を使う。再生専用の複製を書くと
+// 必ず本体とずれる(そして、ずれたことに気づかない)。
+
+/// ログに残った 1 件の頭方位
+struct LoggedHeadHeading {
+    let time: Date
+    /// 生の方位。旧形式では「補正後 + 補正値」から復元する
+    let rawDeg: Double
+    /// ログに残っていた学習値(照合用。学習前は nil)
+    let loggedOffsetDeg: Double?
+    /// ログに残っていた検疫の状態(照合用)
+    let loggedState: String
+    /// 旧形式から復元した値か
+    let reconstructed: Bool
+}
+
+/// `頭方位` 行を読む。**新旧どちらの形式も読む**。
+///
+/// - 新形式: `raw=` を持つ(2026-09-08 以降)
+/// - 旧形式: `heading=` は**補正後**の値。`補正=` が数値なら生値は `heading + 補正`、
+///   `補正=学習中` なら補正されていないので `heading` がそのまま生値
+func readHeadHeadings(_ path: String) -> [LoggedHeadHeading] {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    var out: [LoggedHeadHeading] = []
+    for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+        let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        guard cols.count >= 5, cols[4].hasPrefix("頭方位 ") else { continue }
+        guard let time = formatter.date(from: cols[0]) else { continue }
+        let msg = cols[4]
+        let offset = numberAfter("補正=", in: msg)   // 「学習中」なら nil
+        // 状態は日本語ラベルなので数値抽出が使えない。区切りまでを切り出す
+        var stateLabel = "-"
+        if let r = msg.range(of: "状態=") {
+            stateLabel = String(msg[r.upperBound...].prefix { !$0.isWhitespace })
+        }
+        if let raw = numberAfter("raw=", in: msg) {
+            out.append(LoggedHeadHeading(time: time, rawDeg: raw, loggedOffsetDeg: offset,
+                                         loggedState: stateLabel, reconstructed: false))
+        } else if let corrected = numberAfter("heading=", in: msg) {
+            let raw = Geo.normalizeDeg(corrected + (offset ?? 0))
+            out.append(LoggedHeadHeading(time: time, rawDeg: raw, loggedOffsetDeg: offset,
+                                         loggedState: stateLabel, reconstructed: true))
+        }
+    }
+    return out
+}
+
+let headSamples = readHeadHeadings(logPath)
+
+print("\n== 頭部固定の再生(学習・検疫・使用可能)==")
+
+if headSamples.isEmpty {
+    // **0 件を「問題なし」と読ませない。** 何が足りないのかを書く
+    print("  「頭方位」行がありません。判定できません。")
+    print("  この行は head_mount.enabled = true でビルドした版でしか記録されません。")
+    print("  実験のビルドで歩いたログを取り込んでから、もう一度実行してください。")
+} else {
+    let reconstructed = headSamples.filter(\.reconstructed).count
+    print("  頭方位 行: \(headSamples.count) 件"
+          + (reconstructed > 0 ? "(うち \(reconstructed) 件は旧形式から生値を復元)" : ""))
+    print("  設定: \(configPath)")
+    let hm = params.headMount
+    print(String(format: "    distrust %.0f°/%.0fs・regain %.0fs・"
+                 + "学習 標本 %.0f・半減期 %.0fs・R≥%.2f・鮮度 %.1fs",
+                 hm.distrustDeg, hm.distrustSec, hm.regainSec,
+                 hm.offsetMinSamples, hm.offsetHalfLifeSec,
+                 hm.offsetMinConcentration, hm.staleSec))
+
+    // **course は fix 行から作り直す。** ログの `頭方位 course=` は、
+    // 2026-09-08 以前は「止まる直前の保持値」が混ざった値なので正解にしてはいけない
+    let sortedFixes = all.sorted { $0.time < $1.time }
+    func rawCourse(at t: Date) -> Double? {
+        // t 以下で最も新しい fix を二分探索で拾う
+        var lo = 0, hi = sortedFixes.count - 1, found = -1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            if sortedFixes[mid].time <= t { found = mid; lo = mid + 1 } else { hi = mid - 1 }
+        }
+        guard found >= 0 else { return nil }
+        let f = sortedFixes[found]
+        // fix 行に書かれた古さは「書いた時点」のもの。そこからの経過を足す
+        let age = (f.ageSec ?? 0) + t.timeIntervalSince(f.time)
+        let motion = MotionFix(courseDeg: f.courseDeg, courseAccuracyDeg: f.courseAccuracyDeg,
+                               speedMps: f.speedMps, compassHeadingDeg: nil,
+                               ageSec: age, horizontalAccuracyM: f.accuracyM)
+        // **製品と同じ規則**。保持値もコンパスも渡さない(→ WalkSessionController.rawCourseBearing)
+        guard let t = TravelDirection.resolve(motion, held: nil, params: params.location),
+              t.source == .course else { return nil }
+        return t.deg
+    }
+
+    // ログは log_interval_sec(既定 1 秒)に間引かれている。実機は update_hz(既定 10 Hz)。
+    // **学習の重みは標本数で数える**ので、間引いたまま流すと立ち上がりが 10 倍遅く見える。
+    // 標本を間隔ぶん複製して近似する(下の但し書きのとおり、あくまで近似)
+    let subdivisions = max(1, Int((params.headMount.updateHz * params.headMount.logIntervalSec)
+                                  .rounded()))
+    var fusion = HeadMountFusion()
+    let fp = params.headMount.fusion
+    let t0 = headSamples[0].time
+    var counts: [String: Int] = [:]
+    var transitions: [(Double, String)] = []
+    var lastLabel: String?
+    var firstLearnedAt: Double?
+    var firstUsableAt: Double?
+    var usableSamples = 0
+    var offsetAgreementSum = 0.0
+    var offsetAgreementCount = 0
+
+    for (i, s) in headSamples.enumerated() {
+        let dt = i + 1 < headSamples.count
+            ? headSamples[i + 1].time.timeIntervalSince(s.time) : params.headMount.logIntervalSec
+        let step = dt / Double(subdivisions)
+        let course = rawCourse(at: s.time)
+        var use = HeadMountFusion.Use.noSample
+        for k in 0..<subdivisions {
+            let t = s.time.timeIntervalSinceReferenceDate + Double(k) * step
+            use = fusion.ingest(headingDeg: s.rawDeg, rawCourseDeg: course, at: t, p: fp)
+        }
+        let elapsed = s.time.timeIntervalSince(t0)
+        if firstLearnedAt == nil, fusion.learnedOffsetDeg != nil { firstLearnedAt = elapsed }
+        if firstUsableAt == nil, use.isUsable { firstUsableAt = elapsed }
+        if use.isUsable { usableSamples += 1 }
+        counts[use.label, default: 0] += 1
+        if lastLabel != use.label {
+            transitions.append((elapsed, use.label))
+            lastLabel = use.label
+        }
+        // 再生で得た学習値が、ログに残っていた値と合っているか(配線の照合)
+        if let logged = s.loggedOffsetDeg, let replayed = fusion.learnedOffsetDeg {
+            offsetAgreementSum += abs(Geo.angularDiffDeg(logged, replayed))
+            offsetAgreementCount += 1
+        }
+    }
+
+    func secs(_ v: Double?) -> String { v.map { String(format: "%.0f 秒", $0) } ?? "成立せず" }
+    print("  最初に学習が成立: \(secs(firstLearnedAt))")
+    print("  最初に使用可能: \(secs(firstUsableAt))")
+    print(String(format: "  使用可能だった割合: %.0f%%(%d / %d 件)",
+                 100 * Double(usableSamples) / Double(headSamples.count),
+                 usableSamples, headSamples.count))
+    print("  内訳:")
+    for (label, n) in counts.sorted(by: { $0.value > $1.value }) {
+        print(String(format: "    %-10@ %5d 件(%.0f%%)", label as NSString, n,
+                     100 * Double(n) / Double(headSamples.count)))
+    }
+    if let learned = fusion.learnedOffsetDeg {
+        print(String(format: "  最終的な学習値: %+.1f°(R=%.2f)", learned, fusion.concentration))
+    } else {
+        print(String(format: "  最終的な学習値: 成立せず(R=%.2f)", fusion.concentration))
+    }
+    if offsetAgreementCount > 0 {
+        print(String(format: "  ログに残っていた学習値との差(平均): %.1f°(%d 件で照合)",
+                     offsetAgreementSum / Double(offsetAgreementCount), offsetAgreementCount))
+    }
+    print("  遷移(先頭 12 件):")
+    for (t, label) in transitions.prefix(12) {
+        print(String(format: "    %6.0f 秒  → %@", t, label as NSString))
+    }
+    if transitions.count > 12 { print("    …ほか \(transitions.count - 12) 回") }
+
+    print("")
+    print("  ※ これは**間引いたログからの再評価**であって、実機の完全な再現ではありません。")
+    print("     ログは \(params.headMount.logIntervalSec) 秒間隔、実機は "
+          + "\(params.headMount.updateHz) Hz。学習の重みは標本を \(subdivisions) 倍に"
+          + "複製して近似しています。1 秒未満の磁気の乱れは復元できません。")
+    print("     検疫の 5 秒窓や大きな分布の評価には十分ですが、"
+          + "offset_min_samples の立ち上がりは近似値として読んでください。")
+    print("  ※ 閾値を振り直すには、設定 JSON を書き換えて "
+          + "scripts/replay_log.sh <ログ> <設定JSON> を実行してください。")
 }
