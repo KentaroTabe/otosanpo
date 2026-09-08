@@ -2,11 +2,12 @@
 # 使い方: scripts/ask_codex.sh <お題ファイル> [--resume] [--write]
 # 例:     scripts/ask_codex.sh codex-exchange/01-design.md
 #         scripts/ask_codex.sh codex-exchange/02-design.md --resume
-#         scripts/ask_codex.sh codex-exchange/05-check.md --resume --write
+#         scripts/ask_codex.sh codex-exchange/05-check.md --resume
 #
 # お題ファイルの中身を Codex へ渡し、返答を <お題ファイル>.reply.md に書く。
 # --resume  このリポジトリで最後に開いた会話の続きにする(付けなければ新しい会話)
-# --write   ワークスペースへの書き込みを許す(検証役がテストを走らせる時だけ)
+# --write   ワークスペースへの書き込みを許す。**検証では使わない**(検証役はテストを
+#           実行しない・docs/16)。相手に実装させる案件で使う
 #
 # 生ログは codex-exchange/ 配下(gitignore 対象)。決まったことは docs/ へ書き写す。
 set -euo pipefail

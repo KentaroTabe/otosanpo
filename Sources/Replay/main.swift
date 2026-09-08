@@ -1017,6 +1017,10 @@ struct LoggedHeadHeading {
     let reconstructed: Bool
 }
 
+/// `頭方位` 行はあったが `raw=` も `heading=` も無くて使えなかった行数。
+/// **0 件を「問題なし」と読ませない**ための材料(→ 受け入れ条件 E6)
+var headLinesMissingHeading = 0
+
 /// `頭方位` 行を読む。**新旧どちらの形式も読む**。
 ///
 /// - 新形式: `raw=` を持つ(2026-09-08 以降)
@@ -1045,6 +1049,9 @@ func readHeadHeadings(_ path: String) -> [LoggedHeadHeading] {
             let raw = Geo.normalizeDeg(corrected + (offset ?? 0))
             out.append(LoggedHeadHeading(time: time, rawDeg: raw, loggedOffsetDeg: offset,
                                          loggedState: stateLabel, reconstructed: true))
+        } else {
+            // **黙って捨てない。** 捨てた行を数えて、後で「何が足りないか」を言う
+            headLinesMissingHeading += 1
         }
     }
     return out
@@ -1056,9 +1063,15 @@ print("\n== 頭部固定の再生(学習・検疫・使用可能)==")
 
 if headSamples.isEmpty {
     // **0 件を「問題なし」と読ませない。** 何が足りないのかを書く
-    print("  「頭方位」行がありません。判定できません。")
-    print("  この行は head_mount.enabled = true でビルドした版でしか記録されません。")
-    print("  実験のビルドで歩いたログを取り込んでから、もう一度実行してください。")
+    if headLinesMissingHeading > 0 {
+        print("  判定不能: 「頭方位」行が \(headLinesMissingHeading) 件ありましたが、"
+              + "raw= も heading= も入っていません。")
+        print("  方位の列を持つ版でログを取り直してください。")
+    } else {
+        print("  「頭方位」行がありません。判定できません。")
+        print("  この行は head_mount.enabled = true でビルドした版でしか記録されません。")
+        print("  実験のビルドで歩いたログを取り込んでから、もう一度実行してください。")
+    }
 } else {
     let reconstructed = headSamples.filter(\.reconstructed).count
     print("  頭方位 行: \(headSamples.count) 件"
@@ -1071,9 +1084,27 @@ if headSamples.isEmpty {
                  hm.offsetMinSamples, hm.offsetHalfLifeSec,
                  hm.offsetMinConcentration, hm.staleSec))
 
+    if headLinesMissingHeading > 0 {
+        print("  ※ raw= も heading= も無い「頭方位」行を \(headLinesMissingHeading) 件"
+              + "読み飛ばしました(この分は判定に入っていません)")
+    }
+
     // **course は fix 行から作り直す。** ログの `頭方位 course=` は、
     // 2026-09-08 以前は「止まる直前の保持値」が混ざった値なので正解にしてはいけない
     let sortedFixes = all.sorted { $0.time < $1.time }
+    // 製品と同じ規則で course を出すには、fix 行に速度と course が要る。
+    // **欠けたまま「成立せず・0%」と出すと、実装の問題と読み違える**(→ E6)
+    let fixesWithSpeed = sortedFixes.filter { $0.speedMps != nil }.count
+    let fixesWithCourse = sortedFixes.filter { $0.courseDeg != nil }.count
+    if fixesWithSpeed == 0 || fixesWithCourse == 0 {
+        var missing: [String] = []
+        if fixesWithSpeed == 0 { missing.append("速度=") }
+        if fixesWithCourse == 0 { missing.append("course=") }
+        print("  判定不能: fix 行に \(missing.joined(separator: " と ")) がありません"
+              + "(\(sortedFixes.count) 件すべて)。")
+        print("  生の course を復元できないので、学習も検疫も評価できません。")
+        print("  これらの列を持つ版でログを取り直してください。")
+    }
     func rawCourse(at t: Date) -> Double? {
         // t 以下で最も新しい fix を二分探索で拾う
         var lo = 0, hi = sortedFixes.count - 1, found = -1

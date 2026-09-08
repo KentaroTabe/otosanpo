@@ -177,7 +177,7 @@ final class HeadMountFusionTests: XCTestCase {
 
     /// **保持 course は「いま有効な生の course」ではない。**
     ///
-    /// Controller はこの規則で course を選ぶ(`rawCourseBearing`)。
+    /// Controller はこの規則で course を選ぶ(`rawCourseBearing` →`TravelDirection.rawCourse`)。
     /// 立ち止まった fix に対して `held` を渡さずに解けば nil になる、が担保
     func testAStoppedFixYieldsNoRawCourse() {
         let params = AppParameters.Location(minSpeedForCourseMPerS: 0.7,
@@ -195,7 +195,93 @@ final class HeadMountFusionTests: XCTestCase {
                        .heldCourse)
     }
 
+    /// **A3 の本体: 製品と同じ course 抽出を通した系列で、停止が学習と検疫を壊さないこと。**
+    ///
+    /// 前のテストは Fusion へ直接 nil を渡しており、「nil が渡ってくる」ことを前提にしていた。
+    /// **問題はまさに nil が渡ってこなかったことだった**ので、それでは配線の欠陥を捕まえられない
+    /// (2026-09-08 の検証で指摘)。ここでは fix 列を `TravelDirection.rawCourse` に通し、
+    /// **保持 course もコンパスも混ざらない**ことまで含めて確かめる
+    func testStoppedFixesNeverReachTheFusionThroughTheProductRule() {
+        let loc = AppParameters.Location(minSpeedForCourseMPerS: 0.7,
+                                         maxCourseAccuracyDeg: 70,
+                                         maxFixAgeSec: 10,
+                                         courseHoldSec: 15,
+                                         allowCompassFallback: false)
+        let p = learnable(staleSec: 30)
+        var f = HeadMountFusion()
+
+        // 歩いている fix。course 90°・速度 1.0 m/s
+        let walking = MotionFix(courseDeg: 90, courseAccuracyDeg: 10, speedMps: 1.0,
+                                compassHeadingDeg: 200, ageSec: 1)
+        XCTAssertEqual(TravelDirection.rawCourse(walking, params: loc) ?? .nan, 90, accuracy: 1e-9,
+                       "前提: 歩いている fix からは生の course が取れる")
+
+        var t = 100.0
+        for _ in 0..<400 {
+            f.ingest(headingDeg: 184, rawCourseDeg: TravelDirection.rawCourse(walking, params: loc),
+                     at: t, p: p)
+            t += 0.1
+        }
+        XCTAssertEqual(f.use(at: t, p: p), .use, "前提: 歩いて使える状態にする")
+        let offsetBefore = f.learnedOffsetDeg
+        let concentrationBefore = f.concentration
+        let stateBefore = f.quarantineState
+
+        // 立ち止まった fix。**保持 course もコンパスも持っている**が、生の course は無い
+        let stopped = MotionFix(courseDeg: 90, courseAccuracyDeg: 10, speedMps: 0.1,
+                                compassHeadingDeg: 200, ageSec: 1)
+        XCTAssertNil(TravelDirection.rawCourse(stopped, params: loc),
+                     "止まったら製品の規則では生の course は出ない")
+
+        // その状態で首を大きく振る
+        for i in 0..<200 {
+            f.ingest(headingDeg: Double(184 + 80 * sin(Double(i) * 0.3)),
+                     rawCourseDeg: TravelDirection.rawCourse(stopped, params: loc),
+                     at: t, p: p)
+            t += 0.1
+        }
+
+        XCTAssertEqual(f.learnedOffsetDeg ?? .nan, offsetBefore ?? .nan, accuracy: 1e-9,
+                       "停止後も学習値は不変であること")
+        XCTAssertEqual(f.concentration, concentrationBefore, accuracy: 1e-9,
+                       "停止後も R は不変であること")
+        XCTAssertEqual(f.quarantineState, stateBefore, "停止後も検疫の状態は不変であること")
+        XCTAssertEqual(f.use(at: t, p: p), .use)
+    }
+
+    /// コンパス退避を許す設定でも、**学習・検疫へは生の course しか渡らない**
+    func testCompassFallbackNeverReachesTheFusion() {
+        let loc = AppParameters.Location(minSpeedForCourseMPerS: 0.7,
+                                         maxCourseAccuracyDeg: 70,
+                                         maxFixAgeSec: 10,
+                                         courseHoldSec: 15,
+                                         allowCompassFallback: true)
+        let stopped = MotionFix(courseDeg: -1, courseAccuracyDeg: -1, speedMps: 0.0,
+                                compassHeadingDeg: 200, ageSec: 1)
+        XCTAssertEqual(TravelDirection.resolve(stopped, held: nil, params: loc)?.source, .compass,
+                       "前提: この設定なら resolve はコンパスへ退避する")
+        XCTAssertNil(TravelDirection.rawCourse(stopped, params: loc),
+                     "それでも学習・検疫へは渡さない")
+    }
+
     // MARK: - 補正後の方位
+
+    /// **鮮度切れは「読み出しの回数」に依らず、同じ判定を返す。**
+    ///
+    /// 状態の遷移ログと有効性パルスは、この判定を時計仕掛けで読んで動く。
+    /// 何度読んでも同じ答えが返らないと、遷移が二重に記録される
+    func testStalenessIsStableAcrossRepeatedReads() {
+        let p = learnable(staleSec: 1.0)
+        var f = HeadMountFusion()
+        let t = feed(&f, count: 400, from: 100, p: p, heading: { _ in 184 }, course: { _ in 90 })
+        XCTAssertEqual(f.use(at: t + 1.1, p: p), .stale)
+        XCTAssertEqual(f.use(at: t + 1.1, p: p), .stale, "読み出しは判定を変えない")
+        XCTAssertEqual(f.use(at: t + 1.2, p: p), .stale)
+        // 受信が再開すれば、同じ標本 1 件で使用可能へ戻る(検疫の状態は保たれているため)
+        f.ingest(headingDeg: 184, rawCourseDeg: 90, at: t + 1.3, p: p)
+        XCTAssertEqual(f.use(at: t + 1.3, p: p), .use,
+                       "受信が戻れば即座に使える(改めて 5 秒待たせない)")
+    }
 
     /// 補正後の方位は「生 − 学習値」。**学習前は生のまま**(ログに出すため)
     func testCorrectedHeadingSubtractsTheLearnedOffset() {

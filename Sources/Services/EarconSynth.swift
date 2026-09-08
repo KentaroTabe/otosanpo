@@ -11,6 +11,11 @@ import AVFoundation
 final class EarconSynth {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
+    /// 有効性パルス専用のノード。**機能音と同じノードに載せない**(2026-09-08 の検証)。
+    /// 単一ノードだと、鳴らすたびに音量・位置を書き換えるので、
+    /// 再生中の確認音の定位を動かしたり、後続の機能音をキューで待たせたりしうる。
+    /// パルスは方向を持たない診断音なので、環境ノードを通さず直接ミキサへ出す
+    private let pulsePlayer = AVAudioPlayerNode()
     private let environment = AVAudioEnvironmentNode()
     private var buffers: [Earcon: AVAudioPCMBuffer] = [:]
     /// 真後ろ用の暗い音色。HRTF の前後判別は当てにならないため、音色で前後を分ける
@@ -59,6 +64,7 @@ final class EarconSynth {
         behindDarkness = audio.behindDarkness
 
         engine.attach(player)
+        engine.attach(pulsePlayer)
         if audio.useSpatialAudio {
             engine.attach(environment)
             isSpatial = true
@@ -119,6 +125,9 @@ final class EarconSynth {
         } else {
             engine.connect(player, to: engine.mainMixerNode, format: monoFormat)
         }
+        // パルスは環境ノードを通さず直接ミキサへ。方向を持たないことが**構造で**保証され、
+        // 機能音の定位・音量・再生順にも触れない
+        engine.connect(pulsePlayer, to: engine.mainMixerNode, format: monoFormat)
     }
 
     /// **AirPods の着脱でエンジンが止まる。**
@@ -188,6 +197,14 @@ final class EarconSynth {
               useShipped: Bool = false) {
         // 鳴らす直前にも確かめる。通知を取りこぼしても無音のままにしない
         if !engine.isRunning { recover(reason: "再生前の点検") }
+        // 有効性パルスは専用ノード。**機能音の定位・音量・再生順に一切触れない**
+        if e == .validityPulse {
+            guard let b = buffers[e] else { return }
+            pulsePlayer.volume = Float(max(0, min(1, gain)))
+            pulsePlayer.scheduleBuffer(b)
+            if !pulsePlayer.isPlaying { pulsePlayer.play() }
+            return
+        }
         // **前後は伝わらないチャネルなので、主張しない**(→ SoundPlacement.foldToFrontDeg)。
         // 全球に置いていた頃、前に置いた音まで背後から聞こえていた(2026-08-30 テスター報告)。
         // 畳んだ後は 90° 以内なので、真後ろ用の音色(isBehind)にも到達しない

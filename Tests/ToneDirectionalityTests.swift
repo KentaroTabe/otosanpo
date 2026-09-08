@@ -111,7 +111,9 @@ final class ToneDirectionalityTests: XCTestCase {
     /// 配る値は配布版(testflight-202608311200)と同じ純音に戻した。
     ///
     /// ここが守るのは「実験の値がうっかり配布物へ混ざらないこと」。
-    /// **実験するときは 5 つとも変える**(片方だけ変えると機種差になる)。
+    /// **配る値は 5 つとも揃っていること**を要求する(片方だけ変えると機種差になる)。
+    /// 実験ビルドで変えるのは**方向を担う 2 種だけ**で、それは `head_mount.enabled` の
+    /// 側で切り替わる(2026-09-08 合議)。この検査が見ているのは配布値の側。
     /// 値を上げて配ると決めた時は、この検査の期待値も一緒に更新する
     private func shippedConfig() throws -> AppParameters {
         try ConfigLoader.load(from: URL(fileURLWithPath: #filePath)
@@ -164,6 +166,23 @@ final class ToneDirectionalityTests: XCTestCase {
                              "実験の値は配布版より倍音が多いはず(そうでなければ実験にならない)")
         XCTAssertLessThan(rich.attackRatio, base.attackRatio,
                           "実験の値は配布版より立ち上がりが鋭いはず")
+    }
+
+    /// **方向を持たない 3 種には実験の値を載せない**(2026-09-08 合議)。
+    /// 無関係な音色変更が実験に混ざると、何を聴いているのか分からなくなる
+    func testExperimentOverlayIsNotAppliedToTheNonDirectionalTones() throws {
+        let p = try shippedConfig()
+        // 実験ビルドで差し替えるのは suggestion と home_beacon だけ。
+        // ここでは「上書きすると別物になる」ことを示し、
+        // 実際に上書きされる対象が 2 種であることは EarconSynth 側の責務として分ける
+        for (name, tone) in [("時間到来", p.audio.tones.timeUpPrompt),
+                             ("確認音", p.audio.tones.returnAck),
+                             ("到着音", p.audio.tones.arrival)] {
+            let overlaid = p.experiment.applied(to: tone)
+            XCTAssertNotEqual(overlaid.harmonics, tone.harmonics,
+                              "\(name): 上書きすれば変わる値であることの確認"
+                              + "(この 3 種には上書きを適用しない、が設計)")
+        }
     }
 
     /// 上書きした音が**実際に高域を持つ**ことまで確かめる。

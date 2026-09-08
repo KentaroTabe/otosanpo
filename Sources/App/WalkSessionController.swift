@@ -107,6 +107,8 @@ final class WalkSessionController: ObservableObject {
     private var lastHeadMountUseLabel: String?
     /// 有効性パルスを最後に鳴らした時刻(→ docs/13。実験のときだけ動く)
     private var lastValidityPulseAt: Date?
+    /// 頭部固定の状態を**時計で**評価する。受信が止まった時に鮮度切れを捕まえるため
+    private var headMountTimer: Timer?
     /// 机上で頭の追従を確かめている最中か(散歩とは独立に回す)
     @Published private(set) var headCheckActive = false
     /// 机上テストの現在値。画面に出して符号と追従を目で確かめる
@@ -260,6 +262,13 @@ final class WalkSessionController: ObservableObject {
             lastHeadMountUseLabel = nil
             lastValidityPulseAt = nil
             headMountMotion.start(updateHz: params.headMount.updateHz)
+            // 状態の評価は受信と切り離す。**受信が止まった時こそ評価が要る**
+            headMountTimer?.invalidate()
+            headMountTimer = Timer.scheduledTimer(
+                withTimeInterval: params.headMount.logIntervalSec, repeats: true
+            ) { [weak self] _ in
+                Task { @MainActor in self?.tickHeadMount() }
+            }
             log("頭部固定: 有効(利用可能=\(headMountMotion.isAvailable ? "はい" : "いいえ")"
                 + " 取り付けのずれは歩きながら学習)")
         }
@@ -688,6 +697,8 @@ final class WalkSessionController: ObservableObject {
             motion.stop()
             pedometer.stop()
             headMountMotion.stop()
+            headMountTimer?.invalidate()
+            headMountTimer = nil
             // 定位の基準を進行方位に戻す(次の散歩の検疫が通るまで使わない)。
             // 学習と検疫は散歩ごとに白紙なので、判断ごと捨てる
             latestFacingBearing = nil
@@ -805,7 +816,7 @@ final class WalkSessionController: ObservableObject {
                                             route: params.route) {
             // 提案は歩いている時にしか出ないので heading は必ずある。
             // 頭部固定が使えていればそちらが基準になる(同じ resolver を通す)
-            let reference = placementReference(heading)?.deg ?? heading
+            let reference = placementReference(travel)?.deg ?? heading
             let rel = Geo.angularDiffDeg(s.absoluteBearingDeg, reference)
             synth?.play(.suggestion, relativeBearingDeg: rel)
             lastSuggestionPoint = p
@@ -895,7 +906,10 @@ final class WalkSessionController: ObservableObject {
     ///   進行方位に首のぶんを足す。**既定は false**(姿勢の yaw を使った系統は
     ///   2026-08-19 に左右を壊した前科があるので、机上で確かめるまで動作に入れない)
     /// - どちらも無ければ nil。呼ぶ側は中央で鳴らす
-    private func placementReference(_ travelDeg: Double?,
+    /// - Parameter travel: 進行方位。**出所ごと**受け取る。
+    ///   `course` と `heldCourse` を `Double` に潰すと、ログの `基準=進行` が
+    ///   「いま測れている向き」なのか「止まる前の保持値」なのか区別できなくなる
+    private func placementReference(_ travel: TravelDirectionFix?,
                                     now: Date = Date()) -> (deg: Double, source: String)? {
         // **進行方位が要らないのは頭部固定のときだけ。**
         // AirPods の融合(latestFacingBearing)は進行方位から育てる推定値で、
@@ -904,10 +918,16 @@ final class WalkSessionController: ObservableObject {
         if params.headMount.enabled, let facing = facingBearing(now: now) {
             return (facing, "頭部")
         }
-        guard let travelDeg else { return nil }
-        if let facing = latestFacingBearing { return (facing, "顔") }
-        guard params.heading.useGyroHeadOffset else { return (travelDeg, "進行") }
-        return (Geo.normalizeDeg(travelDeg + headTracker.offsetDeg), "進行+首")
+        guard let travel else { return nil }
+        let base: String
+        switch travel.source {
+        case .course: base = "進行"
+        case .heldCourse: base = "進行(保持)"
+        case .compass: base = "コンパス"
+        }
+        if let facing = latestFacingBearing { return (facing, "顔(\(base))") }
+        guard params.heading.useGyroHeadOffset else { return (travel.deg, base) }
+        return (Geo.normalizeDeg(travel.deg + headTracker.offsetDeg), "\(base)+首")
     }
 
     /// 定位の基準にする「顔の向き」。**読み出すたびに評価する。**
@@ -928,10 +948,9 @@ final class WalkSessionController: ObservableObject {
     /// 「止まる直前の course」と「回っている頭」を突き合わせると、R が落ちて
     /// 検疫が退避に落ちる — **首を回す試験が自分の前提を壊す**(2026-09-08)
     private func rawCourseBearing(now: Date = Date()) -> Double? {
-        let fix = location.motionFix(now: now)
-        guard let t = TravelDirection.resolve(fix, held: nil, params: params.location),
-              t.source == .course else { return nil }
-        return t.deg
+        // 規則そのものは Core に置いてある。**ここに書き下すと、うっかり保持値を
+        // 渡す変更が入ってもテストが落ちない**(2026-09-08 の検証で指摘された)
+        TravelDirection.rawCourse(location.motionFix(now: now), params: params.location)
     }
 
     private func playBeacon() {
@@ -944,7 +963,7 @@ final class WalkSessionController: ObservableObject {
         // 定位の基準は「顔の向き」。取れないうちは進行方位で代用する。
         // 顔基準にすると、首を振っても音が世界に固定されて聞こえる。
         // **頭部固定が使えていれば進行方位は要らない** — 立ち止まっても左右が消えない
-        guard let reference = placementReference(travel?.deg) else {
+        guard let reference = placementReference(travel) else {
             // どちらも無いときは左右を付けない(誤った定位を出すより中央で鳴らす)。
             // 中央で鳴った回数を数えられないと「左右が付かなすぎる」を測れないため記録する
             noteDirectionUnavailable(fix)
@@ -1102,18 +1121,13 @@ final class WalkSessionController: ObservableObject {
         let nowDate = Date()
         let now = nowDate.timeIntervalSinceReferenceDate
         let course = rawCourseBearing(now: nowDate)
-        let use = headMountFusion.ingest(headingDeg: headingDeg, rawCourseDeg: course,
-                                         at: now, p: params.headMount.fusion)
-        headMountLabel = use.label
-        // 有効性パルスは受信のたびに判定する。**鳴らすかどうかは fireValidityPulse が決める**
-        fireValidityPulse(use, now: nowDate)
+        headMountFusion.ingest(headingDeg: headingDeg, rawCourseDeg: course,
+                               at: now, p: params.headMount.fusion)
+        // **状態の判定とパルスはここでは行わない。** 受信が止まった時に呼ばれないので、
+        // 鮮度切れを捕まえられない。判定は tickHeadMount(時計仕掛け)が行う
+        tickHeadMount(now: nowDate)
 
         guard state == .wandering || state == .returning else { return }
-        // **使用可能状態の遷移だけ**を残す。周期ログでファイルを埋めない
-        if lastHeadMountUseLabel != use.label {
-            lastHeadMountUseLabel = use.label
-            logToFile("頭部固定 状態が \(use.label) へ")
-        }
         // 生データを一定間隔で残す。**生 heading と有効な生 course の対があれば、
         // 検疫の閾値も学習の条件も再生で振り直せる**(docs/13。歩き直さずに決める材料)。
         // 補正後だけを残していると、過去ログから生値を復元する手間が要る(実際そうなっていた)
@@ -1132,8 +1146,28 @@ final class WalkSessionController: ObservableObject {
                              + " 状態=%@ 補正=%@ R=%.2f 使用=%@",
                              headingDeg, corrected, courseLabel, diffLabel,
                              headMountFusion.quarantineState.label,
-                             offsetLabel, headMountFusion.concentration, use.label))
+                             offsetLabel, headMountFusion.concentration,
+                             headMountFusion.use(at: now, p: params.headMount.fusion).label))
         }
+    }
+
+    /// 頭部固定の**状態を時計で評価する**(→ docs/13)。
+    ///
+    /// なぜ受信側でやらないか(2026-09-08 の検証で判明): 更新が止まったときは
+    /// `onHeadMountHeading` が**呼ばれない**。そこで判定していると、
+    /// 「古い」への遷移もパルスの停止も記録に残らず、`lastValidityPulseAt` も残り続けて
+    /// 復帰時の鳴り直しが遅れる。**鮮度を扱う処理は時計仕掛けでなければならない。**
+    private func tickHeadMount(now: Date = Date()) {
+        guard params.headMount.enabled else { return }
+        let use = headMountFusion.use(at: now.timeIntervalSinceReferenceDate,
+                                      p: params.headMount.fusion)
+        headMountLabel = use.label
+        if state == .wandering || state == .returning, lastHeadMountUseLabel != use.label {
+            // **遷移だけ**を残す。周期ログでファイルを埋めない
+            lastHeadMountUseLabel = use.label
+            logToFile("頭部固定 状態が \(use.label) へ")
+        }
+        fireValidityPulse(use, now: now)
     }
 
     /// 有効性パルス — **画面が見えない散歩で「いま試してよい」を返す唯一の手段**(→ docs/13)。
@@ -1370,7 +1404,7 @@ final class WalkSessionController: ObservableObject {
         let travel = currentTravel(fix, now: now)
         // **判定は鳴らす側と同じ基準で行う**(この関数の説明のとおり)。
         // 基準が無ければ中央で鳴るので、方向の変化という概念自体が無い
-        guard let reference = placementReference(travel?.deg, now: now) else { return }
+        guard let reference = placementReference(travel, now: now) else { return }
         let rel = Geo.angularDiffDeg(bearing.deg, reference.deg)
         let change = abs(Geo.angularDiffDeg(rel, last.relDeg))
         guard change >= params.audio.beaconDirectionChangeDeg else { return }
@@ -1524,9 +1558,9 @@ final class WalkSessionController: ObservableObject {
             stopTurnGuidance("状態が変わった")
             return
         }
-        let travel = currentTravel(location.motionFix())?.deg
+        let travel = currentTravel(location.motionFix())
         // next は状態を進めるので **1 回だけ呼ぶ**
-        let outcome = turnGuidance!.next(position: p, travelBearingDeg: travel,
+        let outcome = turnGuidance!.next(position: p, travelBearingDeg: travel?.deg,
                                          p: guidanceParams)
         guard case .play(let step) = outcome else {
             if case .finished(let ending) = outcome { stopTurnGuidance(ending.rawValue) }
