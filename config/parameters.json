@@ -142,7 +142,7 @@
     "music_spot_gain_far": 0.25,
     "music_spot_gain_near": 0.9,
     "music_spot_near_distance_m": 15,
-    "music_spot_far_distance_m": 100
+    "music_spot_far_distance_m": 250
   },
   "gesture": {
     "nod_pitch_threshold_deg": 8,

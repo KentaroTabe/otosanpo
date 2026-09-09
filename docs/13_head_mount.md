@@ -105,7 +105,8 @@ experiment: {                    // ここに enabled は無い。スイッチ�
   music_spot_gain_near: 0.9,         // 音量の範囲と、
   music_spot_gain_far: 0.25,         //   それが最大・最小になる距離
   music_spot_near_distance_m: 15,
-  music_spot_far_distance_m: 100
+  music_spot_far_distance_m: 250,    // **実測の分布に合わせた**(2026-09-09。下記)
+  music_log_interval_sec: 1.0        // 音は 10 Hz で付け直すが、ログはこの間隔
 }
 ```
 
