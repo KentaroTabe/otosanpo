@@ -193,6 +193,11 @@ public struct AppParameters: Codable, Equatable {
     /// 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない)
     public struct Greeting: Codable, Equatable {
         public var windows: [GreetingWindow]
+        /// 音楽スポットを選んだ時だけ、**時間帯の一言のうしろに足す**一文。
+        ///
+        /// 三種それぞれに同じ文を書き写すのではなく、1 つ持って継ぎ足す。
+        /// 音楽を選んでいない散歩では出さないため(2026-09-10 利用者依頼)
+        public var musicNote: String
     }
 
     public struct GreetingWindow: Codable, Equatable {
@@ -270,6 +275,8 @@ public struct AppParameters: Codable, Equatable {
         /// 推定から離れた標本を捨てる門 [deg]。0 で無効。
         /// **首を回している間の標本で推定を汚さないため**(→ MountOffset)
         public var offsetGateDeg: Double
+        /// 門が閉じ続けた時に学び直すまでの時間 [sec]。**付け直しから復帰するため**
+        public var offsetGateReopenSec: Double
         /// 生データ(頭方位 行)をログに残す間隔 [sec]。replay で閾値を振り直す材料
         public var logIntervalSec: Double
         /// 頭方位の最終受信からこれを超えたら「古い」として定位に使わない [sec]。
@@ -289,7 +296,8 @@ public struct AppParameters: Codable, Equatable {
             MountOffset.Params(minWeight: offsetMinSamples,
                                halfLifeSec: offsetHalfLifeSec,
                                minConcentration: offsetMinConcentration,
-                               gateDeg: offsetGateDeg)
+                               gateDeg: offsetGateDeg,
+                               gateReopenSec: offsetGateReopenSec)
         }
 
         /// HeadMountFusion に渡す設定値(学習・検疫・鮮度をまとめたもの)
@@ -341,6 +349,15 @@ public struct AppParameters: Codable, Equatable {
         /// 音楽の行をログに残す間隔 [sec]。**音は頭方位の受信ごと(10 Hz)に付け直す**が、
         /// ログをその頻度で書くとファイルが音楽で埋まる
         public var musicLogIntervalSec: Double
+        /// 鳴り始めを何秒かけて立ち上げるか [sec]。**じんわり入る**(2026-09-10 利用者依頼)。
+        /// 待った末に不意に鳴り出すと驚くので、距離から決めた音量まで滑らかに上げる
+        public var musicFadeInSec: Double
+        /// 頭の向きが定まるのを待つ上限 [sec]。**これを過ぎたら待たずに鳴らす。**
+        ///
+        /// 待ちは「進行方位で置かれた音を聴かせない」ためだが、待ち続けると
+        /// **散歩が終わるまで無音になりうる**(2026-09-09 の実測: 待ち 6 分 8 秒。
+        /// 鳴り出した時にはスポットから 258 m 離れて音量は下限、90 秒後に散歩終了)
+        public var musicWaitMaxSec: Double
         /// 音楽スポットの音量の範囲 [0..1] と、それが最小・最大になる距離 [m]
         public var musicSpotGainFar: Double
         public var musicSpotGainNear: Double

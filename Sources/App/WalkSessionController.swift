@@ -121,6 +121,10 @@ final class WalkSessionController: ObservableObject {
     /// 鳴らす準備はできたが、**頭の向きが定まるのを待っている**音源。
     /// 定まる前に鳴らすと進行方位で置かれ、首に追従しない体験になる(2026-09-09)
     private var pendingMusicURL: URL?
+    /// 待ち始めた時刻。**待ちすぎると散歩が終わるまで無音になる**ので上限を置く
+    private var musicWaitStartedAt: Date?
+    /// 鳴り始めた時刻。ここから `music_fade_in_sec` かけてじんわり立ち上げる
+    private var musicStartedAt: Date?
     /// 音楽の行を残した時刻。音は 10 Hz で付け直すが、ログはこの間隔に間引く
     private var lastMusicLogAt: Date?
     /// 音源が Documents にあるか。無ければ画面に選択肢を出さない
@@ -296,8 +300,12 @@ final class WalkSessionController: ObservableObject {
         apply(.start)
         scheduleTimeUp()
         log("散歩を開始(\(Int(durationMin)) 分)")
-        // 出発の一言。時刻で変わる(深夜・早朝・日中)
-        greeting = StartGreeting.message(at: Date(), windows: params.greeting.windows)
+        // 出発の一言。時刻で変わる(深夜・早朝・日中)。
+        // **音楽を待たせる時は、その旨をここで伝える** — 画面を見られるのは
+        // 出発の瞬間だけなので、鳴らない理由を知らせる機会がここしかない(2026-09-10)
+        greeting = StartGreeting.message(at: Date(), windows: params.greeting.windows,
+                                         musicNote: pendingMusicURL != nil
+                                             ? params.greeting.musicNote : nil)
     }
 
     func stopManually() {
@@ -1231,7 +1239,9 @@ final class WalkSessionController: ObservableObject {
         // 「頭に追従しない」体験になり、しかも確かめようと首を回すほど
         // ずれの学習が汚れて、いつまでも定まらない(2026-09-09 の実測: 採用 7%)
         if params.headMount.enabled {
-            log("音楽スポット: 頭の向きが定まるまで待ちます")
+            musicWaitStartedAt = Date()
+            log(String(format: "音楽スポット: 頭の向きが定まるまで待ちます(上限 %.0f 秒)",
+                       params.experiment.musicWaitMaxSec))
         } else {
             startPendingMusic(at: start)
         }
@@ -1258,7 +1268,8 @@ final class WalkSessionController: ObservableObject {
                                         ?? Geo.bearingDeg(from: p, to: spot.center),
                                     p: sp)
         do {
-            try synth.startMusic(url: url, relativeBearingDeg: placed.relDeg, gain: placed.gain)
+            // **無音から始める。** ここから music_fade_in_sec かけて距離ぶんの音量まで上げる
+            try synth.startMusic(url: url, relativeBearingDeg: placed.relDeg, gain: 0)
         } catch {
             log("音楽スポット: 音源を開けませんでした(\(error.localizedDescription))")
             pendingMusicURL = nil
@@ -1266,8 +1277,11 @@ final class WalkSessionController: ObservableObject {
             return
         }
         pendingMusicURL = nil
-        log(String(format: "音楽スポット: 鳴らし始めます(%.0fm 先 音量 %.2f 基準 %@)",
-                   placed.distanceM, placed.gain, reference?.source ?? "中央"))
+        musicWaitStartedAt = nil
+        musicStartedAt = Date()
+        log(String(format: "音楽スポット: 鳴らし始めます(%.0fm 先 音量 %.2f 基準 %@・%.0f 秒かけて)",
+                   placed.distanceM, placed.gain, reference?.source ?? "中央",
+                   params.experiment.musicFadeInSec))
     }
 
     /// 音源の向きと音量を付け直す。**前半球へ畳まない**。
@@ -1298,8 +1312,10 @@ final class WalkSessionController: ObservableObject {
                                     referenceBearingDeg: reference?.deg
                                         ?? Geo.bearingDeg(from: p, to: spot.center),
                                     p: sp)
+        // **鳴り始めはじんわり。** 距離から決めた音量に、立ち上がりの係数を掛ける。
+        // 10 Hz で呼ばれるので、別のタイマーを持たずに滑らかに上がる
         synth?.setMusicPlacement(relativeBearingDeg: reference == nil ? 0 : placed.relDeg,
-                                 gain: placed.gain)
+                                 gain: placed.gain * musicFadeFactor())
         // **音は毎回付け直すが、ログは間引く。** 10 Hz で書くとログが音楽で埋まる
         let now = Date()
         guard lastMusicLogAt == nil
@@ -1312,10 +1328,21 @@ final class WalkSessionController: ObservableObject {
                          placed.gain, reference?.source ?? "なし"))
     }
 
+    /// 鳴り始めの立ち上がり [0..1]。待った末に不意に鳴り出すと驚くので、
+    /// `music_fade_in_sec` かけて 0 から 1 へ上げる(2026-09-10 利用者依頼)
+    private func musicFadeFactor(now: Date = Date()) -> Double {
+        guard let started = musicStartedAt else { return 1 }
+        let fade = params.experiment.musicFadeInSec
+        guard fade > 0 else { return 1 }
+        return min(1, max(0, now.timeIntervalSince(started) / fade))
+    }
+
     private func stopMusicSpot(_ reason: String) {
         guard musicSpot != nil else { return }
         musicSpot = nil
         pendingMusicURL = nil
+        musicWaitStartedAt = nil
+        musicStartedAt = nil
         synth?.stopMusic()
         log("音楽スポット: 終了(\(reason))")
     }
@@ -1337,10 +1364,18 @@ final class WalkSessionController: ObservableObject {
             logToFile("頭部固定 状態が \(use.label) へ")
         }
         fireValidityPulse(use, now: now)
-        // **頭の向きが定まった瞬間に音楽を鳴らし始める**(2026-09-09 利用者判断)
-        if use.isUsable, pendingMusicURL != nil, let p = location.position,
+        // **頭の向きが定まった瞬間に音楽を鳴らし始める**(2026-09-09 利用者判断)。
+        // ただし待ちすぎない — 定まらないまま散歩が終わると 1 度も鳴らない
+        if pendingMusicURL != nil, let p = location.position,
            state == .wandering || state == .returning {
-            startPendingMusic(at: p)
+            let waited = musicWaitStartedAt.map { now.timeIntervalSince($0) } ?? 0
+            if use.isUsable {
+                startPendingMusic(at: p)
+            } else if waited >= params.experiment.musicWaitMaxSec {
+                log(String(format: "音楽スポット: 頭の向きが定まらないまま %.0f 秒経ったので鳴らします"
+                           + "(いまの状態: %@)", waited, use.label))
+                startPendingMusic(at: p)
+            }
         }
     }
 

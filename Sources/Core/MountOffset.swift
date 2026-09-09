@@ -42,13 +42,22 @@ public struct MountOffset: Equatable {
         /// 標本が貯まった後は、**いま推定している値から離れた標本を捨てる**。
         /// 首を回している間の標本が平均を汚さないので、ずれの推定が保たれる
         public var gateDeg: Double
+        /// 門が**閉じ続けた**時に学び直すまでの時間 [sec]。0 で学び直さない。
+        ///
+        /// **門だけだと、付け直しから復帰できない。** 散歩の途中でスマホの向きを
+        /// 変えると、ずれは 90° 単位で跳ぶ。門は古い推定を守るので、
+        /// 新しい向きの標本を**全部捨て続ける**(2026-09-09 の実測: 途中で付け直した
+        /// 散歩は、門 45° で採用 0%。門なしなら 32% だった)。
+        /// 一定時間 1 件も通らなければ「取り付けが変わった」とみなし、白紙から学び直す
+        public var gateReopenSec: Double
 
         public init(minWeight: Double, halfLifeSec: Double, minConcentration: Double,
-                    gateDeg: Double = 0) {
+                    gateDeg: Double = 0, gateReopenSec: Double = 0) {
             self.minWeight = minWeight
             self.halfLifeSec = halfLifeSec
             self.minConcentration = minConcentration
             self.gateDeg = gateDeg
+            self.gateReopenSec = gateReopenSec
         }
     }
 
@@ -56,6 +65,8 @@ public struct MountOffset: Equatable {
     private var y = 0.0
     private var weight = 0.0
     private var lastT: TimeInterval?
+    /// 門を通った最後の標本の時刻。閉じ続けた時間を測って学び直しの合図にする
+    private var lastAcceptedT: TimeInterval?
 
     public init() {}
 
@@ -69,8 +80,16 @@ public struct MountOffset: Equatable {
         // 学習が外れた後こそ門が要るので、`offsetDeg` の判定に依存させない
         if p.gateDeg > 0, weight >= p.minWeight,
            abs(Geo.angularDiffDeg(Geo.normalizeDeg(headingDeg - course), meanDeg)) > p.gateDeg {
-            return
+            // **閉じ続けたら学び直す。** 付け直しでずれが跳んだ時、
+            // 門を守り続けると新しい向きの標本を永久に捨てることになる
+            guard p.gateReopenSec > 0, let last = lastAcceptedT,
+                  t - last >= p.gateReopenSec else { return }
+            x = 0
+            y = 0
+            weight = 0
+            lastT = nil
         }
+        lastAcceptedT = t
         if let last = lastT, t > last, p.halfLifeSec > 0 {
             let decay = pow(0.5, (t - last) / p.halfLifeSec)
             x *= decay

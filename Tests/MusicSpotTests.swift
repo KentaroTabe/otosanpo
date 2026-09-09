@@ -20,6 +20,25 @@ final class MusicSpotTests: XCTestCase {
             gainNear: 0.9, gainFar: 0.25, nearDistanceM: 15, farDistanceM: 100)
     }
 
+    /// 音楽を待たせる時だけ、出発の一言に一文を足す(2026-09-10 利用者依頼)。
+    /// **三種それぞれに書き写さない** — 音楽を選んでいない散歩では出さないため
+    func testGreetingCarriesTheMusicNoteOnlyWhenAsked() {
+        let windows = [AppParameters.GreetingWindow(fromHour: 7, toHour: 22,
+                                                    message: "さぁ歩き始めましょう")]
+        let plain = StartGreeting.message(hour: 10, windows: windows, musicNote: nil)
+        XCTAssertEqual(plain, "さぁ歩き始めましょう", "音楽が無ければ一言だけ")
+
+        let withNote = StartGreeting.message(hour: 10, windows: windows,
+                                             musicNote: "音楽は後から流れ始めます。")
+        XCTAssertEqual(withNote, "さぁ歩き始めましょう\n\n音楽は後から流れ始めます。")
+
+        // 時間帯の一言が無くても、音楽の一文だけは出す(黙って待たせない)
+        XCTAssertEqual(StartGreeting.message(hour: 3, windows: windows,
+                                             musicNote: "音楽は後から流れ始めます。"),
+                       "音楽は後から流れ始めます。")
+        XCTAssertNil(StartGreeting.message(hour: 3, windows: windows, musicNote: nil))
+    }
+
     /// **帯の外は選ばない**(下限も上限も散歩時間から決まる・2026-09-09)
     func testRejectsCandidatesOutsideTheBand() {
         let p = params(min: 60, max: 100)

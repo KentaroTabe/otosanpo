@@ -28,8 +28,25 @@ public enum StartGreeting {
     }
 
     /// いまの時刻で選ぶ。時計の読み取りは呼び出し側から渡す(Core は時計を持たない)
+    ///
+    /// - Parameter musicNote: 音楽を待たせる時だけ渡す一文。**時間帯の一言のうしろに足す**。
+    ///   三種それぞれに同じ文を書き写さないのは、音楽を選んでいない散歩では
+    ///   出さないため(2026-09-10 利用者依頼)
     public static func message(at date: Date, calendar: Calendar = .current,
-                               windows: [AppParameters.GreetingWindow]) -> String? {
-        message(hour: calendar.component(.hour, from: date), windows: windows)
+                               windows: [AppParameters.GreetingWindow],
+                               musicNote: String? = nil) -> String? {
+        message(hour: calendar.component(.hour, from: date), windows: windows,
+                musicNote: musicNote)
+    }
+
+    /// 時刻(時)から選び、必要なら音楽の一文を足す
+    public static func message(hour: Int, windows: [AppParameters.GreetingWindow],
+                               musicNote: String?) -> String? {
+        guard let base = message(hour: hour, windows: windows) else {
+            // 時間帯の一言が無い時は、音楽の一文だけを出す(黙って待たせない)
+            return musicNote
+        }
+        guard let musicNote, !musicNote.isEmpty else { return base }
+        return base + "\n\n" + musicNote
     }
 }

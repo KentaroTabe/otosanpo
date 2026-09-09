@@ -79,7 +79,8 @@
         "to_hour": 22,
         "message": "さぁ歩き始めましょう"
       }
-    ]
+    ],
+    "music_note": "音楽は、頭の向きが定まってから流れ始めます(数分かかることがあります)。"
   },
   "location": {
     "min_speed_for_course_m_per_s": 0.7,
@@ -112,6 +113,7 @@
     "offset_half_life_sec": 300,
     "offset_min_concentration": 0.8,
     "offset_gate_deg": 45,
+    "offset_gate_reopen_sec": 20,
     "log_interval_sec": 1,
     "stale_sec": 1.0
   },
@@ -143,6 +145,8 @@
     "music_spot_bearing_step_deg": 30,
     "music_spot_same_distance_tolerance_m": 0.001,
     "music_log_interval_sec": 1.0,
+    "music_fade_in_sec": 4.0,
+    "music_wait_max_sec": 120,
     "music_spot_gain_far": 0.25,
     "music_spot_gain_near": 0.9,
     "music_spot_near_distance_m": 15,
