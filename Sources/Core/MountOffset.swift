@@ -31,11 +31,24 @@ public struct MountOffset: Equatable {
         public var halfLifeSec: Double
         /// 差が定数だと認める合成ベクトル長 R の下限(0..1)。1 に近いほど厳しい
         public var minConcentration: Double
+        /// **推定から大きく外れた標本を捨てる門** [deg]。0 で無効(2026-09-09 以前の挙動)。
+        ///
+        /// なぜ要るか: ずれの推定は「頭は進む方を向いている」を前提にしている。
+        /// **首を回すとその前提が崩れ、R(差の一定さ)が落ちる。** すると頭方位が
+        /// 信用されなくなり、音が首に追従しなくなる — つまり
+        /// **「追従するか確かめようと首を回すほど追従しなくなる」循環**になる
+        /// (2026-09-09 の実測: R が 1.00 から 0.77 まで落ち、採用は 7% に留まった)。
+        ///
+        /// 標本が貯まった後は、**いま推定している値から離れた標本を捨てる**。
+        /// 首を回している間の標本が平均を汚さないので、ずれの推定が保たれる
+        public var gateDeg: Double
 
-        public init(minWeight: Double, halfLifeSec: Double, minConcentration: Double) {
+        public init(minWeight: Double, halfLifeSec: Double, minConcentration: Double,
+                    gateDeg: Double = 0) {
             self.minWeight = minWeight
             self.halfLifeSec = halfLifeSec
             self.minConcentration = minConcentration
+            self.gateDeg = gateDeg
         }
     }
 
@@ -50,6 +63,14 @@ public struct MountOffset: Equatable {
     public mutating func ingest(headingDeg: Double, courseDeg: Double?,
                                 at t: TimeInterval, p: Params) {
         guard let course = courseDeg else { return }
+        // **標本が貯まったら、推定から離れた標本を捨てる。**
+        // 首を回している間の差は「ずれ」ではなく「首の向き」なので、混ぜると平均が汚れる。
+        // 門を通す中心は**閾値を通っていない生の円平均**を使う — R が落ちて
+        // 学習が外れた後こそ門が要るので、`offsetDeg` の判定に依存させない
+        if p.gateDeg > 0, weight >= p.minWeight,
+           abs(Geo.angularDiffDeg(Geo.normalizeDeg(headingDeg - course), meanDeg)) > p.gateDeg {
+            return
+        }
         if let last = lastT, t > last, p.halfLifeSec > 0 {
             let decay = pow(0.5, (t - last) / p.halfLifeSec)
             x *= decay
@@ -61,6 +82,11 @@ public struct MountOffset: Equatable {
         x += cos(diff)
         y += sin(diff)
         weight += 1
+    }
+
+    /// 閾値を通していない生の円平均 [deg]。**門の中心に使う**(表に出す値ではない)
+    private var meanDeg: Double {
+        Geo.normalizeDeg(atan2(y, x) * 180 / .pi)
     }
 
     /// 差の散らばりの少なさ(合成ベクトル長 R・0..1)。1 = 完全に一定

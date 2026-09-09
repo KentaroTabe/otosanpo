@@ -1267,6 +1267,44 @@ if headSamples.isEmpty {
         }
     }
 
+    // **門の強さを振る。** 首を回すと R が落ちて頭方位が使えなくなる循環
+    // (2026-09-09 の実測)への対策が効くかを、歩き直さずに見る
+    func sweepGate(_ gateDeg: Double) -> (usable: Int, firstUsable: Double?, finalR: Double) {
+        var f = HeadMountFusion()
+        var p = fp
+        p.offset.gateDeg = gateDeg
+        var usable = 0
+        var firstUsable: Double?
+        for (i, s) in headSamples.enumerated() {
+            let dt = i + 1 < headSamples.count
+                ? headSamples[i + 1].time.timeIntervalSince(s.time)
+                : params.headMount.logIntervalSec
+            let step = dt / Double(subdivisions)
+            let course = rawCourse(at: s.time)
+            var use = HeadMountFusion.Use.noSample
+            for k in 0..<subdivisions {
+                let t = s.time.timeIntervalSinceReferenceDate + Double(k) * step
+                use = f.ingest(headingDeg: s.rawDeg, rawCourseDeg: course, at: t, p: p)
+            }
+            if use.isUsable {
+                usable += 1
+                if firstUsable == nil { firstUsable = s.time.timeIntervalSince(t0) }
+            }
+        }
+        return (usable, firstUsable, f.concentration)
+    }
+
+    print("\n  門(推定から離れた標本を捨てる角度)を振る:")
+    print("    門      使用可能        最初に使えた   最終 R")
+    for gate in [0.0, 30, 45, 60, 90] {
+        let s = sweepGate(gate)
+        let pct = 100 * Double(s.usable) / Double(headSamples.count)
+        let first = s.firstUsable.map { String(format: "%.0f 秒", $0) } ?? "成立せず"
+        print(String(format: "    %3.0f°  %5d 件(%3.0f%%)  %10@  %.2f",
+                     gate, s.usable, pct, first as NSString, s.finalR))
+    }
+    print("    ※ 0° = 門なし(2026-09-09 以前の挙動)")
+
     func secs(_ v: Double?) -> String { v.map { String(format: "%.0f 秒", $0) } ?? "成立せず" }
     guard headMountJudged else {
         // 必要な列が無い。**数字を出さずに終える**(判定不能と失敗を混ぜない)

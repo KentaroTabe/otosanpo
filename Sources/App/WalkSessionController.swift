@@ -118,6 +118,9 @@ final class WalkSessionController: ObservableObject {
     private var musicSpot: MusicSpot?
     /// スポットに着いたことを 1 度だけ記録するための旗(**着いても止めない**)
     private var musicSpotReached = false
+    /// 鳴らす準備はできたが、**頭の向きが定まるのを待っている**音源。
+    /// 定まる前に鳴らすと進行方位で置かれ、首に追従しない体験になる(2026-09-09)
+    private var pendingMusicURL: URL?
     /// 音楽の行を残した時刻。音は 10 Hz で付け直すが、ログはこの間隔に間引く
     private var lastMusicLogAt: Date?
     /// 音源が Documents にあるか。無ければ画面に選択肢を出さない
@@ -1196,12 +1199,13 @@ final class WalkSessionController: ObservableObject {
         musicSpot = nil
         musicSpotReached = false
         lastMusicLogAt = nil
+        pendingMusicURL = nil
         guard musicSpotWanted, let start = location.position else { return }
         guard let url = MusicStore.firstFile() else {
             log("音楽スポット: 音源がありません(Finder の「iPhone > ファイル」に置いてください)")
             return
         }
-        let p = params.experiment.musicSpot
+        let p = params.experiment.musicSpot(durationMin: durationMin)
         // 候補を道へ寄せる。スナップできたものだけを候補にする
         let raw = MusicSpot.candidates(around: start, p: p)
         let snapped: [GeoPoint]
@@ -1217,32 +1221,53 @@ final class WalkSessionController: ObservableObject {
             log("音楽スポット: 置ける場所が見つかりませんでした")
             return
         }
+        musicSpot = spot
+        pendingMusicURL = url
+        log(String(format: "音楽スポット: %.0fm 先 方位 %.0f°(%@)",
+                   Geo.distanceM(start, spot.center),
+                   Geo.bearingDeg(from: start, to: spot.center), url.lastPathComponent))
+        // **頭部固定を使う時は、頭の向きが定まるまで鳴らさない**(2026-09-09 利用者判断)。
+        // 定まる前に鳴らすと、音は進行方位を基準に置かれる。首を回しても動かないので
+        // 「頭に追従しない」体験になり、しかも確かめようと首を回すほど
+        // ずれの学習が汚れて、いつまでも定まらない(2026-09-09 の実測: 採用 7%)
+        if params.headMount.enabled {
+            log("音楽スポット: 頭の向きが定まるまで待ちます")
+        } else {
+            startPendingMusic(at: start)
+        }
+    }
+
+    /// 待たせていた音楽を鳴らし始める。頭部固定を使う時は「使用可能になった瞬間」に呼ばれる
+    private func startPendingMusic(at p: GeoPoint) {
+        guard let url = pendingMusicURL, let spot = musicSpot else { return }
         ensureSynth()
         guard let synth else {
             log("音楽スポット: 音声エンジンを用意できませんでした")
+            pendingMusicURL = nil
+            musicSpot = nil
             return
         }
         synth.onMusicStopped = { [weak self] reason in
             Task { @MainActor in self?.stopMusicSpot(reason) }
         }
-        // **鳴らす前に置き場所を決める。** 既定の音量・正面のまま鳴り出さないように。
-        // 出発時は進行方位も頭部方位も無いことが多いので、向きは中央で始める
+        // **鳴らす前に置き場所を決める。** 既定の音量・正面のまま鳴り出さないように
+        let sp = params.experiment.musicSpot(durationMin: durationMin)
         let reference = placementReference(currentTravel(location.motionFix()))
-        let placed = spot.placement(from: start,
+        let placed = spot.placement(from: p,
                                     referenceBearingDeg: reference?.deg
-                                        ?? Geo.bearingDeg(from: start, to: spot.center),
-                                    p: p)
+                                        ?? Geo.bearingDeg(from: p, to: spot.center),
+                                    p: sp)
         do {
             try synth.startMusic(url: url, relativeBearingDeg: placed.relDeg, gain: placed.gain)
         } catch {
             log("音楽スポット: 音源を開けませんでした(\(error.localizedDescription))")
+            pendingMusicURL = nil
+            musicSpot = nil
             return
         }
-        // **鳴り始めてから覚える。** 失敗した時に「開始済み」を残さない
-        musicSpot = spot
-        log(String(format: "音楽スポット: %.0fm 先 方位 %.0f° 音量 %.2f(%@)",
-                   placed.distanceM, Geo.bearingDeg(from: start, to: spot.center),
-                   placed.gain, url.lastPathComponent))
+        pendingMusicURL = nil
+        log(String(format: "音楽スポット: 鳴らし始めます(%.0fm 先 音量 %.2f 基準 %@)",
+                   placed.distanceM, placed.gain, reference?.source ?? "中央"))
     }
 
     /// 音源の向きと音量を付け直す。**前半球へ畳まない**。
@@ -1258,7 +1283,7 @@ final class WalkSessionController: ObservableObject {
     /// 通り過ぎれば背後に回って自然に遠ざかるので、止める必要が無い
     private func updateMusicSpot(at p: GeoPoint) {
         guard let spot = musicSpot else { return }
-        let sp = params.experiment.musicSpot
+        let sp = params.experiment.musicSpot(durationMin: durationMin)
         if !musicSpotReached, spot.isReached(from: p, p: sp) {
             musicSpotReached = true
             log("音楽スポット: 着いた(鳴らし続ける)")
@@ -1290,6 +1315,7 @@ final class WalkSessionController: ObservableObject {
     private func stopMusicSpot(_ reason: String) {
         guard musicSpot != nil else { return }
         musicSpot = nil
+        pendingMusicURL = nil
         synth?.stopMusic()
         log("音楽スポット: 終了(\(reason))")
     }
@@ -1311,6 +1337,11 @@ final class WalkSessionController: ObservableObject {
             logToFile("頭部固定 状態が \(use.label) へ")
         }
         fireValidityPulse(use, now: now)
+        // **頭の向きが定まった瞬間に音楽を鳴らし始める**(2026-09-09 利用者判断)
+        if use.isUsable, pendingMusicURL != nil, let p = location.position,
+           state == .wandering || state == .returning {
+            startPendingMusic(at: p)
+        }
     }
 
     /// 有効性パルス — **画面が見えない散歩で「いま試してよい」を返す唯一の手段**(→ docs/13)。

@@ -267,6 +267,9 @@ public struct AppParameters: Codable, Equatable {
         public var offsetHalfLifeSec: Double
         /// ずれが「定数である」と認める合成ベクトル長 R の下限(0..1)
         public var offsetMinConcentration: Double
+        /// 推定から離れた標本を捨てる門 [deg]。0 で無効。
+        /// **首を回している間の標本で推定を汚さないため**(→ MountOffset)
+        public var offsetGateDeg: Double
         /// 生データ(頭方位 行)をログに残す間隔 [sec]。replay で閾値を振り直す材料
         public var logIntervalSec: Double
         /// 頭方位の最終受信からこれを超えたら「古い」として定位に使わない [sec]。
@@ -285,7 +288,8 @@ public struct AppParameters: Codable, Equatable {
         public var offsetEstimator: MountOffset.Params {
             MountOffset.Params(minWeight: offsetMinSamples,
                                halfLifeSec: offsetHalfLifeSec,
-                               minConcentration: offsetMinConcentration)
+                               minConcentration: offsetMinConcentration,
+                               gateDeg: offsetGateDeg)
         }
 
         /// HeadMountFusion に渡す設定値(学習・検疫・鮮度をまとめたもの)
@@ -320,10 +324,14 @@ public struct AppParameters: Codable, Equatable {
         public var abToneIntervalSec: Double
         /// 聴き比べの前半(配布版)と後半(実験値)の間に足す時間 [sec]
         public var abGapSec: Double
-        /// 音楽スポットを置く狙いの距離 [m]
-        public var musicSpotTargetDistanceM: Double
-        /// 音楽スポットを置いてよい上限の距離 [m]
-        public var musicSpotMaxDistanceM: Double
+        /// 音楽スポットを置く距離の**下限・上限**を、散歩 1 分あたりで表したもの [m/min]。
+        /// **散歩時間に比例させる**(2026-09-09 利用者判断)。
+        /// 30 分なら 75〜105 m。短い散歩で遠くに置くと辿り着けず、
+        /// 長い散歩で近くに置くとすぐ通り過ぎて後は遠ざかるだけになる
+        public var musicSpotMinDistancePerMin: Double
+        public var musicSpotMaxDistancePerMin: Double
+        /// 候補を探す距離の段数(下限から上限までを何段に分けるか)
+        public var musicSpotDistanceSteps: Int
         /// これより近づいたら着いたとして止める [m]
         public var musicSpotReachedM: Double
         /// 候補を探す方位の刻み [deg]
@@ -337,22 +345,30 @@ public struct AppParameters: Codable, Equatable {
         public var musicSpotGainFar: Double
         public var musicSpotGainNear: Double
         public var musicSpotNearDistanceM: Double
-        public var musicSpotFarDistanceM: Double
+        // 遠い側は musicSpotFarDistancePerMin(散歩時間に比例)へ移した
 
         /// 左右の聴き比べで音を置く角度 [deg]。左右へ交互に振る
         public var abBearingDeg: Double
 
-        /// MusicSpot に渡す設定値
-        public var musicSpot: MusicSpot.Params {
+        /// 音量が最小になる距離も**散歩時間に比例**させる [m/min]。
+        ///
+        /// 固定にしていた頃、8 分の散歩でスポットから最大 92 m しか離れず、
+        /// **写像(15〜250 m)の上の 1/3 しか使われなかった**(音量 0.69〜0.90)。
+        /// 距離が音量で伝わらない = 「音量が効いていない」と感じられる(2026-09-09 の実測)
+        public var musicSpotFarDistancePerMin: Double
+
+        /// MusicSpot に渡す設定値。**散歩時間で距離が決まる**ので時間を渡す
+        public func musicSpot(durationMin: Double) -> MusicSpot.Params {
             MusicSpot.Params(
-                maxDistanceM: musicSpotMaxDistanceM,
-                targetDistanceM: musicSpotTargetDistanceM,
+                minDistanceM: musicSpotMinDistancePerMin * durationMin,
+                maxDistanceM: musicSpotMaxDistancePerMin * durationMin,
+                distanceStepCount: musicSpotDistanceSteps,
                 reachedM: musicSpotReachedM,
                 bearingStepDeg: musicSpotBearingStepDeg,
                 sameDistanceToleranceM: musicSpotSameDistanceToleranceM,
                 gainNear: musicSpotGainNear, gainFar: musicSpotGainFar,
                 nearDistanceM: musicSpotNearDistanceM,
-                farDistanceM: musicSpotFarDistanceM)
+                farDistanceM: musicSpotFarDistancePerMin * durationMin)
         }
 
         /// 実験ビルドで実際に鳴らす音色を決める。

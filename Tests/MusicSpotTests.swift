@@ -9,13 +9,38 @@ final class MusicSpotTests: XCTestCase {
 
     private let origin = GeoPoint(latitude: 35.0, longitude: 137.0)
 
-    private func params(target: Double = 80, max: Double = 100,
+    private func params(min: Double = 60, max: Double = 100,
+                        steps: Int = 1,
                         reached: Double = 15, step: Double = 30,
                         tolerance: Double = 0.001) -> MusicSpot.Params {
         MusicSpot.Params(
-            maxDistanceM: max, targetDistanceM: target, reachedM: reached,
+            minDistanceM: min, maxDistanceM: max, distanceStepCount: steps,
+            reachedM: reached,
             bearingStepDeg: step, sameDistanceToleranceM: tolerance,
             gainNear: 0.9, gainFar: 0.25, nearDistanceM: 15, farDistanceM: 100)
+    }
+
+    /// **帯の外は選ばない**(下限も上限も散歩時間から決まる・2026-09-09)
+    func testRejectsCandidatesOutsideTheBand() {
+        let p = params(min: 60, max: 100)
+        let tooNear = Geo.destination(from: origin, bearingDeg: 0, distanceM: 40)
+        let inBand = Geo.destination(from: origin, bearingDeg: 90, distanceM: 85)
+        let tooFar = Geo.destination(from: origin, bearingDeg: 180, distanceM: 300)
+        let spot = MusicSpot.choose(from: [tooNear, tooFar, inBand], start: origin, p: p)
+        XCTAssertEqual(spot?.center.longitude ?? 0, inBand.longitude, accuracy: 1e-9)
+        XCTAssertNil(MusicSpot.choose(from: [tooNear, tooFar], start: origin, p: p),
+                     "帯の中に候補が無ければ作らない")
+    }
+
+    /// **帯の中を何段かに分けて並べる。** 1 つの距離だけだと、道へ寄せた後に
+    /// 帯から外れて候補が全滅しうる
+    func testCandidatesSpanTheBandWhenAskedForSteps() {
+        let p = params(min: 60, max: 100, steps: 3)
+        let cs = MusicSpot.candidates(around: origin, p: p)
+        XCTAssertEqual(cs.count, 12 * 3, "方位 12 × 距離 3 段")
+        let ds = cs.map { Geo.distanceM(origin, $0) }
+        XCTAssertEqual(ds.min() ?? 0, 60, accuracy: 1.0)
+        XCTAssertEqual(ds.max() ?? 0, 100, accuracy: 1.0)
     }
 
     /// **同点の許容は設定で効く。**
@@ -29,7 +54,7 @@ final class MusicSpotTests: XCTestCase {
                                              distanceM: 70 + 0.0005)
         let clearlyBetter = Geo.destination(from: origin, bearingDeg: 180, distanceM: 70 + 0.002)
 
-        let p = params(target: 80, tolerance: 0.001)
+        let p = params(min: 60, max: 100, tolerance: 0.001)
         // 0.5 mm 差は同点 → 先頭が残る
         let tied = MusicSpot.choose(from: [base, slightlyBetter], start: origin, p: p)
         XCTAssertEqual(tied?.center.latitude ?? 0, base.latitude, accuracy: 1e-9)
@@ -38,7 +63,7 @@ final class MusicSpotTests: XCTestCase {
         XCTAssertEqual(better?.center.latitude ?? 0, clearlyBetter.latitude, accuracy: 1e-9)
         // 許容を広げれば 2 mm 差も同点になる
         let wide = MusicSpot.choose(from: [base, clearlyBetter], start: origin,
-                                    p: params(target: 80, tolerance: 0.01))
+                                    p: params(min: 60, max: 100, tolerance: 0.01))
         XCTAssertEqual(wide?.center.latitude ?? 0, base.latitude, accuracy: 1e-9)
     }
 
@@ -64,7 +89,7 @@ final class MusicSpotTests: XCTestCase {
 
     /// **上限を超える候補は選ばない**(「100 m 以内に 1 つ」という約束)
     func testNeverChoosesBeyondTheLimit() {
-        let p = params(target: 80, max: 100)
+        let p = params(min: 60, max: 100)
         let far = Geo.destination(from: origin, bearingDeg: 0, distanceM: 300)
         let near = Geo.destination(from: origin, bearingDeg: 90, distanceM: 85)
         let spot = MusicSpot.choose(from: [far, near], start: origin, p: p)
@@ -77,7 +102,7 @@ final class MusicSpotTests: XCTestCase {
 
     /// 狙う距離にいちばん近いものを選ぶ。**同点は候補の並び順で決める**(再現のため)
     func testChoosesTheCandidateClosestToTheTargetDistanceAndBreaksTiesByOrder() {
-        let p = params(target: 80, max: 100)
+        let p = params(min: 60, max: 100)
         let first = Geo.destination(from: origin, bearingDeg: 0, distanceM: 70)
         let second = Geo.destination(from: origin, bearingDeg: 90, distanceM: 90)
         let best = Geo.destination(from: origin, bearingDeg: 180, distanceM: 81)

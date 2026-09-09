@@ -19,10 +19,15 @@ import Foundation
 public struct MusicSpot: Equatable {
 
     public struct Params: Equatable {
-        /// スポットを置いてよい上限の距離 [m]
+        /// スポットを置いてよい距離の**下限と上限** [m]。
+        /// **散歩時間に比例して決める**(2026-09-09 利用者判断)。
+        /// 短い散歩で遠くに置くと辿り着けず、長い散歩で近くに置くとすぐ通り過ぎる
+        public var minDistanceM: Double
         public var maxDistanceM: Double
-        /// 狙う距離 [m]。候補のうちこれに最も近いものを選ぶ
-        public var targetDistanceM: Double
+        /// 帯の真ん中。候補のうちこれに最も近いものを選ぶ
+        public var targetDistanceM: Double { (minDistanceM + maxDistanceM) / 2 }
+        /// 候補を探す距離の刻み数(下限から上限までを何段に分けるか)
+        public var distanceStepCount: Int
         /// これより近づいたら「着いた」として止める [m]
         public var reachedM: Double
         /// 候補を探す方位の刻み [deg]
@@ -41,12 +46,14 @@ public struct MusicSpot: Equatable {
         public var nearDistanceM: Double
         public var farDistanceM: Double
 
-        public init(maxDistanceM: Double, targetDistanceM: Double, reachedM: Double,
+        public init(minDistanceM: Double, maxDistanceM: Double, distanceStepCount: Int,
+                    reachedM: Double,
                     bearingStepDeg: Double, sameDistanceToleranceM: Double,
                     gainNear: Double, gainFar: Double,
                     nearDistanceM: Double, farDistanceM: Double) {
+            self.minDistanceM = minDistanceM
             self.maxDistanceM = maxDistanceM
-            self.targetDistanceM = targetDistanceM
+            self.distanceStepCount = distanceStepCount
             self.reachedM = reachedM
             self.bearingStepDeg = bearingStepDeg
             self.sameDistanceToleranceM = sameDistanceToleranceM
@@ -71,12 +78,25 @@ public struct MusicSpot: Equatable {
     public static func candidates(around start: GeoPoint, p: Params) -> [GeoPoint] {
         // 刻みが 0 以下なら候補は作れない(無限ループを避ける)。
         // **既定値を代わりに置かない** — 設定の誤りを黙って埋めると気づけなくなる
-        guard p.bearingStepDeg > 0 else { return [] }
+        guard p.bearingStepDeg > 0, p.distanceStepCount > 0,
+              p.maxDistanceM >= p.minDistanceM else { return [] }
+        // **帯の中を何段かに分けて並べる。** 1 つの距離だけで作ると、道へ寄せた後に
+        // 帯から外れて候補が全滅しうる(下限を入れたことで起きうるようになった)
+        var radii: [Double] = []
+        if p.distanceStepCount == 1 {
+            radii = [p.targetDistanceM]
+        } else {
+            let span = p.maxDistanceM - p.minDistanceM
+            for i in 0..<p.distanceStepCount {
+                radii.append(p.minDistanceM + span * Double(i) / Double(p.distanceStepCount - 1))
+            }
+        }
         var out: [GeoPoint] = []
         var bearing = 0.0
         while bearing < 360 {
-            out.append(Geo.destination(from: start, bearingDeg: bearing,
-                                       distanceM: p.targetDistanceM))
+            for radius in radii {
+                out.append(Geo.destination(from: start, bearingDeg: bearing, distanceM: radius))
+            }
             bearing += p.bearingStepDeg
         }
         return out
@@ -89,7 +109,8 @@ public struct MusicSpot: Equatable {
         var best: (point: GeoPoint, error: Double)?
         for c in candidates {
             let d = Geo.distanceM(start, c)
-            guard d <= p.maxDistanceM else { continue }
+            // **帯の外は選ばない。** 下限も上限も散歩時間から決まる
+            guard d >= p.minDistanceM, d <= p.maxDistanceM else { continue }
             let error = abs(d - p.targetDistanceM)
             // 差がこの許容より小さければ同点とみなし、**最初のものを残す**(= 並び順で決まる)
             if best == nil || error < best!.error - p.sameDistanceToleranceM {

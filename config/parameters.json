@@ -103,7 +103,7 @@
     "head_rate_max_gap_sec": 0.5
   },
   "head_mount": {
-    "enabled": false,
+    "enabled": true,
     "update_hz": 10,
     "distrust_deg": 40,
     "distrust_sec": 5,
@@ -111,6 +111,7 @@
     "offset_min_samples": 200,
     "offset_half_life_sec": 300,
     "offset_min_concentration": 0.8,
+    "offset_gate_deg": 45,
     "log_interval_sec": 1,
     "stale_sec": 1.0
   },
@@ -135,8 +136,9 @@
     "ab_tone_interval_sec": 0.7,
     "ab_gap_sec": 1.0,
     "ab_bearing_deg": 90,
-    "music_spot_target_distance_m": 80,
-    "music_spot_max_distance_m": 100,
+    "music_spot_min_distance_per_min": 2.5,
+    "music_spot_max_distance_per_min": 3.5,
+    "music_spot_distance_steps": 3,
     "music_spot_reached_m": 15,
     "music_spot_bearing_step_deg": 30,
     "music_spot_same_distance_tolerance_m": 0.001,
@@ -144,7 +146,7 @@
     "music_spot_gain_far": 0.25,
     "music_spot_gain_near": 0.9,
     "music_spot_near_distance_m": 15,
-    "music_spot_far_distance_m": 250
+    "music_spot_far_distance_per_min": 8.0
   },
   "gesture": {
     "nod_pitch_threshold_deg": 8,
