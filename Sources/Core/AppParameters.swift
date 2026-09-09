@@ -88,9 +88,24 @@ public struct AppParameters: Codable, Equatable {
         public var mapIndexCellSizeM: Double
         /// この距離より離れた点は道に乗せない [m]。水平精度(実測 3〜5 m)より大きく取る
         public var snapMaxDistanceM: Double
+        /// 別の道へ乗り換えるのに要求する差 [m]。**既定 0 = 引き継がない。**
+        ///
+        /// 「指す向きが 180° 往復する」への対策として入れてみたが、
+        /// **再生で測ると入れるほど単調に悪化した**(2026-09-09。docs/05)。
+        /// 仕組みは再生で振り直せるように残し、配る値は 0 にしてある
+        public var waySwitchMarginM: Double
+        /// 線分の別の端点へ乗り換えるのに要求する差 [m]。**既定 0 = 引き継がない。**
+        /// こちらは悪化しなかったが、良くもならなかったので 0 のまま
+        public var nodeSwitchMarginM: Double
         /// 経路上の節点に「着いた」とみなす距離 [m]。
         /// 真上に立つと、そこへ向かう方位が雑音で暴れるため
         public var nodeArrivalToleranceM: Double
+
+        /// RouteField に渡す追跡の引き継ぎ設定
+        public var routeTrace: RouteField.TraceParams {
+            RouteField.TraceParams(waySwitchMarginM: waySwitchMarginM,
+                                   nodeSwitchMarginM: nodeSwitchMarginM)
+        }
         /// 前方この距離以内の交差点を「これから曲がる場所」として扱う [m]
         public var intersectionLookaheadM: Double
         /// 進行方向との差がこれ以内の分岐は「直進」とみなす [deg]

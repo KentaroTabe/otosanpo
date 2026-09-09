@@ -123,6 +123,36 @@ public struct RouteField: Sendable {
         self.reachableNodes = metres.reduce(0) { $0 + ($1.isFinite ? 1 : 0) }
     }
 
+    /// 経路の追跡を安定させるための引き継ぎ。**前回どの道のどの節点を選んだか**。
+    ///
+    /// これを渡さないと、スナップも端点の選択も毎回まっさらにやり直され、
+    /// GPS の揺れだけで指す向きが 180° 往復する(→ `WalkGraph.snap` の説明)
+    public struct Trace: Equatable {
+        public let wayIndex: Int
+        public let node: Int
+
+        public init(wayIndex: Int, node: Int) {
+            self.wayIndex = wayIndex
+            self.node = node
+        }
+    }
+
+    /// 引き継ぎの効かせ方。0 にすれば引き継ぎ無し(従来の挙動)
+    public struct TraceParams: Equatable {
+        /// 別の道へ乗り換えるのに要求する差 [m]
+        public var waySwitchMarginM: Double
+        /// 別の端点へ乗り換えるのに要求する差 [m](コスト換算)
+        public var nodeSwitchMarginM: Double
+
+        public init(waySwitchMarginM: Double, nodeSwitchMarginM: Double) {
+            self.waySwitchMarginM = waySwitchMarginM
+            self.nodeSwitchMarginM = nodeSwitchMarginM
+        }
+
+        /// 引き継がない(2026-09-09 以前の挙動)。再生で前後を比べるために残す
+        public static let none = TraceParams(waySwitchMarginM: 0, nodeSwitchMarginM: 0)
+    }
+
     /// いま乗っている線分の端点のうち、**そこを通ると自宅までが最短になるほう**。
     ///
     /// 幾何的に最寄りの端点を使ってはいけない。線分の手前寄りに居れば最寄りは
@@ -131,23 +161,31 @@ public struct RouteField: Sendable {
     ///
     /// **実距離ではなく重み付きコストで比べる。** 経路そのものは重みで選んでいるので、
     /// 実距離で比べると Dijkstra の選択と食い違い、長さが同じ別の道へ入り込む。
-    private func forwardNode(from p: GeoPoint, graph: WalkGraph) -> Int? {
-        guard let s = graph.snap(p, maxDistanceM: snapMaxDistanceM) else { return nil }
+    private func forwardNode(from p: GeoPoint, graph: WalkGraph,
+                             trace: Trace?, tp: TraceParams) -> Trace? {
+        guard let s = graph.snap(p, maxDistanceM: snapMaxDistanceM,
+                                 preferringWay: trace?.wayIndex,
+                                 switchMarginM: tp.waySwitchMarginM) else { return nil }
         let way = graph.map.ways[s.wayIndex]
         var best: (node: Int, total: Double)?
         for n in [way.n[s.segmentIndex], way.n[s.segmentIndex + 1]] {
             guard cost.indices.contains(n), cost[n].isFinite,
                   let q = graph.map.point(n) else { continue }
             let total = Geo.distanceM(p, q) + cost[n]
-            if best == nil || total < best!.total { best = (n, total) }
+            // **前回の端点には下駄を履かせる。** 中ほどに居ると 2 つの端点の総コストが
+            // 拮抗し、揺れだけで前後が入れ替わる。前回と同じ側を選び続ければ、
+            // 実際に近づいている側が自然に勝つ
+            let biased = n == trace?.node ? total - tp.nodeSwitchMarginM : total
+            if best == nil || biased < best!.total { best = (n, biased) }
         }
-        return best?.node
+        guard let node = best?.node else { return nil }
+        return Trace(wayIndex: s.wayIndex, node: node)
     }
 
     /// 現在地から自宅までの**実際に歩く距離** [m]。道に乗らない場所では nil。
     /// 直線距離 × 迂回率の推測と違い、川や私有地を突っ切らない。
     public func pathLengthM(from p: GeoPoint, graph: WalkGraph) -> Double? {
-        guard let node = forwardNode(from: p, graph: graph),
+        guard let node = forwardNode(from: p, graph: graph, trace: nil, tp: .none)?.node,
               let np = graph.map.point(node) else { return nil }
         return Geo.distanceM(p, np) + metres[node]
     }
@@ -162,18 +200,28 @@ public struct RouteField: Sendable {
     ///   その先を指す。真上に立つと方位が暴れるため
     public func nextBearingDeg(from p: GeoPoint, graph: WalkGraph,
                                nodeToleranceM: Double) -> Double? {
-        guard let node = forwardNode(from: p, graph: graph),
-              let here = graph.map.point(node) else { return nil }
+        nextStep(from: p, graph: graph, nodeToleranceM: nodeToleranceM,
+                 trace: nil, tp: .none)?.deg
+    }
+
+    /// `nextBearingDeg` に**追跡の引き継ぎ**を足したもの。返した `trace` を次回渡す。
+    ///
+    /// 引き継ぎが無いと、交差点の近くで GPS が揺れるたびにスナップ先の道が変わり、
+    /// 指す向きが 180° 往復する(2026-09-08 の実測)。`tp` を `.none` にすれば従来どおり
+    public func nextStep(from p: GeoPoint, graph: WalkGraph, nodeToleranceM: Double,
+                         trace: Trace?, tp: TraceParams) -> (deg: Double, trace: Trace)? {
+        guard let t = forwardNode(from: p, graph: graph, trace: trace, tp: tp),
+              let here = graph.map.point(t.node) else { return nil }
         // まだ手前の節点に着いていなければ、まずそこへ向かう。
         // 目の前の節点を飛ばして次を指すと、曲がる前に曲がった先を指すことになる
         if Geo.distanceM(p, here) > nodeToleranceM {
-            return Geo.bearingDeg(from: p, to: here)
+            return (Geo.bearingDeg(from: p, to: here), t)
         }
-        guard next[node] >= 0, let np = graph.map.point(next[node]) else {
+        guard next[t.node] >= 0, let np = graph.map.point(next[t.node]) else {
             // 自宅そのもの(次が無い)。自宅を直接指す
-            return Geo.bearingDeg(from: p, to: goal)
+            return (Geo.bearingDeg(from: p, to: goal), t)
         }
-        return Geo.bearingDeg(from: here, to: np)
+        return (Geo.bearingDeg(from: here, to: np), t)
     }
 
     /// 経路上で**次に曲がる地点**と、そこで踏み出す向き。
@@ -181,13 +229,18 @@ public struct RouteField: Sendable {
     ///
     /// 直進が続く間は辿り続け、向きが `straightWithinDeg` を超えて変わる節点を「角」とする。
     /// `maxLookM` まで探して見つからなければ nil(まだ曲がる場所は無い)。
+    /// - Parameter trace: 追跡の引き継ぎ。**ビーコンと同じものを渡す** —
+    ///   別々に決めると、鳴っている向きと「次の角」が食い違う
     public func nextTurn(from p: GeoPoint, graph: WalkGraph,
                         straightWithinDeg: Double, maxLookM: Double,
-                        nodeToleranceM: Double)
+                        nodeToleranceM: Double,
+                        trace: Trace? = nil, tp: TraceParams = .none)
         -> (corner: GeoPoint, branchBearingDeg: Double, distanceM: Double)? {
         // 幾何的な最寄りではなく**経路上で先にある端点**から辿る。
         // 背後の節点から始めると、来た道を 1 歩戻ってから数えることになる
-        guard let start = forwardNode(from: p, graph: graph) else { return nil }
+        guard let start = forwardNode(from: p, graph: graph, trace: trace, tp: tp)?.node else {
+            return nil
+        }
 
         var current = start
         guard var here = graph.map.point(start) else { return nil }

@@ -1059,6 +1059,88 @@ func readHeadHeadings(_ path: String) -> [LoggedHeadHeading] {
 
 let headSamples = readHeadHeadings(logPath)
 
+// MARK: - ビーコンの指す向きの安定性(引き継ぎの有無で比べる)
+//
+// 2026-09-08 の散歩で、ビーコンの指す向きが **1.5 秒で 180° 往復**していた
+// (274 発のうち 67 発が後ろを指した)。原因は、スナップも端点の選択も
+// **前回の選択を見ていない**こと(docs/05)。ここはその前後を測る口。
+
+print("\n== ビーコンの指す向きの安定性 ==")
+
+if let beaconMap = loadedMap, let last = all.last {
+    let graph = WalkGraph(map: beaconMap, cellSizeM: r.mapIndexCellSizeM)
+    // 自宅は到着地点で近似する(実機の到着判定は arrival_radius_m 以内で成立している)
+    if let field = RouteField(graph: graph, goal: last.point,
+                              snapMaxDistanceM: r.snapMaxDistanceM,
+                              weights: RouteField.Weights(
+                                crossCostWeight: r.crossCostWeight,
+                                wayClassWeight: r.wayClassWeight)) {
+
+        // **帰路の fix だけを見る。** ビーコンが鳴るのは帰路だけで、
+        // 散策中は自宅から遠ざかるので「経路が後ろを指す」のが正しい。
+        // 混ぜると「後ろ向き」の数字が意味を失う(2026-09-09 に一度混ぜて誤った)
+        let returning = all.filter { $0.state == "returning" }
+        print("  対象: 帰路の fix \(returning.count) 件(全 \(all.count) 件)")
+
+        /// 引き継ぎ設定を 1 つ与えて、帰路を通したときの跳びを数える
+        func measure(_ tp: RouteField.TraceParams) -> (jumps: Int, reversals: Int,
+                                                       behind: Int, samples: Int) {
+            var trace: RouteField.Trace?
+            var previous: Double?
+            var jumps = 0, reversals = 0, behind = 0, samples = 0
+            for f in returning {
+                guard let step = field.nextStep(from: f.point, graph: graph,
+                                                nodeToleranceM: r.nodeArrivalToleranceM,
+                                                trace: trace, tp: tp) else { continue }
+                trace = step.trace
+                samples += 1
+                if let prev = previous {
+                    let jump = abs(Geo.angularDiffDeg(step.deg, prev))
+                    if jump > 90 { jumps += 1 }
+                    if jump > 150 { reversals += 1 }
+                }
+                previous = step.deg
+                // 進行方位が取れている時だけ「後ろを指したか」を数える
+                if let course = TravelDirection.rawCourse(
+                    MotionFix(courseDeg: f.courseDeg, courseAccuracyDeg: f.courseAccuracyDeg,
+                              speedMps: f.speedMps, compassHeadingDeg: nil,
+                              ageSec: f.ageSec, horizontalAccuracyM: f.accuracyM),
+                    params: params.location),
+                   abs(Geo.angularDiffDeg(step.deg, course)) > 90 {
+                    behind += 1
+                }
+            }
+            return (jumps, reversals, behind, samples)
+        }
+
+        func row(_ label: String,
+                 _ m: (jumps: Int, reversals: Int, behind: Int, samples: Int)) {
+            let pct = m.samples > 0 ? 100 * Double(m.behind) / Double(m.samples) : 0
+            print(String(format: "  %-16@ %8d %8d %8d(%.0f%%)", label as NSString,
+                         m.jumps, m.reversals, m.behind, pct))
+        }
+        print(String(format: "  %-16@ %8@ %8@ %10@", "道 / 端点" as NSString,
+                     "90°超" as NSString, "150°超" as NSString, "後ろ向き" as NSString))
+        // **組み合わせを振る。** どちらの引き継ぎが効くのかは、片方ずつ動かさないと分からない
+        let sweep: [(Double, Double)] = [(0, 0), (8, 0), (16, 0), (25, 0),
+                                         (0, 10), (8, 10), (16, 10)]
+        for (way, node) in sweep {
+            let tp = RouteField.TraceParams(waySwitchMarginM: way, nodeSwitchMarginM: node)
+            let label = way == 0 && node == 0
+                ? "引き継ぎ無し" : String(format: "%.0fm / %.0fm", way, node)
+            row(label, measure(tp))
+        }
+        print(String(format: "  いまの設定: 道 %.0fm / 端点 %.0fm",
+                     r.waySwitchMarginM, r.nodeSwitchMarginM))
+        print("  ※ 自宅は到着地点で近似している。ログの実機値と一致はしないが、"
+              + "**同じ入力で前後を比べる**分には足りる")
+    } else {
+        print("  経路の場を作れませんでした(自宅が道に乗らない)")
+    }
+} else {
+    print("  経路データがないので判定できません(maps/otosanpo-map.json が要ります)")
+}
+
 print("\n== 頭部固定の再生(学習・検疫・使用可能)==")
 
 if headSamples.isEmpty {

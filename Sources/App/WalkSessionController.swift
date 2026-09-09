@@ -83,6 +83,9 @@ final class WalkSessionController: ObservableObject {
     /// 自宅を終点とする経路の場。開始時に 1 回だけ解き、以後は引くだけ。
     /// 逸脱しても作り直さない(逸脱先の節点も既に答えを持っている)
     private var routeField: RouteField?
+    /// 経路の追跡の引き継ぎ(→ RouteField.Trace)。**ビーコンと曲がり角の誘導で共有する** —
+    /// 別々に決めると、鳴っている向きと「次の角」が食い違う
+    private var routeTrace: RouteField.Trace?
     /// 散歩をまたいで積む歩行速度の推定。帰宅推定の分母になる
     private var speed: SpeedEstimator
     /// 広域の「面白そうな地帯」の地図。局所の分岐選択に向きを与える
@@ -897,16 +900,20 @@ final class WalkSessionController: ObservableObject {
     ///
     /// **鳴らす側と繰り上げの判定は必ずこれを共有する。** 基準が食い違うと、
     /// 方向が変わっていないのに「変わった」と判定され続ける(下記 `advanceBeaconIfDirectionChanged`)
+    /// **追跡を引き継ぐ**(2026-09-09)。引き継がないと、交差点の近くで GPS が揺れるたびに
+    /// スナップ先の道が替わり、指す向きが 1.5 秒で 180° 往復する(2026-09-08 の実測)
     private func beaconBearing(at p: GeoPoint) -> (deg: Double, fromRoute: Bool)? {
         guard let h = home else { return nil }
-        let route = routeField.flatMap { f in
+        let step = routeField.flatMap { f in
             graph.flatMap {
-                f.nextBearingDeg(from: p, graph: $0,
-                                 nodeToleranceM: params.route.nodeArrivalToleranceM)
+                f.nextStep(from: p, graph: $0,
+                           nodeToleranceM: params.route.nodeArrivalToleranceM,
+                           trace: routeTrace, tp: params.route.routeTrace)
             }
         }
-        guard let route else { return (Geo.bearingDeg(from: p, to: h), false) }
-        return (route, true)
+        guard let step else { return (Geo.bearingDeg(from: p, to: h), false) }
+        routeTrace = step.trace
+        return (step.deg, true)
     }
 
     /// 定位の基準を、**方位と出所の対**で返す。
@@ -1630,7 +1637,8 @@ final class WalkSessionController: ObservableObject {
         guard let turn = f.nextTurn(from: p, graph: graph,
                                     straightWithinDeg: params.route.branchStraightDeg,
                                     maxLookM: params.route.intersectionLookaheadM,
-                                    nodeToleranceM: params.route.nodeArrivalToleranceM)
+                                    nodeToleranceM: params.route.nodeArrivalToleranceM,
+                                    trace: routeTrace, tp: params.route.routeTrace)
         else { return }
         // **背後の角なら始めない。** 始めても 1 音目の判定で即座に止まるだけで、
         // それを毎秒の位置更新のたびに繰り返す(実測 2026-08-21: 1 回の散歩で 6 件)。
@@ -1763,6 +1771,8 @@ final class WalkSessionController: ObservableObject {
     /// できるまでの数秒は直線距離で代替するので、動作は止まらない
     private func buildRouteField() {
         routeField = nil
+        // 場を作り直したら節点の番号の意味も変わる。引き継ぎは捨てる
+        routeTrace = nil
         guard let graph, let h = home, graph.map.covers(h) else { return }
         let snapMax = params.route.snapMaxDistanceM
         let weights = RouteField.Weights(crossCostWeight: params.route.crossCostWeight,

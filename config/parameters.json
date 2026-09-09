@@ -35,6 +35,8 @@
     "map_file_max_mb": 80,
     "map_index_cell_size_m": 50,
     "snap_max_distance_m": 25,
+    "way_switch_margin_m": 0,
+    "node_switch_margin_m": 0,
     "node_arrival_tolerance_m": 8,
     "intersection_lookahead_m": 35,
     "branch_straight_deg": 25,
