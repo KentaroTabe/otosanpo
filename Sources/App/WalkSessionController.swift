@@ -291,6 +291,11 @@ final class WalkSessionController: ObservableObject {
             }
             log("頭部固定: 有効(利用可能=\(headMountMotion.isAvailable ? "はい" : "いいえ")"
                 + " 取り付けのずれは歩きながら学習)")
+        } else {
+            // **無効であることも残す。** 黙っていると「実験ビルドのつもりで配布ビルドを
+            // 歩いた」ことに気づけない(2026-09-10 に実際に 1 回分の散歩を失った)。
+            // 無音や即時再生の理由が、後からログだけで分かるようにする
+            log("頭部固定: 無効(配布と同じ設定。音楽は待たずに鳴り始めます)")
         }
         startMusicSpotIfWanted()
         log("歩調: 利用可能=\(PedometerService.isAvailable ? "はい" : "いいえ")"

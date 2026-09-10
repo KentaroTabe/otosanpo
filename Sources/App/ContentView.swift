@@ -54,11 +54,24 @@ struct ContentView: View {
                     if controller.musicFileAvailable {
                         Toggle("音楽スポットを 1 つ作る(実験)", isOn: $controller.musicSpotWanted)
                         if controller.musicSpotWanted {
-                            Text("出発したら 100 m 以内に 1 つだけ音楽の鳴る場所を作り、"
-                                 + "そこから聞こえるように鳴らします。着いたら止まります。"
+                            Text("出発したら散歩時間に応じた距離に 1 つだけ音楽の鳴る場所を作り、"
+                                 + "そこから聞こえるように鳴らします。"
                                  + "連続音で方向が伝わるかを試すための実験です")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            // **どちらのビルドを持っているかを、出発前に見えるようにする。**
+                            // 2026-09-10、実験ビルドのつもりで配布ビルドを歩き、
+                            // 「固定する前に鳴り始めた」= 待ちが効いていないことに
+                            // 現地まで気づけなかった。挙動が根本から変わるので明示する
+                            if controller.params.headMount.enabled {
+                                Text("頭部固定: 有効。頭の向きが定まってから鳴り始めます")
+                                    .font(.caption.bold())
+                            } else {
+                                Text("頭部固定: 無効(配布と同じ設定)。"
+                                     + "音楽は待たずにすぐ鳴り始めます")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.orange)
+                            }
                         }
                     }
                     Toggle("通勤路の学習モード", isOn: $controller.commuteLearning)
