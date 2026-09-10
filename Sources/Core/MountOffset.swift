@@ -34,13 +34,24 @@ import Foundation
 /// - 有効な course を持つ fix は、**直前の fix(course の有無を問わない)からの経過時間**
 ///   ぶんの証拠になる。course の無い fix を挟んだら、その区間は証拠に含めない
 ///   (有効 t=0 → 無効 t=1 → 有効 t=2 なら、最後の証拠は 1 秒であって 2 秒ではない)
-/// - course が `maxGapSec` より長く途切れていたら、その fix は証拠にしない
+/// - course が `maxGapSec` より長く途切れたら、その時点で「未確定の証拠を捨てよ」と知らせる
 /// - **減衰も fix の時刻で測る。** 頭方位のコールバック時刻で測ると、
 ///   新しい fix を最初に見た位相(10 Hz なら最大 0.1 秒・50 Hz なら 0.02 秒の遅れ)で
 ///   結果が変わってしまう
 ///
 /// これで、頭方位を 10 Hz で流しても 50 Hz で流しても、
 /// 同じ fix 列と方位の列なら**同じ学習結果**になる。
+///
+/// ## 時計は 2 つある(2026-09-10・3 回目の検証で指摘)
+///
+/// - **fix の時刻**: 証拠の量・減衰・fix の識別。更新頻度や位相に左右されない
+/// - **観測時刻**(頭方位のコールバック時刻): **course の途切れの期限にだけ**使う。
+///   位置更新そのものが止まると `motionFix()` は同じ fix を返し続け、fix の時刻が進まない。
+///   fix の時刻だけで期限を測っていた版では、何分止まっても「同じ fix の読み直し」のままで、
+///   期限が来ず、古い証拠が検疫の窓に残り続けた
+///
+/// 観測時刻は期限の判定にしか効かないので、証拠の量・学習値・R は更新頻度に依らない。
+/// 期限が来る瞬間だけは、コールバック 1 回ぶん(10 Hz なら 0.1 秒)ずれうる。
 ///
 /// ## 成立したら凍結する(2026-09-10)
 ///
@@ -71,7 +82,8 @@ public struct MountOffset: Equatable {
         /// 中心に門を閉じてしまい、通った側だけで R が上がる(自作自演)。
         /// 分類の結果は検疫が「門の外がどれだけ続いたか」を数える材料になる
         public var gateDeg: Double
-        /// course の途切れとして許す上限 [sec]。これより長く途切れた後の fix は証拠にしない。
+        /// course の途切れとして許す上限 [sec]。最後の有効 course から測る。
+        /// 超えたら未確定の証拠を捨てる合図を出し、その後の fix も証拠にしない。
         /// 立ち止まりや受信の途切れを「その間ずっと合っていた」と数えないため
         public var maxGapSec: Double
 
@@ -93,12 +105,15 @@ public struct MountOffset: Equatable {
             case noFix
             /// 同じ fix を読み直した。証拠は増えない
             case duplicateFix
+            /// 同じ fix の読み直しだが、**観測時刻で見て course の途切れが上限を超えた**
+            /// (位置更新そのものが止まっている)。未確定の証拠を捨てる合図。新しい fix ではない
+            case courseExpired
             /// 最初に有効な course を持った fix。**区間の始点になるだけ**で証拠は無い
             case firstFix
             /// 新しい fix だが course が無効。**区間の始点だけ進め、この区間を証拠にしない**
             case noCourse
-            /// course が上限より長く途切れた後の fix。
-            /// **未確定の証拠は捨てるが、状態は変えない**
+            /// 新しい fix で、course の途切れが上限を超えている(course の無い fix でも、
+            /// 戻ってきた有効な fix でも)。**未確定の証拠は捨てるが、状態は変えない**
             case gapTooLong
             /// 学習に取り込んだ(まだ固定前)。**固定値に対する分類ではないので、検疫は数えない**
             /// (学習を成立させた標本もこれ。数えると、成立直後の窓が白紙にならない)
@@ -118,15 +133,18 @@ public struct MountOffset: Equatable {
             self.evidenceSec = evidenceSec
         }
 
-        /// 新しい fix を見た標本か(`noFix` と `duplicateFix` 以外)。ログの 1 行に
-        /// 「最後に来た fix がどう扱われたか」を出すために使う
-        public var isNewFix: Bool { kind != .noFix && kind != .duplicateFix }
+        /// 新しい fix を見た標本か。ログの 1 行に「最後に来た fix がどう扱われたか」を
+        /// 出すために使う。**読み直し(期限切れを含む)と fix 無しは新しい fix ではない**
+        public var isNewFix: Bool {
+            kind != .noFix && kind != .duplicateFix && kind != .courseExpired
+        }
 
         /// ログに出す短い名前
         public var label: String {
             switch kind {
             case .noFix: "fix無"
             case .duplicateFix: "同fix"
+            case .courseExpired: "期限切れ"
             case .firstFix: "始点"
             case .noCourse: "course無"
             case .gapTooLong: "間隔超"
@@ -153,20 +171,29 @@ public struct MountOffset: Equatable {
 
     public init() {}
 
-    /// 1 標本を取り込む。**頭方位のコールバック時刻は使わない**(fix の時刻だけで数える)。
+    /// 1 標本を取り込む。
     /// - Parameters:
     ///   - headingDeg: スマホの**生の**方位 [deg]
     ///   - courseDeg: **いま有効な生の** course。無効なら nil
     ///   - fixTime: 最新の location fix の時刻。**course が無効でも渡す**
     ///     (渡さないと、無効な fix を挟んだ区間まで次の証拠に入ってしまう)
+    ///   - observedAt: この標本を見た時刻 [sec](頭方位のコールバック時刻)。
+    ///     **course の途切れの期限にだけ使う**(位置更新が止まると fix の時刻が進まないため)。
+    ///     証拠の量・減衰・fix の識別には使わない
     /// - Returns: 分類と、持ち込んだ証拠時間
     @discardableResult
     public mutating func ingest(headingDeg: Double, courseDeg: Double?,
-                                fixTime: TimeInterval?, p: Params) -> Sample {
+                                fixTime: TimeInterval?, observedAt: TimeInterval,
+                                p: Params) -> Sample {
         guard let fixTime else { return Sample(kind: .noFix, evidenceSec: 0) }
         // **同じ fix を読み直しても証拠は増えない。**
         // 50 Hz で回っていても、1 Hz の fix は 1 Hz ぶんの証拠しか持たない
         if let last = lastFixTime, fixTime <= last {
+            // **ただし位置更新そのものが止まった場合も、course の途切れの期限は来る。**
+            // fix の時刻は進まないので、期限だけは観測時刻で測る(D6・3 回目の検証で指摘)
+            if let lastCourse = lastCourseFixTime, observedAt - lastCourse > p.maxGapSec {
+                return Sample(kind: .courseExpired, evidenceSec: 0)
+            }
             return Sample(kind: .duplicateFix, evidenceSec: 0)
         }
         let previousFix = lastFixTime

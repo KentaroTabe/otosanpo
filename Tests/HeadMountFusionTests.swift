@@ -365,6 +365,37 @@ final class HeadMountFusionTests: XCTestCase {
         XCTAssertEqual(f.quarantineState, .trusted, "欠落だけでは状態を変えない")
     }
 
+    /// **位置更新そのものが止まっても、上限を超えたら証拠を捨てる**
+    /// (受け入れ条件 D6・2026-09-10 の 3 回目の検証で挙がった系列)。
+    ///
+    /// 学習後に門外 8 秒(最後の有効 fix が t=13)→ 位置更新が止まり、同じ fix(13)を
+    /// 読み続けながらコールバック時刻だけが 14〜19 と進む。t=18 までは門外 8 秒を保ち、
+    /// t=19 で門内 0・門外 0。状態は採用のまま、学習値と R は全期間変わらない。
+    /// fix の時刻だけで期限を測っていた版では、全部「同じ fix の読み直し」になり、
+    /// t=19 でも門外 8 秒が残っていた
+    func testEvidenceExpiresWhenLocationUpdatesStop() {
+        let p = learnable(staleSec: 30, halfLifeSec: .infinity)
+        var f = HeadMountFusion()
+        for i in 0...5 { step(&f, fixTime: Double(i), heading: 184, course: 90, p: p) }
+        for i in 6...13 { step(&f, fixTime: Double(i), heading: 304, course: 90, p: p) }
+        let learned = try! XCTUnwrap(f.learnedOffsetDeg)
+        let r = f.concentration
+        XCTAssertEqual(f.outsideEvidenceSec, 8, accuracy: 1e-9, "前提: 門外 8 秒")
+        for at in 14...18 {
+            f.ingest(headingDeg: 304, rawCourseDeg: nil, fixTime: 13, at: Double(at), p: p)
+            XCTAssertEqual(f.outsideEvidenceSec, 8, accuracy: 1e-9, "t=\(at): 上限以内は保つ")
+            XCTAssertEqual(f.quarantineState, .trusted)
+        }
+        f.ingest(headingDeg: 304, rawCourseDeg: nil, fixTime: 13, at: 19, p: p)
+        XCTAssertEqual(f.insideEvidenceSec, 0, accuracy: 1e-9)
+        XCTAssertEqual(f.outsideEvidenceSec, 0, accuracy: 1e-9,
+                       "fix が来なくても、上限を超えたら捨てる")
+        XCTAssertEqual(f.quarantineState, .trusted, "期限切れだけでは状態を変えない")
+        XCTAssertEqual(f.learnedOffsetDeg ?? .nan, learned, accuracy: 1e-12)
+        XCTAssertEqual(f.concentration, r, accuracy: 1e-12)
+        XCTAssertEqual(f.currentObservationLabel, "重複", "同じ fix の読み直しであることは変わらない")
+    }
+
     /// **ログに「今回の観測が新規か重複か」と「最後の新 fix の分類」を別々に出せる**
     /// (受け入れ条件 E2・2026-09-10 の 2 回目の検証で挙がった系列)
     func testLogDistinguishesNewAndDuplicateObservations() {

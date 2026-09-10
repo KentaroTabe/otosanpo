@@ -129,8 +129,9 @@ public struct HeadingQuarantine: Equatable {
             // **学習中の標本は、固定値に対する分類ではない。** 数えない。
             // 学習を成立させた標本もこれなので、成立直後の窓は白紙のまま始まる(D1)
             return isUsable
-        case .gapTooLong:
-            // 間が空きすぎた。**未確定の証拠だけ捨てる。状態は変えない**(D6)
+        case .gapTooLong, .courseExpired:
+            // course の途切れが上限を超えた(新しい fix で分かった場合も、位置更新が止まって
+            // 観測時刻で分かった場合も)。**未確定の証拠だけ捨てる。状態は変えない**(D6)
             clearWindow()
             return isUsable
         case .inside:

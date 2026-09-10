@@ -154,6 +154,17 @@ final class HeadingQuarantineTests: XCTestCase {
         XCTAssertEqual(q.state, .trusted)
     }
 
+    /// **位置更新が止まって期限切れになった場合も、未確定の証拠だけ捨てる**(状態は変えない。
+    /// D6・2026-09-10 の 3 回目の検証で指摘)
+    func testCourseExpiryClearsEvidenceButKeepsState() {
+        var q = HeadingQuarantine()
+        q.markLearned()
+        feed(&q, .outside, seconds: 8)
+        q.assess(sample(.courseExpired, 0), p: p)
+        XCTAssertEqual(q.evidenceSec, 0, "期限切れで未確定の証拠を捨てる")
+        XCTAssertTrue(q.isUsable, "期限切れだけでは状態を変えない")
+    }
+
     /// 証拠 0 秒の標本は窓に入れない(0 除算と、時間の無い証拠を防ぐ)
     func testZeroEvidenceSamplesAreIgnored() {
         var q = HeadingQuarantine()

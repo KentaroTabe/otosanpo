@@ -91,7 +91,8 @@ public struct HeadMountFusion: Equatable {
     /// 読み直しなのか新しい fix なのかがログから読めない(2026-09-10 の 2 回目の検証で指摘)
     public var currentObservationLabel: String {
         guard let kind = lastSampleKind, kind != .noFix else { return "fix無" }
-        return kind == .duplicateFix ? "重複" : "新規"
+        // 期限切れ(位置更新が止まっている)も、同じ fix の読み直しであることは変わらない
+        return (kind == .duplicateFix || kind == .courseExpired) ? "重複" : "新規"
     }
     /// 検疫の証拠窓の門内時間 [sec](ログ用)
     public var insideEvidenceSec: Double { quarantine.insideEvidenceSec }
@@ -124,7 +125,8 @@ public struct HeadMountFusion: Equatable {
     ///   - rawCourseDeg: **いま有効な生の** course。無ければ nil(保持値を渡さない)
     ///   - fixTime: 最新の location fix の時刻。**course が無効でも渡す**
     ///     (渡さないと、無効な fix を挟んだ区間まで次の証拠に入る)
-    ///   - t: 標本時刻 [sec]。**鮮度の判定にだけ使う**(学習と検疫は fix の時刻で数える)
+    ///   - t: 標本時刻 [sec]。鮮度の判定と、**位置更新が止まった場合の course の途切れの期限**
+    ///     に使う(学習と検疫の証拠は fix の時刻で数える)
     /// - Returns: この標本の時点での判定
     @discardableResult
     public mutating func ingest(headingDeg: Double, rawCourseDeg: Double?,
@@ -133,10 +135,12 @@ public struct HeadMountFusion: Equatable {
         lastRawHeadingDeg = headingDeg
         // 学習は**生の方位**で行う(補正後を食わせると自分の出力を追いかけて循環する)。
         // 門の内外の分類もここで一緒に返る(→ 受け入れ条件 D3。検疫は差を計算しない)
-        // 学習は fix の時刻だけで数える(コールバック時刻 `t` は渡さない)。
-        // `t` で減衰を測ると、新しい fix を最初に見た位相で結果が変わる(2026-09-10 の検証)
+        // 学習と証拠は fix の時刻で数える。`t` で減衰や証拠を測ると、新しい fix を
+        // 最初に見た位相で結果が変わる(2026-09-10 の検証)。
+        // **`t` は course の途切れの期限にだけ使う** — 位置更新が止まると fix の時刻が
+        // 進まず、fix の時刻だけでは期限が来ない(3 回目の検証で指摘)
         let sample = offset.ingest(headingDeg: headingDeg, courseDeg: rawCourseDeg,
-                                   fixTime: fixTime, p: p.offset)
+                                   fixTime: fixTime, observedAt: t, p: p.offset)
         if sample.isNewFix { lastNewFix = sample }
         lastSampleKind = sample.kind
         // **成立は一度きり、以後は変わらない。** 成立した瞬間に検疫を採用状態から始める
