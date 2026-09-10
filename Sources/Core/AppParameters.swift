@@ -270,10 +270,11 @@ public struct AppParameters: Codable, Equatable {
         public var offsetHalfLifeSec: Double
         /// ずれが「定数である」と認める合成ベクトル長 R の下限(0..1)
         public var offsetMinConcentration: Double
-        /// 推定から離れた標本を「門の外」と分類する角度 [deg]。0 で門なし。
-        /// **学習中は平均を汚さないために捨て、学習後は検疫が数える材料になる**(→ MountOffset)
+        /// 学習した値から外れた標本を「門の外」と分類する角度 [deg]。0 で門なし。
+        /// **学習が成立した後にだけ効く**(学習中に掛けると、まだ意味のない円平均を中心に
+        /// 片側だけ通し、自作自演で R を上げて出鱈目な値を学習する → MountOffset)
         public var offsetGateDeg: Double
-        /// 異なる fix の間隔として認める上限 [sec]。超えた間隔は証拠に加算しない。
+        /// course の途切れとして許す上限 [sec]。これより長く途切れた後の fix は証拠にしない。
         /// 立ち止まりや受信の途切れを「その間ずっと合っていた」と数えないため
         public var evidenceMaxGapSec: Double
         /// 検疫の証拠窓の長さ [sec](有効証拠時間で数える。壁時計ではない)

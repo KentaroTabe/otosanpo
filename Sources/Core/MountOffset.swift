@@ -23,17 +23,24 @@ import Foundation
 /// ポケットに入れて歩けば差が揺れて R が立たず、学習は成立しない
 /// (= 頭部基準は使われない)。装置を外した A/B 比較がそのまま成立する。
 ///
-/// ## 証拠は「標本数」ではなく「異なる fix の間の経過時間」で数える(2026-09-10)
+/// ## 証拠は「標本数」ではなく「fix の間の経過時間」で数える(2026-09-10)
 ///
 /// 以前は `ingest` が呼ばれるたびに重み +1 だった。頭方位は 50 Hz、
 /// GPS の fix は約 1 Hz なので、**同じ fix が 50 回、独立した証拠として数えられていた**。
-/// `max_fix_age_sec` が 10 秒なので、古い fix 1 個だけで学習条件の半分を作れる。
-/// `minWeight = update_hz × offset_min_sec` で辻褄は合わせていたが、
-/// 重複そのものは消えていない(更新頻度を変えると学習の立ち上がりが変わってしまう)。
 ///
-/// いまは **fix の時刻を識別子として使い、新しい fix のときだけ、
-/// 前の fix からの経過時間ぶんの証拠を積む**。頭方位を 10 Hz で流しても
-/// 50 Hz で流しても、同じ fix 列なら同じ学習結果になる。
+/// いまの規則:
+///
+/// - **fix の時刻を識別子として使う。** 同じ時刻の fix を何度読んでも証拠は増えない
+/// - 有効な course を持つ fix は、**直前の fix(course の有無を問わない)からの経過時間**
+///   ぶんの証拠になる。course の無い fix を挟んだら、その区間は証拠に含めない
+///   (有効 t=0 → 無効 t=1 → 有効 t=2 なら、最後の証拠は 1 秒であって 2 秒ではない)
+/// - course が `maxGapSec` より長く途切れていたら、その fix は証拠にしない
+/// - **減衰も fix の時刻で測る。** 頭方位のコールバック時刻で測ると、
+///   新しい fix を最初に見た位相(10 Hz なら最大 0.1 秒・50 Hz なら 0.02 秒の遅れ)で
+///   結果が変わってしまう
+///
+/// これで、頭方位を 10 Hz で流しても 50 Hz で流しても、
+/// 同じ fix 列と方位の列なら**同じ学習結果**になる。
 ///
 /// ## 成立したら凍結する(2026-09-10)
 ///
@@ -54,7 +61,7 @@ public struct MountOffset: Equatable {
     public struct Params: Equatable {
         /// 学習が成立するのに要る実効の証拠時間 [sec](減衰後)
         public var minEvidenceSec: Double
-        /// 平均の半減期 [sec]
+        /// 平均の半減期 [sec](fix の時刻で測る)
         public var halfLifeSec: Double
         /// 差が定数だと認める合成ベクトル長 R の下限(0..1)。1 に近いほど厳しい
         public var minConcentration: Double
@@ -64,7 +71,7 @@ public struct MountOffset: Equatable {
         /// 中心に門を閉じてしまい、通った側だけで R が上がる(自作自演)。
         /// 分類の結果は検疫が「門の外がどれだけ続いたか」を数える材料になる
         public var gateDeg: Double
-        /// 異なる fix の間隔として認める上限 [sec]。これを超えた間隔は証拠に加算しない。
+        /// course の途切れとして許す上限 [sec]。これより長く途切れた後の fix は証拠にしない。
         /// 立ち止まりや受信の途切れを「その間ずっと合っていた」と数えないため
         public var maxGapSec: Double
 
@@ -82,20 +89,28 @@ public struct MountOffset: Equatable {
     /// 検疫はこの結果を集計するだけで、自分では差を計算しない
     public struct Sample: Equatable {
         public enum Kind: Equatable {
-            /// 有効な生 course が無い。証拠も状態も動かさない
-            case noCourse
+            /// location fix がまだ 1 つも無い
+            case noFix
             /// 同じ fix を読み直した。証拠は増えない
             case duplicateFix
-            /// 新しい fix だが前の fix から離れすぎている。
+            /// 最初に有効な course を持った fix。**区間の始点になるだけ**で証拠は無い
+            case firstFix
+            /// 新しい fix だが course が無効。**区間の始点だけ進め、この区間を証拠にしない**
+            case noCourse
+            /// course が上限より長く途切れた後の fix。
             /// **未確定の証拠は捨てるが、状態は変えない**
             case gapTooLong
-            /// 門の内側(= 学習した値と整合している)
+            /// 学習に取り込んだ(まだ固定前)。**固定値に対する分類ではないので、検疫は数えない**
+            /// (学習を成立させた標本もこれ。数えると、成立直後の窓が白紙にならない)
+            case learning
+            /// 門の内側(= 固定した学習値と整合している)
             case inside
             /// 門の外側
             case outside
         }
         public var kind: Kind
-        /// この標本が持ち込んだ有効証拠時間 [sec]。`inside` / `outside` 以外は 0
+        /// この標本が持ち込んだ有効証拠時間 [sec]。
+        /// `learning` / `inside` / `outside` 以外は 0
         public var evidenceSec: Double
 
         public init(kind: Kind, evidenceSec: Double) {
@@ -103,12 +118,19 @@ public struct MountOffset: Equatable {
             self.evidenceSec = evidenceSec
         }
 
+        /// 新しい fix を見た標本か(`noFix` と `duplicateFix` 以外)。ログの 1 行に
+        /// 「最後に来た fix がどう扱われたか」を出すために使う
+        public var isNewFix: Bool { kind != .noFix && kind != .duplicateFix }
+
         /// ログに出す短い名前
         public var label: String {
             switch kind {
-            case .noCourse: "course無"
+            case .noFix: "fix無"
             case .duplicateFix: "同fix"
+            case .firstFix: "始点"
+            case .noCourse: "course無"
             case .gapTooLong: "間隔超"
+            case .learning: "学習"
             case .inside: "門内"
             case .outside: "門外"
             }
@@ -118,9 +140,12 @@ public struct MountOffset: Equatable {
     private var x = 0.0
     private var y = 0.0
     private var evidenceSec = 0.0
-    private var lastDecayT: TimeInterval?
-    /// 最後に証拠として取り込んだ fix の時刻。**これが fix の識別子**
+    /// 最後に見た fix の時刻(course の有無を問わない)。**これが fix の識別子**
     private var lastFixTime: TimeInterval?
+    /// 最後に有効な course を持った fix の時刻。途切れの長さを測る
+    private var lastCourseFixTime: TimeInterval?
+    /// 最後に減衰を掛けた fix の時刻
+    private var lastDecayFixTime: TimeInterval?
     /// 成立した値。**一度入ったら散歩の終わりまで変わらない**
     private var frozenDeg: Double?
     /// 成立した時点の R。凍結後の表示に使う
@@ -128,39 +153,41 @@ public struct MountOffset: Equatable {
 
     public init() {}
 
-    /// 1 標本を取り込む。
+    /// 1 標本を取り込む。**頭方位のコールバック時刻は使わない**(fix の時刻だけで数える)。
     /// - Parameters:
     ///   - headingDeg: スマホの**生の**方位 [deg]
-    ///   - courseDeg: **いま有効な生の** course。無ければ nil
-    ///   - fixTime: その course を生んだ location fix の時刻。**同じ値なら同じ fix**
-    ///   - t: 標本時刻 [sec](減衰の基準。fix の時刻とは別)
-    /// - Returns: 門の内外の分類と、持ち込んだ証拠時間
+    ///   - courseDeg: **いま有効な生の** course。無効なら nil
+    ///   - fixTime: 最新の location fix の時刻。**course が無効でも渡す**
+    ///     (渡さないと、無効な fix を挟んだ区間まで次の証拠に入ってしまう)
+    /// - Returns: 分類と、持ち込んだ証拠時間
     @discardableResult
     public mutating func ingest(headingDeg: Double, courseDeg: Double?,
-                                fixTime: TimeInterval?, at t: TimeInterval,
-                                p: Params) -> Sample {
-        guard let course = courseDeg, let fixTime else {
-            return Sample(kind: .noCourse, evidenceSec: 0)
-        }
+                                fixTime: TimeInterval?, p: Params) -> Sample {
+        guard let fixTime else { return Sample(kind: .noFix, evidenceSec: 0) }
         // **同じ fix を読み直しても証拠は増えない。**
         // 50 Hz で回っていても、1 Hz の fix は 1 Hz ぶんの証拠しか持たない
-        guard let previous = lastFixTime else {
-            // 最初の fix。**間隔が測れないので証拠にはしない**(区間の始点になるだけ)
-            lastFixTime = fixTime
-            lastDecayT = t
+        if let last = lastFixTime, fixTime <= last {
             return Sample(kind: .duplicateFix, evidenceSec: 0)
         }
-        guard fixTime > previous else {
-            return Sample(kind: .duplicateFix, evidenceSec: 0)
-        }
-        let gap = fixTime - previous
+        let previousFix = lastFixTime
         lastFixTime = fixTime
-        guard gap <= p.maxGapSec else {
-            // 離れすぎた区間は「その間ずっと合っていた」証拠にならない。
-            // 次の区間の始点として時刻だけ進める
-            lastDecayT = t
+        guard let course = courseDeg else {
+            // 新しい fix だが course が無効。**区間の始点だけ進める**
+            return Sample(kind: .noCourse, evidenceSec: 0)
+        }
+        let previousCourseFix = lastCourseFixTime
+        lastCourseFixTime = fixTime
+        // 有効な course が前に無ければ、間隔が測れない。区間の始点になるだけ
+        guard let prevCourse = previousCourseFix, let prevFix = previousFix else {
+            return Sample(kind: .firstFix, evidenceSec: 0)
+        }
+        // course が長く途切れていた。「その間ずっと合っていた」証拠にはならない
+        guard fixTime - prevCourse <= p.maxGapSec else {
             return Sample(kind: .gapTooLong, evidenceSec: 0)
         }
+        // **直前の fix からの時間だけ**を証拠にする。course の無い fix を挟んでいれば、
+        // その区間は含まれない
+        let credited = fixTime - prevFix
 
         let diffDeg = Geo.normalizeDeg(headingDeg - course)
         // **凍結後は分類だけ返す。** 統計を動かすと門の中心が動き、
@@ -168,7 +195,7 @@ public struct MountOffset: Equatable {
         if let frozen = frozenDeg {
             let outside = p.gateDeg > 0
                 && abs(Geo.angularDiffDeg(diffDeg, frozen)) > p.gateDeg
-            return Sample(kind: outside ? .outside : .inside, evidenceSec: gap)
+            return Sample(kind: outside ? .outside : .inside, evidenceSec: credited)
         }
 
         // **学習中は門を開かない。**
@@ -182,26 +209,26 @@ public struct MountOffset: Equatable {
         //
         // 首を回している間の標本で平均が汚れる問題は、**R の門(`minConcentration`)が
         // 受け持つ**。汚れていれば学習が成立しないだけで、誤った値は作られない。
-        if let last = lastDecayT, t > last, p.halfLifeSec > 0 {
-            let decay = pow(0.5, (t - last) / p.halfLifeSec)
+        if let last = lastDecayFixTime, p.halfLifeSec > 0 {
+            let decay = pow(0.5, (fixTime - last) / p.halfLifeSec)
             x *= decay
             y *= decay
             evidenceSec *= decay
         }
-        lastDecayT = t
+        lastDecayFixTime = fixTime
         let rad = diffDeg * .pi / 180
-        x += gap * cos(rad)
-        y += gap * sin(rad)
-        evidenceSec += gap
+        x += credited * cos(rad)
+        y += credited * sin(rad)
+        evidenceSec += credited
         // 成立したらその場で凍結する
         if evidenceSec >= p.minEvidenceSec, concentration >= p.minConcentration {
             frozenDeg = meanDeg
             frozenConcentration = concentration
         }
-        return Sample(kind: .inside, evidenceSec: gap)
+        return Sample(kind: .learning, evidenceSec: credited)
     }
 
-    /// 閾値を通していない生の円平均 [deg]。**門の中心に使う**(表に出す値ではない)
+    /// 閾値を通していない生の円平均 [deg](凍結する値の元)
     private var meanDeg: Double {
         Geo.normalizeDeg(atan2(y, x) * 180 / .pi)
     }

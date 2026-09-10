@@ -122,8 +122,12 @@ public struct HeadingQuarantine: Equatable {
         // 補正が成立するまでは何も数えない
         guard state != .unverified else { return false }
         switch sample.kind {
-        case .noCourse, .duplicateFix:
-            // 突き合わせる相手が無い / 同じ相手。**証拠も状態も動かさない**
+        case .noFix, .duplicateFix, .firstFix, .noCourse:
+            // 突き合わせる相手が無い / 同じ相手 / 区間の始点。**証拠も状態も動かさない**
+            return isUsable
+        case .learning:
+            // **学習中の標本は、固定値に対する分類ではない。** 数えない。
+            // 学習を成立させた標本もこれなので、成立直後の窓は白紙のまま始まる(D1)
             return isUsable
         case .gapTooLong:
             // 間が空きすぎた。**未確定の証拠だけ捨てる。状態は変えない**(D6)

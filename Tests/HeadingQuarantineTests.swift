@@ -139,6 +139,21 @@ final class HeadingQuarantineTests: XCTestCase {
                        "前半 200 秒の門内が残っていると、ここで落ちない")
     }
 
+    /// **学習中の標本・区間の始点・fix 無しは数えない**(受け入れ条件 D1/D2)。
+    ///
+    /// 学習を成立させた標本は、成立した直後に検疫へ渡る。これを門内として数えると、
+    /// 成立直後の窓が白紙にならない(2026-09-10 の検証で指摘)。
+    /// そもそも学習中の標本は「固定値に対する分類」ではないので、門内とも門外とも言えない
+    func testLearningAndIntervalStartsAreNotCounted() {
+        var q = HeadingQuarantine()
+        q.markLearned()
+        q.assess(sample(.learning, 5), p: p)
+        q.assess(sample(.firstFix, 0), p: p)
+        q.assess(sample(.noFix, 0), p: p)
+        XCTAssertEqual(q.evidenceSec, 0)
+        XCTAssertEqual(q.state, .trusted)
+    }
+
     /// 証拠 0 秒の標本は窓に入れない(0 除算と、時間の無い証拠を防ぐ)
     func testZeroEvidenceSamplesAreIgnored() {
         var q = HeadingQuarantine()

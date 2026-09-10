@@ -18,7 +18,7 @@ import XCTest
 /// - 長い首振りで門が閉じ続けると「付け直し」と誤認して学習が白紙に戻り、
 ///   1 回の散歩で 2 回起きた(そのたびに検疫の実績も捨てられる)
 ///
-/// そこで要求を変えた: **証拠は「異なる fix の間の経過時間」で数え、
+/// そこで要求を変えた: **証拠は「fix の間の経過時間」で数え、
 /// 一度成立した値は散歩の終わりまで固定する。** 期待値だけを書き換えたのではなく、
 /// 数える対象そのものが変わっている。
 final class MountOffsetTests: XCTestCase {
@@ -39,23 +39,18 @@ final class MountOffsetTests: XCTestCase {
 
     /// course に対して一定のずれを持つ標本を、**1 秒ごとの新しい fix** で流す。
     /// - Parameter perFix: 1 つの fix につき何回 `ingest` を呼ぶか(更新頻度の模擬)
-    @discardableResult
     private func feed(_ m: inout MountOffset, p gp: MountOffset.Params,
                       offsetDeg: Double, noiseDeg: [Double] = [0],
                       from t0: Double, fixes: Int, courseDeg: Double = 30,
-                      perFix: Int = 1) -> Double {
-        var t = t0
+                      perFix: Int = 1) {
         for i in 0..<fixes {
             let noise = noiseDeg[i % noiseDeg.count]
             let heading = Geo.normalizeDeg(courseDeg + offsetDeg + noise)
-            let fixTime = t0 + Double(i)
-            for k in 0..<perFix {
-                t = fixTime + Double(k) / Double(perFix)
+            for _ in 0..<perFix {
                 m.ingest(headingDeg: heading, courseDeg: courseDeg,
-                         fixTime: fixTime, at: t, p: gp)
+                         fixTime: t0 + Double(i), p: gp)
             }
         }
-        return t + 1
     }
 
     /// **最初の失敗そのもの**: +94° のずれを、雑音(±15°)ごしに学習できる
@@ -87,7 +82,7 @@ final class MountOffsetTests: XCTestCase {
         XCTAssertLessThan(fresh, 5)
         XCTAssertGreaterThan(fresh, 4)
         // 5 秒あけて 1 個。半減期 10 秒なので、それまでの証拠は約 0.71 倍になる
-        m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 10, at: 10, p: decaying)
+        m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 10, p: decaying)
         XCTAssertEqual(m.evidence, fresh * pow(0.5, 0.5) + 5, accuracy: 0.01)
     }
 
@@ -99,12 +94,12 @@ final class MountOffsetTests: XCTestCase {
         XCTAssertLessThan(m.concentration, 0.5)
     }
 
-    /// course が無い間は何も進まない(揺れた標本で平均を汚さない)
-    func testIgnoresSamplesWithoutCourse() {
+    /// fix がまだ無い間は何も進まない
+    func testIgnoresSamplesWithoutAnyFix() {
         var m = MountOffset()
         for i in 0..<100 {
-            m.ingest(headingDeg: Double(i) * 3.6, courseDeg: nil, fixTime: nil,
-                     at: Double(i), p: p)
+            let s = m.ingest(headingDeg: Double(i) * 3.6, courseDeg: 30, fixTime: nil, p: p)
+            XCTAssertEqual(s.kind, .noFix, "fix の時刻の無い course は証拠にしない")
         }
         XCTAssertEqual(m.evidence, 0)
         XCTAssertNil(m.offsetDeg)
@@ -117,44 +112,91 @@ final class MountOffsetTests: XCTestCase {
     func testSameFixCountsOnce() {
         var m = MountOffset()
         // fix は 1 個だけ。それを 10 秒間 50 Hz で読み直す
-        for i in 0..<500 {
-            m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 1000,
-                     at: 1000 + Double(i) * 0.02, p: p)
+        for _ in 0..<500 {
+            m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 1000, p: p)
         }
         XCTAssertEqual(m.evidence, 0, "同じ fix の読み直しは証拠にならない")
         XCTAssertNil(m.offsetDeg, "fix 1 個で 20 秒ぶんの学習が成立してはいけない")
     }
 
-    /// **更新頻度を変えても結果が同じ**(受け入れ条件 B4)。
-    /// 同じ fix 列に対して 10 Hz と 50 Hz で流し、学習値・R・成立時刻を比べる
-    func testResultIsIndependentOfUpdateRate() {
-        var slow = MountOffset()
-        var fast = MountOffset()
-        feed(&slow, p: p, offsetDeg: 94, noiseDeg: [0, 12, -15, 8, -6],
-             from: 0, fixes: 40, perFix: 10)
-        feed(&fast, p: p, offsetDeg: 94, noiseDeg: [0, 12, -15, 8, -6],
-             from: 0, fixes: 40, perFix: 50)
-        XCTAssertEqual(try! XCTUnwrap(slow.offsetDeg), try! XCTUnwrap(fast.offsetDeg),
-                       accuracy: 0.001, "10 Hz と 50 Hz で学習値が変わってはいけない")
-        XCTAssertEqual(slow.concentration, fast.concentration, accuracy: 0.001)
-        XCTAssertEqual(slow.evidence, fast.evidence, accuracy: 0.001)
+    /// 最初の有効な fix は**区間の始点**になるだけ。証拠は持たない
+    func testTheFirstValidFixOnlyStartsTheInterval() {
+        var m = MountOffset()
+        let first = m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 0, p: p)
+        XCTAssertEqual(first.kind, .firstFix)
+        XCTAssertEqual(first.evidenceSec, 0)
+        XCTAssertEqual(first.label, "始点", "「同fix」と記録しない(ログで重複と見分けがつかなくなる)")
+        let second = m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 1, p: p)
+        XCTAssertEqual(second.kind, .learning)
+        XCTAssertEqual(second.evidenceSec, 1, accuracy: 1e-9)
     }
 
-    /// 離れすぎた fix の間隔は証拠に足さない(受け入れ条件 B3)。
+    /// **course の無い fix を挟んだ区間は証拠にしない**(受け入れ条件 D6・2026-09-10 の検証で指摘)。
+    ///
+    /// 有効 t=0 → course 無効の新しい fix t=1 → 有効 t=2。
+    /// 最後の証拠は **1 秒**(t=1〜2)であって、2 秒(t=0〜2)ではない。
+    /// 無効な fix の時刻を捨てていた版では 2 秒になり、学習・退避・復帰が早まっていた
+    func testNoCourseFixIsNotCountedAsEvidence() {
+        var m = MountOffset()
+        m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 0, p: p)
+        let gap = m.ingest(headingDeg: 124, courseDeg: nil, fixTime: 1, p: p)
+        XCTAssertEqual(gap.kind, .noCourse)
+        XCTAssertEqual(gap.evidenceSec, 0)
+        let last = m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 2, p: p)
+        XCTAssertEqual(last.evidenceSec, 1.0, accuracy: 1e-9,
+                       "course の無かった t=0〜1 を証拠に入れてはいけない")
+        XCTAssertEqual(m.evidence, 1.0, accuracy: 1e-9)
+    }
+
+    /// **更新頻度を変えても結果が同じ**(受け入れ条件 B4)。
+    /// 同じ fix 列に対して 10 Hz と 50 Hz で流し、学習値・R・証拠を比べる
+    func testResultIsIndependentOfUpdateRate() {
+        let decaying = MountOffset.Params(minEvidenceSec: 20, halfLifeSec: 30,
+                                          minConcentration: 0.8, maxGapSec: 5)
+        var slow = MountOffset()
+        var fast = MountOffset()
+        feed(&slow, p: decaying, offsetDeg: 94, noiseDeg: [0, 12, -15, 8, -6],
+             from: 0, fixes: 40, perFix: 10)
+        feed(&fast, p: decaying, offsetDeg: 94, noiseDeg: [0, 12, -15, 8, -6],
+             from: 0, fixes: 40, perFix: 50)
+        XCTAssertEqual(try! XCTUnwrap(slow.offsetDeg), try! XCTUnwrap(fast.offsetDeg),
+                       accuracy: 1e-9, "10 Hz と 50 Hz で学習値が変わってはいけない")
+        XCTAssertEqual(slow.concentration, fast.concentration, accuracy: 1e-9)
+        XCTAssertEqual(slow.evidence, fast.evidence, accuracy: 1e-9)
+    }
+
+    /// course が長く途切れた後の fix は証拠に足さない(受け入れ条件 B3)。
     /// 立ち止まりや受信の途切れを「その間ずっと合っていた」と数えない
     func testLongGapIsNotCountedAsEvidence() {
         var m = MountOffset()
         // 1 秒間隔の fix を 5 個 → 4 秒ぶん
         for i in 0..<5 {
-            m.ingest(headingDeg: 124, courseDeg: 30, fixTime: Double(i), at: Double(i), p: p)
+            m.ingest(headingDeg: 124, courseDeg: 30, fixTime: Double(i), p: p)
         }
         XCTAssertEqual(m.evidence, 4, accuracy: 0.01)
         // 60 秒あけた次の fix。上限 5 秒を超えるので加算しない
-        m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 64, at: 64, p: p)
+        let far = m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 64, p: p)
+        XCTAssertEqual(far.kind, .gapTooLong)
         XCTAssertEqual(m.evidence, 4, accuracy: 0.01, "60 秒の空白を証拠にしてはいけない")
         // その次は 1 秒後なので普通に積む
-        m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 65, at: 65, p: p)
+        m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 65, p: p)
         XCTAssertEqual(m.evidence, 5, accuracy: 0.01)
+    }
+
+    /// 立ち止まって course の無い fix が続いた後も、上限を超えていれば証拠にしない
+    func testLongRunOfNoCourseFixesIsAGap() {
+        var m = MountOffset()
+        for i in 0..<5 {
+            m.ingest(headingDeg: 124, courseDeg: 30, fixTime: Double(i), p: p)
+        }
+        // 立ち止まる: fix は 1 秒ごとに来るが course が無い(10 秒)
+        for i in 5..<15 {
+            m.ingest(headingDeg: 124, courseDeg: nil, fixTime: Double(i), p: p)
+        }
+        let resumed = m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 15, p: p)
+        XCTAssertEqual(resumed.kind, .gapTooLong,
+                       "course が 11 秒途切れた(上限 5 秒)。fix が来続けていても証拠にしない")
+        XCTAssertEqual(m.evidence, 4, accuracy: 0.01)
     }
 
     /// **成立した値は散歩の終わりまで固定**(受け入れ条件 C1/C2)。
@@ -167,13 +209,13 @@ final class MountOffsetTests: XCTestCase {
         let r = m.concentration
         XCTAssertEqual(learned, 94, accuracy: 1)
         // 90° 横を向いたまま 60 秒歩く(旧版は gate_reopen で白紙に戻していた)
-        feed(&m, p: gp, offsetDeg: 94 + 90, from: 100, fixes: 60)
-        XCTAssertEqual(try! XCTUnwrap(m.offsetDeg), learned, accuracy: 0.001,
+        feed(&m, p: gp, offsetDeg: 94 + 90, from: 40, fixes: 60)
+        XCTAssertEqual(try! XCTUnwrap(m.offsetDeg), learned, accuracy: 1e-9,
                        "首を回しただけで学習が動いてはいけない")
-        XCTAssertEqual(m.concentration, r, accuracy: 0.001)
+        XCTAssertEqual(m.concentration, r, accuracy: 1e-9)
     }
 
-    /// 成立後は**門の内外を分類して返す**だけになる(受け入れ条件 D3)。
+    /// 学習中の標本は `.learning`、成立後は**門の内外を分類して返す**(受け入れ条件 D3)。
     /// 検疫はこの結果を数えるので、差の計算は 1 か所にしかない
     func testClassifiesInsideAndOutsideAfterLearning() {
         let gp = gated(45)
@@ -182,22 +224,36 @@ final class MountOffsetTests: XCTestCase {
         XCTAssertNotNil(m.offsetDeg)
         // 学習値どおりの標本 → 門内(fix は 1 秒刻みで続ける)
         let inside = m.ingest(headingDeg: Geo.normalizeDeg(30 + 94), courseDeg: 30,
-                              fixTime: 40, at: 40, p: gp)
+                              fixTime: 40, p: gp)
         XCTAssertEqual(inside.kind, .inside)
         XCTAssertEqual(inside.evidenceSec, 1, accuracy: 0.01)
         // 90° 外れた標本 → 門外
         let outside = m.ingest(headingDeg: Geo.normalizeDeg(30 + 94 + 90), courseDeg: 30,
-                               fixTime: 41, at: 41, p: gp)
+                               fixTime: 41, p: gp)
         XCTAssertEqual(outside.kind, .outside)
         XCTAssertEqual(outside.evidenceSec, 1, accuracy: 0.01)
         // 同じ fix の読み直し → 証拠なし
-        let dup = m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 41, at: 41.5, p: gp)
+        let dup = m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 41, p: gp)
         XCTAssertEqual(dup.kind, .duplicateFix)
         XCTAssertEqual(dup.evidenceSec, 0)
         // 間隔超過 → 証拠なし
-        let far = m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 200, at: 200, p: gp)
+        let far = m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 200, p: gp)
         XCTAssertEqual(far.kind, .gapTooLong)
         XCTAssertEqual(far.evidenceSec, 0)
+    }
+
+    /// **学習を成立させた標本も `.learning`**(固定値に対する分類ではない)。
+    /// これを `.inside` として返していた版では、成立直後の検疫の窓が白紙にならなかった
+    func testTheSampleThatCompletesLearningIsLearning() {
+        let short = MountOffset.Params(minEvidenceSec: 2, halfLifeSec: .infinity,
+                                       minConcentration: 0.8, gateDeg: 45, maxGapSec: 5)
+        var m = MountOffset()
+        m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 0, p: short)
+        m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 1, p: short)
+        XCTAssertNil(m.offsetDeg)
+        let completing = m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 2, p: short)
+        XCTAssertNotNil(m.offsetDeg, "前提: この標本で成立する")
+        XCTAssertEqual(completing.kind, .learning)
     }
 
     /// **門は学習中には効かない**(2026-09-10 に要求が変わった箇所)。
@@ -213,8 +269,7 @@ final class MountOffsetTests: XCTestCase {
         // 差が 270° と 90° を往復する(= 意味のあるずれが無い)
         for i in 0..<200 {
             let heading = Geo.normalizeDeg(30 + (i % 2 == 0 ? 270 : 90))
-            m.ingest(headingDeg: heading, courseDeg: 30,
-                     fixTime: Double(i), at: Double(i), p: gp)
+            m.ingest(headingDeg: heading, courseDeg: 30, fixTime: Double(i), p: gp)
         }
         XCTAssertNil(m.offsetDeg,
                      "散らばった差から学習値を作ってはいけない(門が片側だけ通すと作れてしまう)")

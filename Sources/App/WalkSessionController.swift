@@ -285,6 +285,8 @@ final class WalkSessionController: ObservableObject {
             // 前回の散歩の信頼を持ち越さない(乱れた場所で終えた場合も、正常な場所で
             // 終えた場合も、実績は今回の分だけ)。付け直しでずれも変わる
             headMountFusion = HeadMountFusion()
+            // 記録の集計も散歩ごとに作り直す(前の散歩の末尾の時刻を持ち越さない)
+            motionDigest = HeadMotionDigest()
             headMountLabel = HeadMountFusion.Use.noSample.label
             lastHeadMountLogAt = nil
             lastHeadMountUseLabel = nil
@@ -746,6 +748,8 @@ final class WalkSessionController: ObservableObject {
             latestFacingBearing = nil
             if params.headMount.enabled {
                 headMountFusion = HeadMountFusion()
+                // 記録の集計も散歩ごとに作り直す(前の散歩の末尾の時刻を持ち越さない)
+                motionDigest = HeadMotionDigest()
                 headMountLabel = nil
                 lastValidityPulseAt = nil
                 lastHeadMountUseLabel = nil
@@ -993,14 +997,14 @@ final class WalkSessionController: ObservableObject {
     /// 保持値(`heldCourse`)やコンパス退避を渡してはいけない。立ち止まっている間に
     /// 「止まる直前の course」と「回っている頭」を突き合わせると、R が落ちて
     /// 検疫が退避に落ちる — **首を回す試験が自分の前提を壊す**(2026-09-08)
-    /// 生 course と、**それを生んだ fix の時刻**の対。
+    /// 生 course と fix の時刻の観測(**course が無効でも fix の時刻は入る**)。
     ///
     /// 規則そのものは Core に置いてある。**ここに書き下すと、うっかり保持値を
     /// 渡す変更が入ってもテストが落ちない**(2026-09-08 の検証で指摘された)。
     /// 時刻を一緒に運ぶのは、学習と検疫が「同じ fix を何度読んでも証拠は 1 回ぶん」で
     /// なければならないため(2026-09-10)
-    private func rawCourseFix(now: Date = Date()) -> (deg: Double, fixTime: TimeInterval)? {
-        TravelDirection.rawCourseFix(location.motionFix(now: now), params: params.location)
+    private func courseObservation(now: Date = Date()) -> CourseObservation {
+        TravelDirection.courseObservation(location.motionFix(now: now), params: params.location)
     }
 
     private func playBeacon() {
@@ -1174,14 +1178,15 @@ final class WalkSessionController: ObservableObject {
         let headingDeg = sample.headingDeg
         let nowDate = Date()
         let now = nowDate.timeIntervalSinceReferenceDate
-        // **course と、それを生んだ fix の時刻を一緒に取る。**
-        // 別々に取りに行くと取り違えるので、Core の 1 か所で対にして返す
-        let fix = rawCourseFix(now: nowDate)
+        // **course と fix の時刻を、同じ fix の写しから一緒に取る。**
+        // fix の時刻は course が無効でも渡す — 捨てると、course の無かった区間まで
+        // 次の証拠に入ってしまう(2026-09-10 の検証で指摘)
+        let obs = courseObservation(now: nowDate)
         // **記録専用の集計。** ここで足すだけで、判定には一切渡さない(→ 受け入れ条件 E5)
         motionDigest.add(headingDeg: headingDeg,
                          sensorTime: sample.sensorTime,
-                         absRateRadPerSec: sample.absoluteRateRadPerSec,
-                         verticalRateRadPerSec: sample.verticalRateRadPerSec,
+                         rotationRate: sample.rotationRate,
+                         gravity: sample.gravity,
                          magneticAccuracy: sample.magneticAccuracy,
                          maxIntervalSec: params.headMount.logIntervalSec)
         // **取り込む前に、古い標本のまま judge する。**
@@ -1189,8 +1194,8 @@ final class WalkSessionController: ObservableObject {
         // 先に取り込んでしまうと「その間ずっと古かった」事実を観測できず、
         // 退避もパルスの停止も記録に残らない(2026-09-09 の検証で指摘)
         tickHeadMount(now: nowDate)
-        headMountFusion.ingest(headingDeg: headingDeg, rawCourseDeg: fix?.deg,
-                               fixTime: fix?.fixTime, at: now, p: params.headMount.fusion)
+        headMountFusion.ingest(headingDeg: headingDeg, rawCourseDeg: obs.courseDeg,
+                               fixTime: obs.fixTime, at: now, p: params.headMount.fusion)
         // 取り込んだ後にもう一度。**使用可能へ戻った瞬間に鳴らし直す**ため
         tickHeadMount(now: nowDate)
         // **連続音は基準が動いたら動かす。** 位置更新(約 1 Hz)だけに乗せていたときは、
@@ -1208,43 +1213,59 @@ final class WalkSessionController: ObservableObject {
             || logNow.timeIntervalSince(lastHeadMountLogAt!) >= params.headMount.logIntervalSec {
             lastHeadMountLogAt = logNow
             let corrected = headMountFusion.correctedHeadingDeg ?? headingDeg
-            let courseLabel = fix.map { String(format: "%.1f", $0.deg) } ?? "-"
-            let diffLabel = fix.map {
-                String(format: "%.1f", abs(Geo.angularDiffDeg(corrected, $0.deg)))
+            let courseLabel = obs.courseDeg.map { String(format: "%.1f", $0) } ?? "-"
+            let diffLabel = obs.courseDeg.map {
+                String(format: "%.1f", abs(Geo.angularDiffDeg(corrected, $0)))
             } ?? "-"
             let offsetLabel = headMountFusion.learnedOffsetDeg
                 .map { String(format: "%.1f", $0) } ?? "学習中"
-            // fix の時刻は「同じ fix を読み直したか」を後から見分けるために残す。
-            // 絶対時刻は長いので、散歩の開始からの経過にする
-            let fixLabel = fix.map {
+            // fix の時刻は「同じ fix を読み直したか」を後から見分けるために残す
+            // (**course が無効な fix でも出す**)。絶対時刻は長いので、散歩の開始からの経過にする
+            let fixLabel = obs.fixTime.map {
                 String(format: "%.3f",
-                       $0.fixTime - (summary?.startedAt.timeIntervalSinceReferenceDate ?? 0))
+                       $0 - (summary?.startedAt.timeIntervalSinceReferenceDate ?? 0))
             } ?? "-"
+            // 分類は「最後に来た新しい fix がどう扱われたか」。直前の標本を出すと、
+            // 50 Hz のうち 49 回は同じ fix の読み直しなので、ほぼ常に「同fix」になる
             logToFile(String(format: "頭方位 raw=%.1f° heading=%.1f° course=%@° 差=%@°"
                              + " 状態=%@ 補正=%@ R=%.2f 証拠=%.1fs 分類=%@"
-                             + " 門内=%.1fs 門外=%.1fs fix=%@ 使用=%@",
+                             + " 門内=%.1fs 門外=%.1fs 門外割合=%.2f fix=%@ 使用=%@",
                              headingDeg, corrected, courseLabel, diffLabel,
                              headMountFusion.quarantineState.label,
                              offsetLabel, headMountFusion.concentration,
                              headMountFusion.offsetEvidenceSec,
-                             headMountFusion.lastSampleLabel,
+                             headMountFusion.lastNewFixLabel,
                              headMountFusion.insideEvidenceSec,
                              headMountFusion.outsideEvidenceSec,
+                             headMountFusion.outsideRatio,
                              fixLabel,
                              headMountFusion.use(at: now, p: params.headMount.fusion).label))
-            // **記録専用の 1 行。** 次の案件(角速度との突き合わせ)の材料。
-            // 瞬時値ではなく区間の集計を残す — 1 Hz の瞬時値では積分と比較できない
-            logToFile(String(format: "頭部モーション 標本=%d 最大間隔=%.3fs Δ方位=%@°"
-                             + " 回転積分=%.1f° 鉛直積分=%.1f° 磁場較正=%@",
-                             motionDigest.count, motionDigest.maxGapSec,
-                             motionDigest.headingChangeDeg
-                                .map { String(format: "%+.1f", $0) } ?? "-",
-                             motionDigest.integratedAbsDeg,
-                             motionDigest.integratedVerticalDeg,
-                             motionDigest.worstMagneticAccuracy
-                                .map(String.init) ?? "-"))
+            logToFile(headMotionLine())
             motionDigest.rollOver()
         }
+    }
+
+    /// **記録専用の「頭部モーション」行。** 次の案件(角速度との突き合わせ)の材料。
+    ///
+    /// 区間の集計(方位の変化・標本数・最大間隔・三軸と鉛直の積分・磁場較正)と、
+    /// 区間の最後の**瞬時値**(センサ時刻・角速度 3 軸・重力 3 軸)を 1 行に残す。
+    /// 1 Hz の瞬時値だけでは積分と比較できず、集計だけでは符号の生値が読めない
+    private func headMotionLine() -> String {
+        let d = motionDigest
+        func triple(_ v: MotionVector?, _ fmt: String) -> String {
+            v.map { String(format: "\(fmt)/\(fmt)/\(fmt)", $0.x, $0.y, $0.z) } ?? "-"
+        }
+        return String(format: "頭部モーション 標本=%d 最大間隔=%.3fs Δ方位=%@°"
+                      + " 積分xyz=%@° 鉛直積分=%.1f° 磁場較正=%@"
+                      + " 末尾 時刻=%@ 角速度xyz=%@ 重力xyz=%@",
+                      d.count, d.maxGapSec,
+                      d.headingChangeDeg.map { String(format: "%+.1f", $0) } ?? "-",
+                      triple(d.integratedDeg, "%.1f"),
+                      d.integratedVerticalDeg,
+                      d.worstMagneticAccuracy.map(String.init) ?? "-",
+                      d.lastSensorTime.map { String(format: "%.3f", $0) } ?? "-",
+                      triple(d.lastRotationRate, "%.3f"),
+                      triple(d.lastGravity, "%.3f"))
     }
 
     // MARK: - 音楽スポット(実験・→ Core の MusicSpot)

@@ -23,19 +23,23 @@ import XCTest
 /// (course は間欠で、条件が続いた最長は 3 秒)。要求を次のように変えた:
 ///
 /// - **初期の信頼は学習の成立が与える。** 成立した時点で採用から始まる
-/// - **証拠は「異なる fix の間の経過時間」で数える。** 同じ fix を 50 Hz で
-///   50 回読んでも 1 回ぶん
+/// - **証拠は fix の時刻で数える。** 同じ fix を 50 Hz で 50 回読んでも 1 回ぶん。
+///   course の無い fix を挟んだ区間は含めない。減衰も fix の時刻で測る
 /// - **成立した補正はその散歩の終わりまで固定。** 長い首振りで白紙に戻さない
 ///
 /// 期待値を書き換えたのではなく、判定に使う量と条件が変わっている。
+/// 系列テストの一部は Codex の検証(2026-09-10)が「入力と期待値」の形で挙げたもの。
 final class HeadMountFusionTests: XCTestCase {
 
     /// 学習が素直に立つ設定(証拠 5 秒・半減期は長め・R の門は緩め)
     private func learnable(staleSec: Double = 1.0,
+                           minEvidenceSec: Double = 5,
+                           halfLifeSec: Double = 60,
                            minConcentration: Double = 0.8,
                            gateDeg: Double = 45) -> HeadMountFusion.Params {
         HeadMountFusion.Params(
-            offset: MountOffset.Params(minEvidenceSec: 5, halfLifeSec: 60,
+            offset: MountOffset.Params(minEvidenceSec: minEvidenceSec,
+                                       halfLifeSec: halfLifeSec,
                                        minConcentration: minConcentration,
                                        gateDeg: gateDeg, maxGapSec: 5),
             quarantine: HeadingQuarantine.Params(windowSec: 40, distrustRatio: 0.75,
@@ -47,9 +51,9 @@ final class HeadMountFusionTests: XCTestCase {
     /// `fixes` 個の fix を 1 秒間隔で流す。1 fix あたり `perFix` 回 `ingest` する
     /// (= 更新頻度の模擬)。戻り値は最後の標本時刻。
     ///
-    /// **`heading` と `course` には fix 番号を渡す**(標本番号ではない)。
-    /// 標本番号にすると、10 Hz と 50 Hz で「同じ fix の瞬間に見えた方位」が
-    /// 変わってしまい、更新頻度の比較が成立しない
+    /// - **`heading` と `course` には fix 番号を渡す**(標本番号ではない)。
+    ///   標本番号にすると、10 Hz と 50 Hz で「同じ fix の瞬間に見えた方位」が変わってしまう
+    /// - **fix の時刻は course が無くても渡す**(製品と同じ)
     @discardableResult
     private func feed(_ f: inout HeadMountFusion, fixes: Int, from t0: Double,
                       p: HeadMountFusion.Params, perFix: Int = 10,
@@ -61,11 +65,16 @@ final class HeadMountFusionTests: XCTestCase {
             let h = heading(i)
             for k in 0..<perFix {
                 t = fixTime + Double(k) / Double(perFix)
-                f.ingest(headingDeg: h, rawCourseDeg: c,
-                         fixTime: c == nil ? nil : fixTime, at: t, p: p)
+                f.ingest(headingDeg: h, rawCourseDeg: c, fixTime: fixTime, at: t, p: p)
             }
         }
         return t
+    }
+
+    /// 1 つの fix を 1 回だけ流す(細かい系列を組むとき用)
+    private func step(_ f: inout HeadMountFusion, fixTime: Double, heading: Double,
+                      course: Double?, p: HeadMountFusion.Params) {
+        f.ingest(headingDeg: heading, rawCourseDeg: course, fixTime: fixTime, at: fixTime, p: p)
     }
 
     // MARK: - A1 使用可能条件は 3 つの論理積
@@ -96,6 +105,23 @@ final class HeadMountFusionTests: XCTestCase {
         XCTAssertEqual(f.use(at: t, p: p), .use)
         XCTAssertEqual(f.facingDeg(at: t, p: p) ?? 0, 90, accuracy: 0.5,
                        "補正後の方位 = course と一致するはず")
+    }
+
+    /// **成立した瞬間、検疫の窓は白紙**(受け入れ条件 D1・2026-09-10 の検証で挙がった系列)。
+    ///
+    /// `minEvidenceSec = 2` で一定差の fix を t=0,1,2 に流す。t=2 で成立した直後は
+    /// 採用・門内 0 秒・門外 0 秒。成立させた標本を門内として数えていた版では 1 秒になった
+    func testQuarantineStartsEmptyAtTheMomentOfLearning() {
+        let p = learnable(staleSec: 30, minEvidenceSec: 2, halfLifeSec: .infinity)
+        var f = HeadMountFusion()
+        step(&f, fixTime: 0, heading: 184, course: 90, p: p)
+        step(&f, fixTime: 1, heading: 184, course: 90, p: p)
+        XCTAssertNil(f.learnedOffsetDeg, "前提: まだ成立していない")
+        step(&f, fixTime: 2, heading: 184, course: 90, p: p)
+        XCTAssertNotNil(f.learnedOffsetDeg, "前提: この fix で成立する")
+        XCTAssertEqual(f.quarantineState, .trusted)
+        XCTAssertEqual(f.insideEvidenceSec, 0, "成立させた標本を門内として数えない")
+        XCTAssertEqual(f.outsideEvidenceSec, 0)
     }
 
     /// 学習が成立する**前**に差が散らばれば、成立しないまま(使えないまま)
@@ -130,23 +156,66 @@ final class HeadMountFusionTests: XCTestCase {
         XCTAssertEqual(f.concentration, r, accuracy: 1e-9, "成立後は R も動かない")
     }
 
-    // MARK: - B 同じ fix を重複して数えない
+    // MARK: - B 同じ fix を重複して数えない・更新頻度に依らない
 
-    /// **更新頻度を変えても、学習も検疫も同じ結果になる**(受け入れ条件 B4)
-    func testResultIsIndependentOfUpdateRate() {
-        let p = learnable(staleSec: 30)
-        var slow = HeadMountFusion()
-        var fast = HeadMountFusion()
-        let heading: (Int) -> Double = { i in 184 + 10 * sin(Double(i) * 0.1) }
-        feed(&slow, fixes: 30, from: 100, p: p, perFix: 10,
-             heading: heading, course: { _ in 90 })
-        feed(&fast, fixes: 30, from: 100, p: p, perFix: 50,
-             heading: heading, course: { _ in 90 })
-        XCTAssertEqual(try! XCTUnwrap(slow.learnedOffsetDeg),
-                       try! XCTUnwrap(fast.learnedOffsetDeg), accuracy: 0.001)
-        XCTAssertEqual(slow.concentration, fast.concentration, accuracy: 0.001)
-        XCTAssertEqual(slow.quarantineState, fast.quarantineState)
-        XCTAssertEqual(slow.insideEvidenceSec, fast.insideEvidenceSec, accuracy: 0.001)
+    /// **更新頻度と、新しい fix を最初に見る位相に依らず、結果が同じ**(受け入れ条件 B4)。
+    ///
+    /// 実機では fix の到着は GPS 側の都合でばらつき、頭方位のコールバックは一定の格子で来る。
+    /// 新しい fix を最初に見る時刻は、10 Hz なら最大 0.1 秒・50 Hz なら 0.02 秒遅れ、
+    /// **その遅れは fix ごとに違う**。減衰をコールバック時刻で測っていた版では、
+    /// この違いで R・学習値・成立時刻が変わった(2026-09-10 の検証で指摘)。
+    /// 学習 → 退避 → 復帰を 1 本で起こし、**全 fix の検疫状態の列**まで一致させる
+    func testResultIsIndependentOfUpdateRateAndPhase() {
+        // 半減期を有限にする。**減衰の測り方が位相に依ると、ここで差が出る**
+        let p = learnable(staleSec: 30, halfLifeSec: 10)
+        /// fix の到着時刻(1 秒おき + 0〜0.29 秒のばらつき)。
+        /// 1 行で書くと型推論が時間切れになるので、式を分けて型を明示する
+        let fixTimes: [Double] = (0..<60).map { (i: Int) -> Double in
+            let jitter = Double((i * 37) % 30) / 100.0
+            return 1000.0 + Double(i) + jitter
+        }
+        /// 学習 → 磁気が変わる(門の外)→ 戻る、を起こす方位(fix 番号で決まる)
+        func heading(_ i: Int) -> Double {
+            switch i {
+            case ..<10: return 184 + Double(i % 3)
+            case ..<30: return 304
+            default: return 184
+            }
+        }
+        func run(hz: Double) -> (states: [HeadingQuarantine.State], learnedAt: Int?,
+                                 offset: Double?, r: Double) {
+            var f = HeadMountFusion()
+            var states: [HeadingQuarantine.State] = []
+            var learnedAt: Int?
+            var i = 0
+            // コールバックの格子(hz の倍数の時刻)
+            var t = (fixTimes[0] * hz).rounded(.up) / hz
+            let end = fixTimes[fixTimes.count - 1] + 1
+            while t < end {
+                // この時刻に見えている最新の fix へ進む。進む前に直前の fix の結果を記録する
+                while i + 1 < fixTimes.count, fixTimes[i + 1] <= t {
+                    if learnedAt == nil, f.learnedOffsetDeg != nil { learnedAt = i }
+                    states.append(f.quarantineState)
+                    i += 1
+                }
+                f.ingest(headingDeg: heading(i), rawCourseDeg: 90, fixTime: fixTimes[i],
+                         at: t, p: p)
+                t += 1 / hz
+            }
+            if learnedAt == nil, f.learnedOffsetDeg != nil { learnedAt = i }
+            states.append(f.quarantineState)
+            return (states, learnedAt, f.learnedOffsetDeg, f.concentration)
+        }
+        let slow = run(hz: 10)
+        let fast = run(hz: 50)
+        XCTAssertEqual(slow.states.count, fixTimes.count, "前提: fix を 1 つも取りこぼしていない")
+        XCTAssertNotNil(slow.learnedAt, "前提: 学習が成立する")
+        XCTAssertTrue(slow.states.contains(.distrusted), "前提: 退避まで起きる系列になっている")
+        XCTAssertEqual(slow.states.last, .trusted, "前提: 復帰まで起きる")
+        XCTAssertEqual(slow.learnedAt, fast.learnedAt, "成立した fix が同じ")
+        XCTAssertEqual(slow.offset ?? .nan, fast.offset ?? .nan, accuracy: 1e-12)
+        XCTAssertEqual(slow.r, fast.r, accuracy: 1e-12)
+        XCTAssertEqual(slow.states, fast.states, "検疫の状態が fix ごとにすべて一致する")
     }
 
     /// **1 個の fix を読み直し続けても学習は成立しない**(受け入れ条件 B2)。
@@ -159,6 +228,51 @@ final class HeadMountFusionTests: XCTestCase {
                      at: 1000 + Double(i) * 0.02, p: p)
         }
         XCTAssertNil(f.learnedOffsetDeg, "fix 1 個で 5 秒ぶんの証拠を作ってはいけない")
+    }
+
+    /// **course の無い fix を挟んだ区間は証拠にしない**(受け入れ条件 D6)。
+    ///
+    /// これは旧版と要求が逆になった箇所でもある。旧版は course が 1 標本でも欠けると
+    /// 実績の窓をゼロに戻していた(→ 採用 0%)。いまは欠落で捨てないが、
+    /// **欠落していた時間を証拠に数えることもしない**。
+    /// 1 秒おきに course が消える系列で、有効な fix 5 個 × 1 秒 = 5 秒ちょうどで成立する。
+    /// 無効な fix の時刻を捨てていた版では 2 秒ずつ数え、t=6 で早く成立していた
+    func testShortCourseGapsCountOnlyTheObservedInterval() {
+        let p = learnable(staleSec: 30, halfLifeSec: .infinity)
+        var f = HeadMountFusion()
+        var learnedAt: Int?
+        for i in 0..<20 {
+            step(&f, fixTime: 100 + Double(i), heading: 184,
+                 course: i % 2 == 0 ? 90 : nil, p: p)
+            if learnedAt == nil, f.learnedOffsetDeg != nil { learnedAt = i }
+        }
+        XCTAssertEqual(learnedAt, 10,
+                       "有効 fix の区間 1 秒 × 5 回で成立する(course の無い 1 秒は数えない)")
+        XCTAssertEqual(f.use(at: 119, p: p), .use, "欠落を挟んでも採用のまま")
+    }
+
+    /// **欠落の時間を門外の証拠にも数えない**(2026-09-10 の検証で挙がった系列)。
+    ///
+    /// 採用中に門外 8 秒 → course の無い新しい fix 3 秒 → 門外の有効 fix 1 件。
+    /// 門外の証拠は **9 秒**で、`distrust_sec = 12` に届かず採用を維持する。
+    /// 欠落を数えていた版では 12 秒になり、ここで退避していた
+    func testNoCourseGapDoesNotInflateOutsideEvidence() {
+        let p = learnable(staleSec: 30, halfLifeSec: .infinity)
+        var f = HeadMountFusion()
+        // t=0..5 で学習が成立(証拠 5 秒)。成立させた標本は検疫に入らない
+        for i in 0...5 { step(&f, fixTime: Double(i), heading: 184, course: 90, p: p) }
+        XCTAssertEqual(f.quarantineState, .trusted, "前提: 学習が成立して採用")
+        // 門外(磁気が 120° 変わった)を 8 秒
+        for i in 6...13 { step(&f, fixTime: Double(i), heading: 304, course: 90, p: p) }
+        XCTAssertEqual(f.outsideEvidenceSec, 8, accuracy: 1e-9)
+        // 立ち止まる: course の無い新しい fix が 3 秒
+        for i in 14...16 { step(&f, fixTime: Double(i), heading: 304, course: nil, p: p) }
+        // 門外の有効 fix を 1 件
+        step(&f, fixTime: 17, heading: 304, course: 90, p: p)
+        XCTAssertEqual(f.outsideEvidenceSec, 9, accuracy: 1e-9,
+                       "course の無かった 3 秒を門外に数えない")
+        XCTAssertEqual(f.insideEvidenceSec, 0, accuracy: 1e-9)
+        XCTAssertEqual(f.quarantineState, .trusted, "門外 9 秒は distrust_sec = 12 に届かない")
     }
 
     // MARK: - D 検疫は割合で見る
@@ -210,7 +324,7 @@ final class HeadMountFusionTests: XCTestCase {
         let stateBefore = f.quarantineState
         let insideBefore = f.insideEvidenceSec
 
-        // 立ち止まって首を左右に大きく振る。course は無効(nil)
+        // 立ち止まって首を左右に大きく振る。fix は来るが course は無効(nil)
         t = feed(&f, fixes: 20, from: t + 0.1, p: p,
                  heading: { i in Double(184 + 80 * sin(Double(i) * 0.3)) },
                  course: { _ in nil })
@@ -226,26 +340,11 @@ final class HeadMountFusionTests: XCTestCase {
         XCTAssertEqual(f.use(at: t, p: p), .use, "首を回しても使えるまま(だから試験ができる)")
     }
 
-    /// **短い course の欠落では証拠を捨てない**(受け入れ条件 D6)。
-    ///
-    /// これは旧版と要求が逆になった箇所。旧版は 1 標本でも course が欠けると
-    /// 実績の窓をゼロに戻していた。course は本質的に間欠(実測で 37%)なので、
-    /// その規則では条件が永久に満たされない — 実際に採用 0% になった
-    func testShortCourseGapsDoNotDiscardEvidence() {
-        let p = learnable(staleSec: 30)
-        var f = HeadMountFusion()
-        // 1 秒おきに course が消える系列でも、学習は素直に立つ
-        let t = feed(&f, fixes: 30, from: 100, p: p,
-                     heading: { _ in 184 }, course: { i in i % 2 == 0 ? 90 : nil })
-        XCTAssertNotNil(f.learnedOffsetDeg, "course が半分欠けていても学習は成立する")
-        XCTAssertEqual(f.use(at: t, p: p), .use)
-    }
-
     // MARK: - A4 渡してよい course の定義
 
     /// **保持 course は「いま有効な生の course」ではない。**
     ///
-    /// Controller はこの規則で course を選ぶ(`rawCourseFix` → `TravelDirection.rawCourseFix`)。
+    /// Controller はこの規則で course を選ぶ(`TravelDirection.courseObservation`)。
     /// 立ち止まった fix に対して `held` を渡さずに解けば nil になる、が担保
     func testAStoppedFixYieldsNoRawCourse() {
         let params = AppParameters.Location(minSpeedForCourseMPerS: 0.7,
@@ -263,9 +362,9 @@ final class HeadMountFusionTests: XCTestCase {
                        .heldCourse)
     }
 
-    /// **fix の時刻が無ければ生 course として渡さない。**
+    /// **fix の時刻の無い course は証拠にならない。**
     /// 識別子の無い course を渡すと、重複排除ができないまま証拠が積まれる
-    func testRawCourseFixRequiresAFixTime() {
+    func testObservationWithoutAFixTimeIsNeverEvidence() {
         let loc = AppParameters.Location(minSpeedForCourseMPerS: 0.7,
                                          maxCourseAccuracyDeg: 70,
                                          maxFixAgeSec: 10,
@@ -273,17 +372,38 @@ final class HeadMountFusionTests: XCTestCase {
                                          allowCompassFallback: false)
         let noTime = MotionFix(courseDeg: 90, courseAccuracyDeg: 10, speedMps: 1.0,
                                compassHeadingDeg: 200, ageSec: 1, fixTime: nil)
-        XCTAssertEqual(TravelDirection.rawCourse(noTime, params: loc) ?? .nan, 90,
-                       accuracy: 1e-9, "前提: 角度そのものは取れる")
-        XCTAssertNil(TravelDirection.rawCourseFix(noTime, params: loc),
-                     "fix の時刻が無ければ学習・検疫へは渡さない")
+        let obs = TravelDirection.courseObservation(noTime, params: loc)
+        XCTAssertEqual(obs.courseDeg ?? .nan, 90, accuracy: 1e-9, "前提: 角度そのものは取れる")
+        XCTAssertNil(obs.fixTime)
+        let p = learnable(staleSec: 30)
+        var f = HeadMountFusion()
+        for i in 0..<100 {
+            f.ingest(headingDeg: 184, rawCourseDeg: obs.courseDeg, fixTime: obs.fixTime,
+                     at: Double(i) * 0.1, p: p)
+        }
+        XCTAssertNil(f.learnedOffsetDeg, "識別子の無い course から学習してはいけない")
+    }
+
+    /// 立ち止まった fix でも**時刻は観測に入る**(course だけが nil)。
+    /// 時刻を捨てると、course の無い区間まで次の証拠に入ってしまう
+    func testAStoppedFixStillCarriesItsTime() {
+        let loc = AppParameters.Location(minSpeedForCourseMPerS: 0.7,
+                                         maxCourseAccuracyDeg: 70,
+                                         maxFixAgeSec: 10,
+                                         courseHoldSec: 15,
+                                         allowCompassFallback: false)
+        let stopped = MotionFix(courseDeg: 90, courseAccuracyDeg: 10, speedMps: 0.1,
+                                compassHeadingDeg: 200, ageSec: 1, fixTime: 1234)
+        let obs = TravelDirection.courseObservation(stopped, params: loc)
+        XCTAssertNil(obs.courseDeg)
+        XCTAssertEqual(obs.fixTime ?? .nan, 1234, accuracy: 1e-9)
     }
 
     /// **製品と同じ course 抽出を通した系列で、停止が学習と検疫を壊さないこと。**
     ///
     /// 直接 nil を渡すテストだけでは配線の欠陥を捕まえられない
     /// (**問題はまさに nil が渡ってこなかったこと**だった。2026-09-08 の検証で指摘)。
-    /// ここでは fix 列を `TravelDirection.rawCourseFix` に通し、
+    /// ここでは fix 列を `TravelDirection.courseObservation` に通し、
     /// **保持 course もコンパスも混ざらない**ことまで含めて確かめる
     func testStoppedFixesNeverReachTheFusionThroughTheProductRule() {
         let loc = AppParameters.Location(minSpeedForCourseMPerS: 0.7,
@@ -300,11 +420,11 @@ final class HeadMountFusionTests: XCTestCase {
             let walking = MotionFix(courseDeg: 90, courseAccuracyDeg: 10, speedMps: 1.0,
                                     compassHeadingDeg: 200, ageSec: 1,
                                     fixTime: 100 + Double(i))
-            let fix = TravelDirection.rawCourseFix(walking, params: loc)
-            XCTAssertNotNil(fix, "前提: 歩いている fix からは生の course が取れる")
+            let obs = TravelDirection.courseObservation(walking, params: loc)
+            XCTAssertNotNil(obs.courseDeg, "前提: 歩いている fix からは生の course が取れる")
             for k in 0..<10 {
                 t = 100 + Double(i) + Double(k) * 0.1
-                f.ingest(headingDeg: 184, rawCourseDeg: fix?.deg, fixTime: fix?.fixTime,
+                f.ingest(headingDeg: 184, rawCourseDeg: obs.courseDeg, fixTime: obs.fixTime,
                          at: t, p: p)
             }
         }
@@ -317,14 +437,13 @@ final class HeadMountFusionTests: XCTestCase {
         for i in 0..<20 {
             let stopped = MotionFix(courseDeg: 90, courseAccuracyDeg: 10, speedMps: 0.1,
                                     compassHeadingDeg: 200, ageSec: 1,
-                                    fixTime: 200 + Double(i))
-            XCTAssertNil(TravelDirection.rawCourseFix(stopped, params: loc),
-                         "止まったら製品の規則では生の course は出ない")
-            let fix = TravelDirection.rawCourseFix(stopped, params: loc)
+                                    fixTime: 120 + Double(i))
+            let obs = TravelDirection.courseObservation(stopped, params: loc)
+            XCTAssertNil(obs.courseDeg, "止まったら製品の規則では生の course は出ない")
             for k in 0..<10 {
-                t = 200 + Double(i) + Double(k) * 0.1
+                t = 120 + Double(i) + Double(k) * 0.1
                 f.ingest(headingDeg: Double(184 + 80 * sin(t * 3)),
-                         rawCourseDeg: fix?.deg, fixTime: fix?.fixTime, at: t, p: p)
+                         rawCourseDeg: obs.courseDeg, fixTime: obs.fixTime, at: t, p: p)
             }
         }
 
@@ -347,7 +466,7 @@ final class HeadMountFusionTests: XCTestCase {
                                 compassHeadingDeg: 200, ageSec: 1, fixTime: 1000)
         XCTAssertEqual(TravelDirection.resolve(stopped, held: nil, params: loc)?.source, .compass,
                        "前提: この設定なら resolve はコンパスへ退避する")
-        XCTAssertNil(TravelDirection.rawCourseFix(stopped, params: loc),
+        XCTAssertNil(TravelDirection.courseObservation(stopped, params: loc).courseDeg,
                      "それでも学習・検疫へは渡さない")
     }
 

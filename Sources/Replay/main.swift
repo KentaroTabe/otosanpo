@@ -1207,19 +1207,18 @@ if headSamples.isEmpty {
         print("     欠けたのが「合っていた区間」なら低く、「ずれていた区間」なら"
               + "退避を再現できず高く出ます")
     }
-    /// 生 course と、**それを生んだ fix の時刻**。
+    /// t の時点で見えていた fix の観測(生 course と fix の時刻)。
     ///
-    /// fix の時刻を一緒に返すのが要点(2026-09-10)。学習も検疫も
-    /// 「同じ fix を何度読んでも証拠は 1 回ぶん」なので、識別子が無いと再現できない。
-    /// **旧ログでも fix 行そのものが識別子になる**ので、近似ではなく正確に再現できる
-    func rawCourseFix(at t: Date) -> (deg: Double, fixTime: TimeInterval)? {
+    /// **fix の時刻は course が無効でも返す**(製品と同じ・2026-09-10 の検証で指摘)。
+    /// 旧ログでも fix 行そのものが fix の識別子になる
+    func courseObservation(at t: Date) -> CourseObservation {
         // t 以下で最も新しい fix を二分探索で拾う
         var lo = 0, hi = sortedFixes.count - 1, found = -1
         while lo <= hi {
             let mid = (lo + hi) / 2
             if sortedFixes[mid].time <= t { found = mid; lo = mid + 1 } else { hi = mid - 1 }
         }
-        guard found >= 0 else { return nil }
+        guard found >= 0 else { return CourseObservation(courseDeg: nil, fixTime: nil) }
         let f = sortedFixes[found]
         // fix 行に書かれた古さは「書いた時点」のもの。そこからの経過を足す
         let age = (f.ageSec ?? 0) + t.timeIntervalSince(f.time)
@@ -1227,8 +1226,8 @@ if headSamples.isEmpty {
                                speedMps: f.speedMps, compassHeadingDeg: nil,
                                ageSec: age, horizontalAccuracyM: f.accuracyM,
                                fixTime: f.time.timeIntervalSinceReferenceDate)
-        // **製品と同じ規則**。保持値もコンパスも渡さない(→ WalkSessionController.rawCourseFix)
-        return TravelDirection.rawCourseFix(motion, params: params.location)
+        // **製品と同じ規則**。保持値もコンパスも渡さない(→ WalkSessionController)
+        return TravelDirection.courseObservation(motion, params: params.location)
     }
 
     // **標本を複製しない**(2026-09-10)。証拠は「異なる fix の間の経過時間」で数えるので、
@@ -1246,9 +1245,9 @@ if headSamples.isEmpty {
     var offsetAgreementCount = 0
 
     for s in headSamples {
-        let fix = rawCourseFix(at: s.time)
-        let use = fusion.ingest(headingDeg: s.rawDeg, rawCourseDeg: fix?.deg,
-                                fixTime: fix?.fixTime,
+        let fix = courseObservation(at: s.time)
+        let use = fusion.ingest(headingDeg: s.rawDeg, rawCourseDeg: fix.courseDeg,
+                                fixTime: fix.fixTime,
                                 at: s.time.timeIntervalSinceReferenceDate, p: fp)
         let elapsed = s.time.timeIntervalSince(t0)
         if firstLearnedAt == nil, fusion.learnedOffsetDeg != nil { firstLearnedAt = elapsed }
@@ -1276,9 +1275,9 @@ if headSamples.isEmpty {
         var distrusts = 0
         var wasDistrusted = false
         for s in headSamples {
-            let fix = rawCourseFix(at: s.time)
-            let use = f.ingest(headingDeg: s.rawDeg, rawCourseDeg: fix?.deg,
-                               fixTime: fix?.fixTime,
+            let fix = courseObservation(at: s.time)
+            let use = f.ingest(headingDeg: s.rawDeg, rawCourseDeg: fix.courseDeg,
+                               fixTime: fix.fixTime,
                                at: s.time.timeIntervalSinceReferenceDate, p: p)
             if learned == nil, f.learnedOffsetDeg != nil {
                 learned = s.time.timeIntervalSince(t0)
@@ -1367,13 +1366,15 @@ if headSamples.isEmpty {
 
     print("")
     // **何が正確で何が近似かを分けて書く。** 混ぜると数字の読み方を誤る
-    print("  ※ 学習と検疫の証拠は「異なる fix の間の経過時間」で数えるので、"
-          + "頭方位の間引きに影響されません。")
-    print("     fix 行がそのまま fix の識別子になるため、**この部分は近似ではなく再現**です。")
-    print("     近似なのは次だけ: 頭方位が \(params.headMount.logIntervalSec) 秒間隔なので、"
-          + "実機が \(params.headMount.updateHz) Hz で見ていた")
-    print("     「fix が変わった瞬間の方位」より最大 \(params.headMount.logIntervalSec) 秒"
-          + "遅れた方位が使われます。1 秒未満の磁気の乱れも復元できません。")
+    print("  ※ 学習と検疫の証拠は fix の時刻で数えるので、頭方位の間引きそのものには"
+          + "影響されません(fix 行が fix の識別子になる)。")
+    print("     近似になるのは次の 2 点です:")
+    print("     - 頭方位が \(params.headMount.logIntervalSec) 秒間隔なので、実機が "
+          + "\(params.headMount.updateHz) Hz で見ていた「fix が変わった瞬間の方位」より")
+    print("       最大 \(params.headMount.logIntervalSec) 秒遅れた方位が使われる")
+    print("     - 頭方位 1 行の間に fix が 2 つ以上来た場合、間の fix は見えない"
+          + "(実機は全部見る。間の fix が course 無効なら、実機より長い区間を証拠に数える)")
+    print("     1 秒未満の磁気の乱れも復元できません。")
     print("  ※ 閾値を振り直すには、設定 JSON を書き換えて "
           + "scripts/replay_log.sh <ログ> <設定JSON> を実行してください。")
 }

@@ -12,6 +12,8 @@ import CoreMotion
 ///   依存させないため。取り付けのずれは `MountOffset` が歩きながら学習する
 /// - 参照枠は `.xTrueNorthZVertical`。位置情報は常に取っているので真北基準が使える
 /// - 磁気が乱れて信じてよいかは、ここでは判定しない(Core の `HeadingQuarantine` の仕事)
+/// - **計算はしない。** 鉛直軸への射影などは Core の `HeadMotionDigest` が行う
+///   (Services は OS の値を運ぶだけ・CLAUDE.md のレイヤ規約)
 final class HeadMotionService {
     private let manager = CMMotionManager()
 
@@ -27,28 +29,11 @@ final class HeadMotionService {
         /// センサ時刻 [sec](端末起動からの単調時計)
         var sensorTime: TimeInterval
         /// バイアス補正済みの端末三軸角速度 [rad/s]
-        var rotationRate: (x: Double, y: Double, z: Double)
-        /// 端末座標系の重力ベクトル(単位 g)
-        var gravity: (x: Double, y: Double, z: Double)
+        var rotationRate: MotionVector
+        /// 端末座標系の重力ベクトル [g]
+        var gravity: MotionVector
         /// 磁場の較正状態(-1 = 未較正 / 0 = 低 / 1 = 中 / 2 = 高)
         var magneticAccuracy: Int
-
-        /// 三軸角速度の大きさ [rad/s]。「どれだけ動いたか」の総量
-        var absoluteRateRadPerSec: Double {
-            let r = rotationRate
-            return (r.x * r.x + r.y * r.y + r.z * r.z).squareRoot()
-        }
-
-        /// 角速度を**鉛直軸へ射影**した値 [rad/s]。
-        /// 端末の取り付け向きが縦でも横でも同じ量になる(`rotationRate.z` 決め打ちを避ける)
-        var verticalRateRadPerSec: Double {
-            let g = gravity
-            let norm = (g.x * g.x + g.y * g.y + g.z * g.z).squareRoot()
-            guard norm > 1e-9 else { return 0 }
-            let r = rotationRate
-            // 重力は「下向き」なので、上向きの回転を正にするため符号を反転する
-            return -(r.x * g.x + r.y * g.y + r.z * g.z) / norm
-        }
     }
 
     /// メインスレッドで呼ばれる
@@ -67,8 +52,9 @@ final class HeadMotionService {
             self?.onSample?(Sample(
                 headingDeg: m.heading,
                 sensorTime: m.timestamp,
-                rotationRate: (m.rotationRate.x, m.rotationRate.y, m.rotationRate.z),
-                gravity: (m.gravity.x, m.gravity.y, m.gravity.z),
+                rotationRate: MotionVector(x: m.rotationRate.x, y: m.rotationRate.y,
+                                           z: m.rotationRate.z),
+                gravity: MotionVector(x: m.gravity.x, y: m.gravity.y, z: m.gravity.z),
                 magneticAccuracy: Int(m.magneticField.accuracy.rawValue)))
         }
     }

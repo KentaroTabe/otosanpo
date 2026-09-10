@@ -38,6 +38,22 @@ public struct MotionFix: Equatable {
     }
 }
 
+/// 学習・検疫へ渡す 1 つの fix の観測(→ `TravelDirection.courseObservation`)。
+///
+/// **course と fix の時刻を別々の値として持つ。** course が無効な fix でも時刻は要る —
+/// 無効な fix を挟んだ区間を「その間ずっと合っていた」と数えないため(2026-09-10)
+public struct CourseObservation: Equatable {
+    /// いま有効な生の course [deg]。無効なら nil(保持値もコンパスも入らない)
+    public var courseDeg: Double?
+    /// 最新の location fix の時刻 [sec]。fix がまだ無ければ nil
+    public var fixTime: TimeInterval?
+
+    public init(courseDeg: Double?, fixTime: TimeInterval?) {
+        self.courseDeg = courseDeg
+        self.fixTime = fixTime
+    }
+}
+
 /// 方向をどこから得たか。フィールドログに残して事後検証するために保持する。
 public enum DirectionSource: String, Equatable {
     case course      // GPS の移動方向(歩行中のみ有効)
@@ -111,20 +127,16 @@ public enum TravelDirection {
         return t.deg
     }
 
-    /// 生の course と、**それを生んだ fix の時刻**。
+    /// 学習・検疫へ渡す **1 つの fix の観測**: 生の course(無効なら nil)と fix の時刻。
     ///
-    /// 学習と検疫は「同じ fix を何度読んでも証拠は 1 回ぶん」でなければならない
-    /// (2026-09-10。50 Hz で同じ fix を 50 回数えていた)。時刻を一緒に運ぶことで、
-    /// 呼び出し側が別々に取りに行って**取り違える**ことがなくなる
-    /// **fix の時刻が無ければ渡さない。** 識別子の無い course を学習へ入れると、
-    /// 同じ fix を何度でも数えられてしまう(重複排除が成立しない)
-    public static func rawCourseFix(_ fix: MotionFix,
-                                    params: AppParameters.Location)
-        -> (deg: Double, fixTime: TimeInterval)? {
-        guard let deg = rawCourse(fix, params: params), let fixTime = fix.fixTime else {
-            return nil
-        }
-        return (deg, fixTime)
+    /// **fix の時刻は course が無効でも返す**(2026-09-10 の検証で指摘)。
+    /// 無効な fix の時刻を捨てると、有効 t=0 → 無効 t=1 → 有効 t=2 のとき
+    /// 最後の証拠が 2 秒ぶんになる — course の無かった区間まで証拠に入ってしまう。
+    ///
+    /// 同じ `MotionFix` の写しから両方を取るのは、別々に取りに行って**取り違える**のを防ぐため
+    public static func courseObservation(_ fix: MotionFix,
+                                         params: AppParameters.Location) -> CourseObservation {
+        CourseObservation(courseDeg: rawCourse(fix, params: params), fixTime: fix.fixTime)
     }
 
     /// course が無効になった理由。ログに残して「なぜ左右が付かなかったか」を追えるようにする

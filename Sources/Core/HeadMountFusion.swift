@@ -74,16 +74,22 @@ public struct HeadMountFusion: Equatable {
     private var lastSampleAt: TimeInterval?
     private var lastRawHeadingDeg: Double?
     private var learnedDeg: Double?
-    private var lastSample = MountOffset.Sample(kind: .noCourse, evidenceSec: 0)
+    /// 最後に**新しい fix** を見た標本の分類。
+    ///
+    /// 直前の標本そのものを出すと、50 Hz のうち 49 回は同じ fix の読み直しなので、
+    /// 1 秒ごとのログがほぼ常に「同fix」になり、門内・門外が読めない(2026-09-10)
+    private var lastNewFix: MountOffset.Sample?
 
     public init() {}
 
-    /// 直前の標本の門の内外の分類(ログ用)
-    public var lastSampleLabel: String { lastSample.label }
+    /// 最後に新しい fix を見た標本の分類(ログ用)。まだ無ければ "-"
+    public var lastNewFixLabel: String { lastNewFix?.label ?? "-" }
     /// 検疫の証拠窓の門内時間 [sec](ログ用)
     public var insideEvidenceSec: Double { quarantine.insideEvidenceSec }
     /// 検疫の証拠窓の門外時間 [sec](ログ用)
     public var outsideEvidenceSec: Double { quarantine.outsideEvidenceSec }
+    /// 検疫の証拠窓の門外割合(ログ用・証拠が無ければ 0)
+    public var outsideRatio: Double { quarantine.outsideRatio }
     /// 学習に積み上がっている実効の証拠時間 [sec](ログ用)
     public var offsetEvidenceSec: Double { offset.evidence }
 
@@ -107,7 +113,9 @@ public struct HeadMountFusion: Equatable {
     /// - Parameters:
     ///   - headingDeg: スマホの**生の**方位(真北基準 0..360)
     ///   - rawCourseDeg: **いま有効な生の** course。無ければ nil(保持値を渡さない)
-    ///   - t: 標本時刻 [sec]。単調でありさえすれば基準は問わない
+    ///   - fixTime: 最新の location fix の時刻。**course が無効でも渡す**
+    ///     (渡さないと、無効な fix を挟んだ区間まで次の証拠に入る)
+    ///   - t: 標本時刻 [sec]。**鮮度の判定にだけ使う**(学習と検疫は fix の時刻で数える)
     /// - Returns: この標本の時点での判定
     @discardableResult
     public mutating func ingest(headingDeg: Double, rawCourseDeg: Double?,
@@ -116,15 +124,18 @@ public struct HeadMountFusion: Equatable {
         lastRawHeadingDeg = headingDeg
         // 学習は**生の方位**で行う(補正後を食わせると自分の出力を追いかけて循環する)。
         // 門の内外の分類もここで一緒に返る(→ 受け入れ条件 D3。検疫は差を計算しない)
+        // 学習は fix の時刻だけで数える(コールバック時刻 `t` は渡さない)。
+        // `t` で減衰を測ると、新しい fix を最初に見た位相で結果が変わる(2026-09-10 の検証)
         let sample = offset.ingest(headingDeg: headingDeg, courseDeg: rawCourseDeg,
-                                   fixTime: fixTime, at: t, p: p.offset)
-        lastSample = sample
+                                   fixTime: fixTime, p: p.offset)
+        if sample.isNewFix { lastNewFix = sample }
         // **成立は一度きり、以後は変わらない。** 成立した瞬間に検疫を採用状態から始める
         // (補正が付くと方位が学習値ぶん飛ぶので、それ以前の証拠は捨てる)
         if learnedDeg == nil, let learned = offset.offsetDeg {
             learnedDeg = learned
             quarantine.markLearned()
         }
+        // 成立させた標本は `.learning` なので検疫は数えない — 窓は白紙のまま始まる(D1)
         quarantine.assess(sample, p: p.quarantine)
         return use(at: t, p: p)
     }
