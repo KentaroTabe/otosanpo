@@ -1160,11 +1160,14 @@ if headSamples.isEmpty {
           + (reconstructed > 0 ? "(うち \(reconstructed) 件は旧形式から生値を復元)" : ""))
     print("  設定: \(configPath)")
     let hm = params.headMount
-    print(String(format: "    distrust %.0f°/%.0fs・regain %.0fs・"
-                 + "学習 標本 %.0f・半減期 %.0fs・R≥%.2f・鮮度 %.1fs",
-                 hm.distrustDeg, hm.distrustSec, hm.regainSec,
-                 hm.offsetMinSamples, hm.offsetHalfLifeSec,
-                 hm.offsetMinConcentration, hm.staleSec))
+    print(String(format: "    学習 証拠 %.0fs・半減期 %.0fs・R≥%.2f・門 %.0f°・"
+                 + "間隔上限 %.0fs・鮮度 %.1fs",
+                 hm.offsetMinSec, hm.offsetHalfLifeSec, hm.offsetMinConcentration,
+                 hm.offsetGateDeg, hm.evidenceMaxGapSec, hm.staleSec))
+    print(String(format: "    検疫 窓 %.0fs・退避 門外%.0f%%/%.0fs・復帰 門内%.0f%%/%.0fs",
+                 hm.quarantineWindowSec,
+                 hm.quarantineDistrustRatio * 100, hm.quarantineDistrustSec,
+                 hm.quarantineRegainRatio * 100, hm.quarantineRegainSec))
 
     if headLinesMissingHeading > 0 {
         print("  ※ raw= も heading= も無い「頭方位」行を \(headLinesMissingHeading) 件"
@@ -1204,7 +1207,12 @@ if headSamples.isEmpty {
         print("     欠けたのが「合っていた区間」なら低く、「ずれていた区間」なら"
               + "退避を再現できず高く出ます")
     }
-    func rawCourse(at t: Date) -> Double? {
+    /// 生 course と、**それを生んだ fix の時刻**。
+    ///
+    /// fix の時刻を一緒に返すのが要点(2026-09-10)。学習も検疫も
+    /// 「同じ fix を何度読んでも証拠は 1 回ぶん」なので、識別子が無いと再現できない。
+    /// **旧ログでも fix 行そのものが識別子になる**ので、近似ではなく正確に再現できる
+    func rawCourseFix(at t: Date) -> (deg: Double, fixTime: TimeInterval)? {
         // t 以下で最も新しい fix を二分探索で拾う
         var lo = 0, hi = sortedFixes.count - 1, found = -1
         while lo <= hi {
@@ -1217,18 +1225,14 @@ if headSamples.isEmpty {
         let age = (f.ageSec ?? 0) + t.timeIntervalSince(f.time)
         let motion = MotionFix(courseDeg: f.courseDeg, courseAccuracyDeg: f.courseAccuracyDeg,
                                speedMps: f.speedMps, compassHeadingDeg: nil,
-                               ageSec: age, horizontalAccuracyM: f.accuracyM)
-        // **製品と同じ規則**。保持値もコンパスも渡さない(→ WalkSessionController.rawCourseBearing)
-        guard let t = TravelDirection.resolve(motion, held: nil, params: params.location),
-              t.source == .course else { return nil }
-        return t.deg
+                               ageSec: age, horizontalAccuracyM: f.accuracyM,
+                               fixTime: f.time.timeIntervalSinceReferenceDate)
+        // **製品と同じ規則**。保持値もコンパスも渡さない(→ WalkSessionController.rawCourseFix)
+        return TravelDirection.rawCourseFix(motion, params: params.location)
     }
 
-    // ログは log_interval_sec(既定 1 秒)に間引かれている。実機は update_hz(既定 10 Hz)。
-    // **学習の重みは標本数で数える**ので、間引いたまま流すと立ち上がりが 10 倍遅く見える。
-    // 標本を間隔ぶん複製して近似する(下の但し書きのとおり、あくまで近似)
-    let subdivisions = max(1, Int((params.headMount.updateHz * params.headMount.logIntervalSec)
-                                  .rounded()))
+    // **標本を複製しない**(2026-09-10)。証拠は「異なる fix の間の経過時間」で数えるので、
+    // 頭方位を何 Hz で流しても結果は同じ。間引いたログをそのまま流して正確に再現できる
     var fusion = HeadMountFusion()
     let fp = params.headMount.fusion
     let t0 = headSamples[0].time
@@ -1241,16 +1245,11 @@ if headSamples.isEmpty {
     var offsetAgreementSum = 0.0
     var offsetAgreementCount = 0
 
-    for (i, s) in headSamples.enumerated() {
-        let dt = i + 1 < headSamples.count
-            ? headSamples[i + 1].time.timeIntervalSince(s.time) : params.headMount.logIntervalSec
-        let step = dt / Double(subdivisions)
-        let course = rawCourse(at: s.time)
-        var use = HeadMountFusion.Use.noSample
-        for k in 0..<subdivisions {
-            let t = s.time.timeIntervalSinceReferenceDate + Double(k) * step
-            use = fusion.ingest(headingDeg: s.rawDeg, rawCourseDeg: course, at: t, p: fp)
-        }
+    for s in headSamples {
+        let fix = rawCourseFix(at: s.time)
+        let use = fusion.ingest(headingDeg: s.rawDeg, rawCourseDeg: fix?.deg,
+                                fixTime: fix?.fixTime,
+                                at: s.time.timeIntervalSinceReferenceDate, p: fp)
         let elapsed = s.time.timeIntervalSince(t0)
         if firstLearnedAt == nil, fusion.learnedOffsetDeg != nil { firstLearnedAt = elapsed }
         if firstUsableAt == nil, use.isUsable { firstUsableAt = elapsed }
@@ -1267,43 +1266,66 @@ if headSamples.isEmpty {
         }
     }
 
-    // **門の強さを振る。** 首を回すと R が落ちて頭方位が使えなくなる循環
-    // (2026-09-09 の実測)への対策が効くかを、歩き直さずに見る
-    func sweepGate(_ gateDeg: Double) -> (usable: Int, firstUsable: Double?, finalR: Double) {
+    /// 設定を 1 つ与えて通したときの成績。**歩き直さずに閾値を決めるための口**
+    func sweep(_ p: HeadMountFusion.Params) -> (usable: Int, firstUsable: Double?,
+                                                learned: Double?, distrusts: Int) {
         var f = HeadMountFusion()
-        var p = fp
-        p.offset.gateDeg = gateDeg
         var usable = 0
         var firstUsable: Double?
-        for (i, s) in headSamples.enumerated() {
-            let dt = i + 1 < headSamples.count
-                ? headSamples[i + 1].time.timeIntervalSince(s.time)
-                : params.headMount.logIntervalSec
-            let step = dt / Double(subdivisions)
-            let course = rawCourse(at: s.time)
-            var use = HeadMountFusion.Use.noSample
-            for k in 0..<subdivisions {
-                let t = s.time.timeIntervalSinceReferenceDate + Double(k) * step
-                use = f.ingest(headingDeg: s.rawDeg, rawCourseDeg: course, at: t, p: p)
+        var learned: Double?
+        var distrusts = 0
+        var wasDistrusted = false
+        for s in headSamples {
+            let fix = rawCourseFix(at: s.time)
+            let use = f.ingest(headingDeg: s.rawDeg, rawCourseDeg: fix?.deg,
+                               fixTime: fix?.fixTime,
+                               at: s.time.timeIntervalSinceReferenceDate, p: p)
+            if learned == nil, f.learnedOffsetDeg != nil {
+                learned = s.time.timeIntervalSince(t0)
             }
+            let distrusted = f.quarantineState == .distrusted
+            if distrusted, !wasDistrusted { distrusts += 1 }
+            wasDistrusted = distrusted
             if use.isUsable {
                 usable += 1
                 if firstUsable == nil { firstUsable = s.time.timeIntervalSince(t0) }
             }
         }
-        return (usable, firstUsable, f.concentration)
+        return (usable, firstUsable, learned, distrusts)
     }
 
-    print("\n  門(推定から離れた標本を捨てる角度)を振る:")
-    print("    門      使用可能        最初に使えた   最終 R")
-    for gate in [0.0, 30, 45, 60, 90] {
-        let s = sweepGate(gate)
+    /// 行を 1 本出す
+    func sweepRow(_ label: String, _ p: HeadMountFusion.Params) {
+        let s = sweep(p)
         let pct = 100 * Double(s.usable) / Double(headSamples.count)
         let first = s.firstUsable.map { String(format: "%.0f 秒", $0) } ?? "成立せず"
-        print(String(format: "    %3.0f°  %5d 件(%3.0f%%)  %10@  %.2f",
-                     gate, s.usable, pct, first as NSString, s.finalR))
+        let learn = s.learned.map { String(format: "%.0f 秒", $0) } ?? "成立せず"
+        print(String(format: "    %-12@ %5d 件(%3.0f%%) %10@ %10@  %d 回",
+                     label as NSString, s.usable, pct,
+                     learn as NSString, first as NSString, s.distrusts))
     }
-    print("    ※ 0° = 門なし(2026-09-09 以前の挙動)")
+
+    print("\n  門(学習した値から外れたと分類する角度)を振る:")
+    print("    設定          使用可能        学習成立   最初に使えた  退避")
+    for gate in [0.0, 30, 45, 60, 90] {
+        var p = fp
+        p.offset.gateDeg = gate
+        sweepRow(String(format: "門 %.0f°", gate), p)
+    }
+    print("    ※ 0° = 門なし(すべて門内と分類される = 退避しない)")
+
+    print("\n  検疫の割合と窓を振る:")
+    print("    設定          使用可能        学習成立   最初に使えた  退避")
+    for ratio in [0.5, 0.6, 0.75, 0.9] {
+        var p = fp
+        p.quarantine.distrustRatio = ratio
+        sweepRow(String(format: "退避 %.0f%%", ratio * 100), p)
+    }
+    for window in [20.0, 40, 80] {
+        var p = fp
+        p.quarantine.windowSec = window
+        sweepRow(String(format: "窓 %.0fs", window), p)
+    }
 
     func secs(_ v: Double?) -> String { v.map { String(format: "%.0f 秒", $0) } ?? "成立せず" }
     guard headMountJudged else {
@@ -1327,9 +1349,16 @@ if headSamples.isEmpty {
         print(String(format: "  最終的な学習値: 成立せず(R=%.2f)", fusion.concentration))
     }
     if offsetAgreementCount > 0 {
+        // **これは「配線の照合」ではない。** ログを取った版と現在の版で学習の数え方が
+        // 違えば、当然ずれる(2026-09-10 に数え方を標本数から fix 間の時間へ変えた)。
+        // 大きくずれていたら「実装が壊れた」ではなく「別物を比べている」を先に疑う
         print(String(format: "  ログに残っていた学習値との差(平均): %.1f°(%d 件で照合)",
                      offsetAgreementSum / Double(offsetAgreementCount), offsetAgreementCount))
+        print("    ※ ログを取った版の学習と比べた値です。版が違えばずれます"
+              + "(付け直しがあった散歩では大きくずれるのが正しい)")
     }
+    print(String(format: "  検疫の証拠(最終): 門内 %.1fs / 門外 %.1fs",
+                 fusion.insideEvidenceSec, fusion.outsideEvidenceSec))
     print("  遷移(先頭 12 件):")
     for (t, label) in transitions.prefix(12) {
         print(String(format: "    %6.0f 秒  → %@", t, label as NSString))
@@ -1337,12 +1366,14 @@ if headSamples.isEmpty {
     if transitions.count > 12 { print("    …ほか \(transitions.count - 12) 回") }
 
     print("")
-    print("  ※ これは**間引いたログからの再評価**であって、実機の完全な再現ではありません。")
-    print("     ログは \(params.headMount.logIntervalSec) 秒間隔、実機は "
-          + "\(params.headMount.updateHz) Hz。学習の重みは標本を \(subdivisions) 倍に"
-          + "複製して近似しています。1 秒未満の磁気の乱れは復元できません。")
-    print("     検疫の 5 秒窓や大きな分布の評価には十分ですが、"
-          + "offset_min_samples の立ち上がりは近似値として読んでください。")
+    // **何が正確で何が近似かを分けて書く。** 混ぜると数字の読み方を誤る
+    print("  ※ 学習と検疫の証拠は「異なる fix の間の経過時間」で数えるので、"
+          + "頭方位の間引きに影響されません。")
+    print("     fix 行がそのまま fix の識別子になるため、**この部分は近似ではなく再現**です。")
+    print("     近似なのは次だけ: 頭方位が \(params.headMount.logIntervalSec) 秒間隔なので、"
+          + "実機が \(params.headMount.updateHz) Hz で見ていた")
+    print("     「fix が変わった瞬間の方位」より最大 \(params.headMount.logIntervalSec) 秒"
+          + "遅れた方位が使われます。1 秒未満の磁気の乱れも復元できません。")
     print("  ※ 閾値を振り直すには、設定 JSON を書き換えて "
           + "scripts/replay_log.sh <ログ> <設定JSON> を実行してください。")
 }

@@ -259,30 +259,33 @@ public struct AppParameters: Codable, Equatable {
         public var enabled: Bool
         /// スマホのモーション更新頻度 [Hz]。定位は再生時に参照するだけなので高頻度は要らない
         public var updateHz: Double
-        /// course との差がこれを超えたら乱れを疑う [deg]
-        public var distrustDeg: Double
-        /// 超過がこれだけ続いたら退避 [sec]
-        public var distrustSec: Double
-        /// 内側がこれだけ続いたら採用(復帰)[sec]
-        public var regainSec: Double
-        /// 取り付けのずれの学習が成立するのに要る**時間** [sec]。
+        /// 取り付けのずれの学習が成立するのに要る**証拠時間** [sec]。
         ///
-        /// **標本数ではなく時間で持つ**(2026-09-10)。標本数だと `update_hz` を上げた
-        /// 途端に学習が早まってしまう — 推定の質を決めるのは「どれだけの区間を歩いたか」で、
-        /// 「何件読んだか」ではない。50 Hz にした時に 4 秒で学習が立つのは明らかに誤り
+        /// **標本数ではなく、異なる location fix の間の経過時間で数える**(2026-09-10)。
+        /// 標本数だと 50 Hz で同じ fix を 50 回数えてしまい、`update_hz` を上げた途端に
+        /// 学習が早まる。推定の質を決めるのは「どれだけの区間を歩いたか」であって
+        /// 「何件読んだか」ではない
         public var offsetMinSec: Double
-
-        /// 学習に要る実効の標本量。`update_hz` から導く(直接持たない)
-        public var offsetMinSamples: Double { updateHz * offsetMinSec }
         /// ずれの平均の半減期 [sec]。長め = 付け直し程度の変化にゆっくり追従
         public var offsetHalfLifeSec: Double
         /// ずれが「定数である」と認める合成ベクトル長 R の下限(0..1)
         public var offsetMinConcentration: Double
-        /// 推定から離れた標本を捨てる門 [deg]。0 で無効。
-        /// **首を回している間の標本で推定を汚さないため**(→ MountOffset)
+        /// 推定から離れた標本を「門の外」と分類する角度 [deg]。0 で門なし。
+        /// **学習中は平均を汚さないために捨て、学習後は検疫が数える材料になる**(→ MountOffset)
         public var offsetGateDeg: Double
-        /// 門が閉じ続けた時に学び直すまでの時間 [sec]。**付け直しから復帰するため**
-        public var offsetGateReopenSec: Double
+        /// 異なる fix の間隔として認める上限 [sec]。超えた間隔は証拠に加算しない。
+        /// 立ち止まりや受信の途切れを「その間ずっと合っていた」と数えないため
+        public var evidenceMaxGapSec: Double
+        /// 検疫の証拠窓の長さ [sec](有効証拠時間で数える。壁時計ではない)
+        public var quarantineWindowSec: Double
+        /// 退避に要る門外の割合(0..1)
+        public var quarantineDistrustRatio: Double
+        /// 退避の判定に要る有効証拠時間 [sec]
+        public var quarantineDistrustSec: Double
+        /// 復帰に要る門内の割合(0..1)
+        public var quarantineRegainRatio: Double
+        /// 復帰の判定に要る有効証拠時間 [sec]
+        public var quarantineRegainSec: Double
         /// 生データ(頭方位 行)をログに残す間隔 [sec]。replay で閾値を振り直す材料
         public var logIntervalSec: Double
         /// 頭方位の最終受信からこれを超えたら「古い」として定位に使わない [sec]。
@@ -292,18 +295,20 @@ public struct AppParameters: Codable, Equatable {
 
         /// HeadingQuarantine に渡す設定値
         public var quarantine: HeadingQuarantine.Params {
-            HeadingQuarantine.Params(distrustDeg: distrustDeg,
-                                     distrustSec: distrustSec,
-                                     regainSec: regainSec)
+            HeadingQuarantine.Params(windowSec: quarantineWindowSec,
+                                     distrustRatio: quarantineDistrustRatio,
+                                     distrustSec: quarantineDistrustSec,
+                                     regainRatio: quarantineRegainRatio,
+                                     regainSec: quarantineRegainSec)
         }
 
         /// MountOffset に渡す設定値
         public var offsetEstimator: MountOffset.Params {
-            MountOffset.Params(minWeight: offsetMinSamples,
+            MountOffset.Params(minEvidenceSec: offsetMinSec,
                                halfLifeSec: offsetHalfLifeSec,
                                minConcentration: offsetMinConcentration,
                                gateDeg: offsetGateDeg,
-                               gateReopenSec: offsetGateReopenSec)
+                               maxGapSec: evidenceMaxGapSec)
         }
 
         /// HeadMountFusion に渡す設定値(学習・検疫・鮮度をまとめたもの)

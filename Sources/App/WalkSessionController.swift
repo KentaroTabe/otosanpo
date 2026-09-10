@@ -106,6 +106,9 @@ final class WalkSessionController: ObservableObject {
     private var headMountLabel: String?
     /// 頭方位 行を残した時刻(生データは間隔を空けて残す)
     private var lastHeadMountLogAt: Date?
+    /// **記録専用**の device-motion の集計(→ 次の案件でジャイロ検疫を設計する材料)。
+    /// ログ間隔ごとに吐いて畳む。**どの判定にも渡さない**(受け入れ条件 E5)
+    private var motionDigest = HeadMotionDigest()
     /// 直前に記録した使用可能状態。**遷移した時だけ**ログに残す(周期ログで埋めない)
     private var lastHeadMountUseLabel: String?
     /// 有効性パルスを最後に鳴らした時刻(→ docs/13。実験のときだけ動く)
@@ -193,8 +196,8 @@ final class WalkSessionController: ObservableObject {
         motion.onConnectionChange = { [weak self] connected in
             Task { @MainActor in self?.onHeadphoneConnectionChange(connected) }
         }
-        headMountMotion.onHeading = { [weak self] deg, _ in
-            Task { @MainActor in self?.onHeadMountHeading(deg) }
+        headMountMotion.onSample = { [weak self] s in
+            Task { @MainActor in self?.onHeadMountSample(s) }
         }
         location.requestPermission()
         // 起動時から取得しておく。ボタンを押した時に fix が無くて失敗するのを避ける
@@ -990,10 +993,14 @@ final class WalkSessionController: ObservableObject {
     /// 保持値(`heldCourse`)やコンパス退避を渡してはいけない。立ち止まっている間に
     /// 「止まる直前の course」と「回っている頭」を突き合わせると、R が落ちて
     /// 検疫が退避に落ちる — **首を回す試験が自分の前提を壊す**(2026-09-08)
-    private func rawCourseBearing(now: Date = Date()) -> Double? {
-        // 規則そのものは Core に置いてある。**ここに書き下すと、うっかり保持値を
-        // 渡す変更が入ってもテストが落ちない**(2026-09-08 の検証で指摘された)
-        TravelDirection.rawCourse(location.motionFix(now: now), params: params.location)
+    /// 生 course と、**それを生んだ fix の時刻**の対。
+    ///
+    /// 規則そのものは Core に置いてある。**ここに書き下すと、うっかり保持値を
+    /// 渡す変更が入ってもテストが落ちない**(2026-09-08 の検証で指摘された)。
+    /// 時刻を一緒に運ぶのは、学習と検疫が「同じ fix を何度読んでも証拠は 1 回ぶん」で
+    /// なければならないため(2026-09-10)
+    private func rawCourseFix(now: Date = Date()) -> (deg: Double, fixTime: TimeInterval)? {
+        TravelDirection.rawCourseFix(location.motionFix(now: now), params: params.location)
     }
 
     private func playBeacon() {
@@ -1162,18 +1169,28 @@ final class WalkSessionController: ObservableObject {
     ///
     /// 使用可能でない間は `facingBearing()` が nil を返し、従来どおり進行方位で定位する
     /// (同じビルドで装着あり / なしを比べられるのはこのため。docs/14)
-    private func onHeadMountHeading(_ headingDeg: Double) {
+    private func onHeadMountSample(_ sample: HeadMotionService.Sample) {
         guard params.headMount.enabled else { return }
+        let headingDeg = sample.headingDeg
         let nowDate = Date()
         let now = nowDate.timeIntervalSinceReferenceDate
-        let course = rawCourseBearing(now: nowDate)
+        // **course と、それを生んだ fix の時刻を一緒に取る。**
+        // 別々に取りに行くと取り違えるので、Core の 1 か所で対にして返す
+        let fix = rawCourseFix(now: nowDate)
+        // **記録専用の集計。** ここで足すだけで、判定には一切渡さない(→ 受け入れ条件 E5)
+        motionDigest.add(headingDeg: headingDeg,
+                         sensorTime: sample.sensorTime,
+                         absRateRadPerSec: sample.absoluteRateRadPerSec,
+                         verticalRateRadPerSec: sample.verticalRateRadPerSec,
+                         magneticAccuracy: sample.magneticAccuracy,
+                         maxIntervalSec: params.headMount.logIntervalSec)
         // **取り込む前に、古い標本のまま judge する。**
         // アプリが止められていた場合、時計も受信も一緒に止まる。復帰したときに
         // 先に取り込んでしまうと「その間ずっと古かった」事実を観測できず、
         // 退避もパルスの停止も記録に残らない(2026-09-09 の検証で指摘)
         tickHeadMount(now: nowDate)
-        headMountFusion.ingest(headingDeg: headingDeg, rawCourseDeg: course,
-                               at: now, p: params.headMount.fusion)
+        headMountFusion.ingest(headingDeg: headingDeg, rawCourseDeg: fix?.deg,
+                               fixTime: fix?.fixTime, at: now, p: params.headMount.fusion)
         // 取り込んだ後にもう一度。**使用可能へ戻った瞬間に鳴らし直す**ため
         tickHeadMount(now: nowDate)
         // **連続音は基準が動いたら動かす。** 位置更新(約 1 Hz)だけに乗せていたときは、
@@ -1191,18 +1208,42 @@ final class WalkSessionController: ObservableObject {
             || logNow.timeIntervalSince(lastHeadMountLogAt!) >= params.headMount.logIntervalSec {
             lastHeadMountLogAt = logNow
             let corrected = headMountFusion.correctedHeadingDeg ?? headingDeg
-            let courseLabel = course.map { String(format: "%.1f", $0) } ?? "-"
-            let diffLabel = course.map {
-                String(format: "%.1f", abs(Geo.angularDiffDeg(corrected, $0)))
+            let courseLabel = fix.map { String(format: "%.1f", $0.deg) } ?? "-"
+            let diffLabel = fix.map {
+                String(format: "%.1f", abs(Geo.angularDiffDeg(corrected, $0.deg)))
             } ?? "-"
             let offsetLabel = headMountFusion.learnedOffsetDeg
                 .map { String(format: "%.1f", $0) } ?? "学習中"
+            // fix の時刻は「同じ fix を読み直したか」を後から見分けるために残す。
+            // 絶対時刻は長いので、散歩の開始からの経過にする
+            let fixLabel = fix.map {
+                String(format: "%.3f",
+                       $0.fixTime - (summary?.startedAt.timeIntervalSinceReferenceDate ?? 0))
+            } ?? "-"
             logToFile(String(format: "頭方位 raw=%.1f° heading=%.1f° course=%@° 差=%@°"
-                             + " 状態=%@ 補正=%@ R=%.2f 使用=%@",
+                             + " 状態=%@ 補正=%@ R=%.2f 証拠=%.1fs 分類=%@"
+                             + " 門内=%.1fs 門外=%.1fs fix=%@ 使用=%@",
                              headingDeg, corrected, courseLabel, diffLabel,
                              headMountFusion.quarantineState.label,
                              offsetLabel, headMountFusion.concentration,
+                             headMountFusion.offsetEvidenceSec,
+                             headMountFusion.lastSampleLabel,
+                             headMountFusion.insideEvidenceSec,
+                             headMountFusion.outsideEvidenceSec,
+                             fixLabel,
                              headMountFusion.use(at: now, p: params.headMount.fusion).label))
+            // **記録専用の 1 行。** 次の案件(角速度との突き合わせ)の材料。
+            // 瞬時値ではなく区間の集計を残す — 1 Hz の瞬時値では積分と比較できない
+            logToFile(String(format: "頭部モーション 標本=%d 最大間隔=%.3fs Δ方位=%@°"
+                             + " 回転積分=%.1f° 鉛直積分=%.1f° 磁場較正=%@",
+                             motionDigest.count, motionDigest.maxGapSec,
+                             motionDigest.headingChangeDeg
+                                .map { String(format: "%+.1f", $0) } ?? "-",
+                             motionDigest.integratedAbsDeg,
+                             motionDigest.integratedVerticalDeg,
+                             motionDigest.worstMagneticAccuracy
+                                .map(String.init) ?? "-"))
+            motionDigest.rollOver()
         }
     }
 

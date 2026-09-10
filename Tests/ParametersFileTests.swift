@@ -55,14 +55,27 @@ final class ParametersFileTests: XCTestCase {
     func testHeadMountValuesArrive() throws {
         let p = try ConfigLoader.load(from: repositoryParametersURL())
         XCTAssertGreaterThan(p.headMount.updateHz, 0)
-        XCTAssertGreaterThan(p.headMount.distrustDeg, 0)
-        XCTAssertGreaterThan(p.headMount.distrustSec, 0)
-        XCTAssertGreaterThan(p.headMount.regainSec, 0)
         XCTAssertGreaterThan(p.headMount.logIntervalSec, 0)
+        XCTAssertGreaterThan(p.headMount.staleSec, 0)
         // ずれの学習(MountOffset)。0 で届くと学習が意味を失う
-        XCTAssertGreaterThan(p.headMount.offsetMinSamples, 0)
+        XCTAssertGreaterThan(p.headMount.offsetMinSec, 0)
         XCTAssertGreaterThan(p.headMount.offsetHalfLifeSec, 0)
         XCTAssertGreaterThan(p.headMount.offsetMinConcentration, 0)
         XCTAssertLessThanOrEqual(p.headMount.offsetMinConcentration, 1)
+        XCTAssertGreaterThan(p.headMount.offsetGateDeg, 0)
+        XCTAssertGreaterThan(p.headMount.evidenceMaxGapSec, 0)
+        // 検疫(HeadingQuarantine)。割合が 0 だと即座に退避し、1 を超えると永久に退避しない
+        XCTAssertGreaterThan(p.headMount.quarantineWindowSec, 0)
+        XCTAssertGreaterThan(p.headMount.quarantineDistrustRatio, 0)
+        XCTAssertLessThanOrEqual(p.headMount.quarantineDistrustRatio, 1)
+        XCTAssertGreaterThan(p.headMount.quarantineDistrustSec, 0)
+        XCTAssertGreaterThan(p.headMount.quarantineRegainRatio, 0)
+        XCTAssertLessThanOrEqual(p.headMount.quarantineRegainRatio, 1)
+        XCTAssertGreaterThan(p.headMount.quarantineRegainSec, 0)
+        // 証拠窓より長い遷移条件を置くと、条件が永久に満たされない
+        XCTAssertLessThanOrEqual(p.headMount.quarantineDistrustSec,
+                                 p.headMount.quarantineWindowSec)
+        XCTAssertLessThanOrEqual(p.headMount.quarantineRegainSec,
+                                 p.headMount.quarantineWindowSec)
     }
 }

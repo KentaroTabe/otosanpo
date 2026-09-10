@@ -16,16 +16,25 @@ public struct MotionFix: Equatable {
     /// CLLocation.horizontalAccuracy(m、負値は無効)。
     /// 方向の判定には使わないが、「そもそも位置がどれだけ確かか」を後から見るために運ぶ
     public var horizontalAccuracyM: Double?
+    /// この fix を**一意に識別する時刻** [sec](CLLocation.timestamp)。
+    ///
+    /// なぜ要るか(2026-09-10): 頭方位は 50 Hz、GPS の fix は約 1 Hz。
+    /// 受信のたびに `motionFix()` を読み直すので、**同じ fix が 50 回、独立した
+    /// 証拠として学習に入っていた**。`ageSec` は「読んだ時点からの経過」なので
+    /// 呼ぶたびに変わり、同一性の判定には使えない
+    public var fixTime: TimeInterval?
 
     public init(courseDeg: Double? = nil, courseAccuracyDeg: Double? = nil,
                 speedMps: Double? = nil, compassHeadingDeg: Double? = nil,
-                ageSec: Double? = nil, horizontalAccuracyM: Double? = nil) {
+                ageSec: Double? = nil, horizontalAccuracyM: Double? = nil,
+                fixTime: TimeInterval? = nil) {
         self.courseDeg = courseDeg
         self.courseAccuracyDeg = courseAccuracyDeg
         self.speedMps = speedMps
         self.compassHeadingDeg = compassHeadingDeg
         self.ageSec = ageSec
         self.horizontalAccuracyM = horizontalAccuracyM
+        self.fixTime = fixTime
     }
 }
 
@@ -100,6 +109,22 @@ public enum TravelDirection {
             return nil
         }
         return t.deg
+    }
+
+    /// 生の course と、**それを生んだ fix の時刻**。
+    ///
+    /// 学習と検疫は「同じ fix を何度読んでも証拠は 1 回ぶん」でなければならない
+    /// (2026-09-10。50 Hz で同じ fix を 50 回数えていた)。時刻を一緒に運ぶことで、
+    /// 呼び出し側が別々に取りに行って**取り違える**ことがなくなる
+    /// **fix の時刻が無ければ渡さない。** 識別子の無い course を学習へ入れると、
+    /// 同じ fix を何度でも数えられてしまう(重複排除が成立しない)
+    public static func rawCourseFix(_ fix: MotionFix,
+                                    params: AppParameters.Location)
+        -> (deg: Double, fixTime: TimeInterval)? {
+        guard let deg = rawCourse(fix, params: params), let fixTime = fix.fixTime else {
+            return nil
+        }
+        return (deg, fixTime)
     }
 
     /// course が無効になった理由。ログに残して「なぜ左右が付かなかったか」を追えるようにする

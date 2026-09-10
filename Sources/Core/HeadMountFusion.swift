@@ -74,8 +74,18 @@ public struct HeadMountFusion: Equatable {
     private var lastSampleAt: TimeInterval?
     private var lastRawHeadingDeg: Double?
     private var learnedDeg: Double?
+    private var lastSample = MountOffset.Sample(kind: .noCourse, evidenceSec: 0)
 
     public init() {}
+
+    /// 直前の標本の門の内外の分類(ログ用)
+    public var lastSampleLabel: String { lastSample.label }
+    /// 検疫の証拠窓の門内時間 [sec](ログ用)
+    public var insideEvidenceSec: Double { quarantine.insideEvidenceSec }
+    /// 検疫の証拠窓の門外時間 [sec](ログ用)
+    public var outsideEvidenceSec: Double { quarantine.outsideEvidenceSec }
+    /// 学習に積み上がっている実効の証拠時間 [sec](ログ用)
+    public var offsetEvidenceSec: Double { offset.evidence }
 
     /// 学習できた取り付けのずれ [deg]。成立していなければ nil
     public var learnedOffsetDeg: Double? { learnedDeg }
@@ -101,25 +111,21 @@ public struct HeadMountFusion: Equatable {
     /// - Returns: この標本の時点での判定
     @discardableResult
     public mutating func ingest(headingDeg: Double, rawCourseDeg: Double?,
-                                at t: TimeInterval, p: Params) -> Use {
+                                fixTime: TimeInterval?, at t: TimeInterval, p: Params) -> Use {
         lastSampleAt = t
         lastRawHeadingDeg = headingDeg
-        // 学習は**生の方位**で行う(補正後を食わせると自分の出力を追いかけて循環する)
-        offset.ingest(headingDeg: headingDeg, courseDeg: rawCourseDeg, at: t, p: p.offset)
-        let learned = offset.offsetDeg(p: p.offset)
-        // **学習の有無が切り替わったら検疫の実績を捨てる。**
-        // 補正値が付く / 消えると方位が学習値ぶん飛ぶので、それまでの
-        // 「course と合っていた」実績は、次の方位に対する保証にならない
-        if (learned == nil) != (learnedDeg == nil) {
-            quarantine = HeadingQuarantine()
+        // 学習は**生の方位**で行う(補正後を食わせると自分の出力を追いかけて循環する)。
+        // 門の内外の分類もここで一緒に返る(→ 受け入れ条件 D3。検疫は差を計算しない)
+        let sample = offset.ingest(headingDeg: headingDeg, courseDeg: rawCourseDeg,
+                                   fixTime: fixTime, at: t, p: p.offset)
+        lastSample = sample
+        // **成立は一度きり、以後は変わらない。** 成立した瞬間に検疫を採用状態から始める
+        // (補正が付くと方位が学習値ぶん飛ぶので、それ以前の証拠は捨てる)
+        if learnedDeg == nil, let learned = offset.offsetDeg {
+            learnedDeg = learned
+            quarantine.markLearned()
         }
-        learnedDeg = learned
-        // **検疫は補正後の方位に対してだけ進める。** 学習前の未補正方位で実績を積むと、
-        // 学習が立った瞬間に「別の量に対する実績」を引き継いでしまう
-        if let learned {
-            quarantine.assess(headingDeg: Geo.normalizeDeg(headingDeg - learned),
-                              courseDeg: rawCourseDeg, at: t, p: p.quarantine)
-        }
+        quarantine.assess(sample, p: p.quarantine)
         return use(at: t, p: p)
     }
 
