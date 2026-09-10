@@ -381,8 +381,9 @@ public struct AppParameters: Codable, Equatable {
 
         /// 音量が最大になる距離 [m]。これより近づいても大きくならない
         public var musicSpotReferenceDistanceM: Double
-        /// 距離による減り方の強さ。1.0 で現実の音と同じ(距離が倍で −6 dB)
-        public var musicSpotRolloff: Double
+        /// 音量の幅を割り振る距離の最小の長さ [m]。**鳴り始めた地点がスポットのすぐ近くでも、
+        /// 1 歩で音量が跳ばないようにする**(→ MusicSpot.Params.gainMinSpanM・2026-09-11)
+        public var musicSpotGainMinSpanM: Double
         /// **直線の向きと道をたどる向きを混ぜる比** [0..1]。0 = 直線だけ / 1 = 道だけ
         public var musicSpotRouteBlend: Double
 
@@ -396,7 +397,7 @@ public struct AppParameters: Codable, Equatable {
                 bearingStepDeg: musicSpotBearingStepDeg,
                 sameDistanceToleranceM: musicSpotSameDistanceToleranceM,
                 referenceDistanceM: musicSpotReferenceDistanceM,
-                rolloff: musicSpotRolloff,
+                gainMinSpanM: musicSpotGainMinSpanM,
                 maxGain: musicSpotMaxGain, minGain: musicSpotMinGain,
                 routeBlend: musicSpotRouteBlend)
         }

@@ -150,7 +150,7 @@
     "music_fade_in_sec": 4.0,
     "music_wait_max_sec": 120,
     "music_spot_reference_distance_m": 15,
-    "music_spot_rolloff": 1.0,
+    "music_spot_gain_min_span_m": 30,
     "music_spot_max_gain": 0.9,
     "music_spot_min_gain": 0.08,
     "music_spot_route_blend": 0.5

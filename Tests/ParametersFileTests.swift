@@ -78,4 +78,16 @@ final class ParametersFileTests: XCTestCase {
         XCTAssertLessThanOrEqual(p.headMount.quarantineRegainSec,
                                  p.headMount.quarantineWindowSec)
     }
+
+    /// 音楽スポットの音量の値が届いていること(→ MusicSpot.Params.gain)。
+    /// **下限が 0 以下だと dB にできず、幅の最小の長さが 0 だと 0 で割る**(2026-09-11)
+    func testMusicSpotGainValuesArrive() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        let e = p.experiment
+        XCTAssertGreaterThan(e.musicSpotMinGain, 0)
+        XCTAssertGreaterThan(e.musicSpotMaxGain, e.musicSpotMinGain)
+        XCTAssertLessThanOrEqual(e.musicSpotMaxGain, 1)
+        XCTAssertGreaterThan(e.musicSpotReferenceDistanceM, 0)
+        XCTAssertGreaterThan(e.musicSpotGainMinSpanM, 0)
+    }
 }

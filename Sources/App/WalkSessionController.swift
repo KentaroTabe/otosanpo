@@ -133,6 +133,9 @@ final class WalkSessionController: ObservableObject {
     private var musicWaitStartedAt: Date?
     /// 鳴り始めた時刻。ここから `music_fade_in_sec` かけてじんわり立ち上げる
     private var musicStartedAt: Date?
+    /// 音量の幅の**起点**: スポットまでの距離 [m]。鳴り始めた地点で決める
+    /// (それまでは出発点からの距離)。ここで最小、スポットの手前で最大(→ MusicSpot.gain)
+    private var musicGainFromM: Double?
     /// 音楽の行を残した時刻。音は 10 Hz で付け直すが、ログはこの間隔に間引く
     private var lastMusicLogAt: Date?
     /// 音源が Documents にあるか。無ければ画面に選択肢を出さない
@@ -1308,6 +1311,10 @@ final class WalkSessionController: ObservableObject {
         }
         musicSpot = spot
         pendingMusicURL = url
+        // 鳴り始めるまでは出発点からの距離を起点にしておく(鳴り始めた地点で置き換える)
+        musicGainFromM = Geo.distanceM(start, spot.center)
+        // 散歩の記録に残す。**散歩のあとで経路図に出す**(2026-09-11 利用者依頼)
+        summary?.setMusicSpot(spot.center)
         buildMusicSpotField(to: spot.center)
         log(String(format: "音楽スポット: %.0fm 先 方位 %.0f°(%@)",
                    Geo.distanceM(start, spot.center),
@@ -1378,11 +1385,17 @@ final class WalkSessionController: ObservableObject {
         }
         // **鳴らす前に置き場所を決める。** 既定の音量・正面のまま鳴り出さないように
         let sp = params.experiment.musicSpot(durationMin: durationMin)
+        // **音量の幅の起点を、いま鳴り始める地点にする**(2026-09-11 利用者依頼)。
+        // 頭の向きを待つ間にスポットから遠ざかることがある(実測 135 m)。ここから
+        // 着くまでの全体に音量の幅を割り振るので、どこで鳴り始めても近づく手応えが出る
+        let gainFrom = Geo.distanceM(p, spot.center)
+        musicGainFromM = gainFrom
         let reference = placementReference(currentTravel(location.motionFix()))
         let placed = spot.placement(from: p,
                                     referenceBearingDeg: reference?.deg
                                         ?? Geo.bearingDeg(from: p, to: spot.center),
                                     routeBearingDeg: musicRouteBearing(from: p),
+                                    gainFromDistanceM: gainFrom,
                                     p: sp)
         do {
             // **無音から始める。** ここから music_fade_in_sec かけて距離ぶんの音量まで上げる
@@ -1396,8 +1409,10 @@ final class WalkSessionController: ObservableObject {
         pendingMusicURL = nil
         musicWaitStartedAt = nil
         musicStartedAt = Date()
-        log(String(format: "音楽スポット: 鳴らし始めます(%.0fm 先 音量 %.2f 基準 %@・%.0f 秒かけて)",
+        log(String(format: "音楽スポット: 鳴らし始めます(%.0fm 先 音量 %.2f 基準 %@・"
+                   + "10m あたり %.1f dB・%.0f 秒かけて)",
                    placed.distanceM, placed.gain, reference?.source ?? "中央",
+                   sp.decibelsPer10m(fromDistanceM: gainFrom),
                    params.experiment.musicFadeInSec))
     }
 
@@ -1429,6 +1444,8 @@ final class WalkSessionController: ObservableObject {
                                     referenceBearingDeg: reference?.deg
                                         ?? Geo.bearingDeg(from: p, to: spot.center),
                                     routeBearingDeg: musicRouteBearing(from: p),
+                                    gainFromDistanceM: musicGainFromM
+                                        ?? Geo.distanceM(p, spot.center),
                                     p: sp)
         // **鳴り始めはじんわり。** 距離から決めた音量に、立ち上がりの係数を掛ける。
         // 10 Hz で呼ばれるので、別のタイマーを持たずに滑らかに上がる
@@ -1462,6 +1479,7 @@ final class WalkSessionController: ObservableObject {
         pendingMusicURL = nil
         musicWaitStartedAt = nil
         musicStartedAt = nil
+        musicGainFromM = nil
         musicSpotField = nil
         musicSpotTrace = nil
         synth?.stopMusic()

@@ -129,16 +129,20 @@ experiment: {                    // ここに enabled は無い。スイッチ�
   ab_bearing_deg: 90,            // 左右へ振る角度
 
   // 音楽スポット(→ docs/08)。**出発前に選んだ時だけ**動く
-  music_spot_target_distance_m: 80,  // 狙う距離
-  music_spot_max_distance_m: 100,    // 上限。これを超える所には置かない
-  music_spot_reached_m: 15,          // これより近づいたら着いたとして止める
+  music_spot_min_distance_per_min: 2.5, // 置く距離の下限・上限を散歩 1 分あたりで
+  music_spot_max_distance_per_min: 3.5, //   (30 分なら 75〜105 m)
+  music_spot_distance_steps: 3,      // 候補を探す距離の段数
+  music_spot_reached_m: 15,          // これより近づいたら着いた
   music_spot_bearing_step_deg: 30,   // 候補を探す方位の刻み
   music_spot_same_distance_tolerance_m: 0.001, // これ未満の差は同点(触る必要はない)
-  music_spot_gain_near: 0.9,         // 音量の範囲と、
-  music_spot_gain_far: 0.25,         //   それが最大・最小になる距離
-  music_spot_near_distance_m: 15,
-  music_spot_far_distance_m: 250,    // **実測の分布に合わせた**(2026-09-09。下記)
-  music_log_interval_sec: 1.0        // 音は 10 Hz で付け直すが、ログはこの間隔
+  music_spot_reference_distance_m: 15, // 音量が最大になる距離
+  music_spot_gain_min_span_m: 30,    // 音量の幅を割り振る距離の最小の長さ(2026-09-11)
+  music_spot_max_gain: 0.9,          // 音量の上限・下限。**鳴り始めた地点で下限、
+  music_spot_min_gain: 0.08,         //   スポットの手前で上限、間は dB で均等**(2026-09-11)
+  music_spot_route_blend: 0.5,       // 直線の向きと道をたどる向きを混ぜる比
+  music_log_interval_sec: 1.0,       // 音は 10 Hz で付け直すが、ログはこの間隔
+  music_fade_in_sec: 4.0,            // 鳴り始めの立ち上がり
+  music_wait_max_sec: 120            // 頭の向きが定まるのを待つ上限
 }
 ```
 

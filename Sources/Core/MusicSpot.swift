@@ -41,9 +41,12 @@ public struct MusicSpot: Equatable {
         public var sameDistanceToleranceM: Double
         /// 音量が最大になる距離 [m]。これより近づいても大きくならない
         public var referenceDistanceM: Double
-        /// 距離による減り方の強さ。**1.0 で現実の音と同じ**(距離が倍で −6 dB)。
-        /// 大きいほど急に小さくなり、近づく手応えが強くなる
-        public var rolloff: Double
+        /// 音量の幅を割り振る距離の**最小の長さ** [m]。
+        ///
+        /// 幅の起点(鳴り始めた地点でのスポットまでの距離)がスポットのすぐ近くだと、
+        /// 最小から最大までを数 m で上ることになり、1 歩で音量が跳ぶ。
+        /// 起点がこれより近い時は、`referenceDistanceM` からこの長さまで広げる
+        public var gainMinSpanM: Double
         /// 音量の上限・下限 [0..1]。下限は「遠くても消えない」ための床
         public var maxGain: Double
         public var minGain: Double
@@ -56,37 +59,48 @@ public struct MusicSpot: Equatable {
         /// (2026-09-10 利用者依頼)
         public var routeBlend: Double
 
-        /// 距離 `d` [m] での音量。**逆二乗則**(現実の音の減り方)を使う。
+        /// 距離 `d` [m] での音量。**鳴り始めた地点の距離 `start` で最小、
+        /// スポットの手前 `referenceDistanceM` で最大とし、その間を dB で均等につなぐ**
+        /// (2026-09-11 利用者依頼)。
         ///
-        /// ## なぜ線形をやめたか(2026-09-10 利用者依頼)
+        /// ## なぜ逆二乗則をやめたか
         ///
-        /// 「スポットが左右にあることは分かるが**前後が分からない**」。
-        /// 前後は HRTF では伝わらないと確定しているので(docs/03)、
-        /// **近づけば大きく・遠ざかれば小さく**で伝えるほかない。
+        /// 3 本の散歩(2026-09-10)で、音楽はスポットから 135 m / 95 m / 43 m の所で
+        /// 鳴り始めた(頭の向きを待つ間に遠ざかっていた)。逆二乗則は近いほど急に
+        /// 変わるので、**遠い側では 10 m 近づいても 1 dB に満たない**
+        /// (135 m から 125 m で約 0.7 dB。人が気づくのは 1 dB 前後から)。
+        /// 開発者の感想は「音量の変化が見られない」だった。
         ///
-        /// 線形の写像は、遠い側では 10 m 動いてもほとんど変わらなかった
-        /// (30 分の散歩で 15〜240 m を 0.9〜0.25 に張ると、10 m で 0.027 =
-        /// **0.3 dB 弱**。人が気づくのは 1 dB 前後から)。
-        /// 逆二乗則なら**近いほど急に変わる**ので、近づく手応えが出る
-        public func gain(atDistanceM d: Double) -> Double {
-            let clamped = Swift.max(referenceDistanceM, d)
-            let raw = maxGain * pow(referenceDistanceM / clamped, rolloff)
-            return Swift.min(maxGain, Swift.max(minGain, raw))
+        /// いまは**聞こえ始めてから着くまで**の全体に音量の幅を割り振る。
+        /// 10 m あたりの差は `幅 [dB] × 10 ÷ (起点 − referenceDistanceM)` で、
+        /// 遠くで鳴り始めた散歩ほど小さく、近くで鳴り始めた散歩ほど大きい。
+        /// dB で均等にするのは、人の音量の感じ方が対数に近いため(どこでも同じ手応え)。
+        ///
+        /// - 起点より遠ざかったら最小のまま(床)
+        /// - `referenceDistanceM` より近づいたら最大のまま
+        public func gain(atDistanceM d: Double, fromDistanceM start: Double) -> Double {
+            let near = referenceDistanceM
+            let far = Swift.max(start, near + gainMinSpanM)
+            guard far > near else { return maxGain }
+            let t = (Swift.min(Swift.max(d, near), far) - near) / (far - near)
+            let maxDb = 20 * log10(maxGain)
+            let minDb = 20 * log10(minGain)
+            return pow(10, (maxDb - (maxDb - minDb) * t) / 20)
         }
 
-        /// `d` から 10 m 近づいた時の音量差 [dB]。**設計の狙いを測るための窓**。
+        /// 10 m 近づいた時の音量差 [dB]。**起点からスポットの手前まで一定**。
         /// 1 dB 前後で人は気づき、3 dB ではっきり分かる
-        public func decibelGainPer10m(atDistanceM d: Double) -> Double {
-            let near = gain(atDistanceM: Swift.max(0, d - 10))
-            let far = gain(atDistanceM: d)
-            guard far > 0, near > 0 else { return 0 }
-            return 20 * log10(near / far)
+        public func decibelsPer10m(fromDistanceM start: Double) -> Double {
+            let near = referenceDistanceM
+            let far = Swift.max(start, near + gainMinSpanM)
+            guard far > near else { return 0 }
+            return 20 * log10(maxGain / minGain) * 10 / (far - near)
         }
 
         public init(minDistanceM: Double, maxDistanceM: Double, distanceStepCount: Int,
                     reachedM: Double,
                     bearingStepDeg: Double, sameDistanceToleranceM: Double,
-                    referenceDistanceM: Double, rolloff: Double,
+                    referenceDistanceM: Double, gainMinSpanM: Double,
                     maxGain: Double, minGain: Double, routeBlend: Double) {
             self.minDistanceM = minDistanceM
             self.maxDistanceM = maxDistanceM
@@ -95,7 +109,7 @@ public struct MusicSpot: Equatable {
             self.bearingStepDeg = bearingStepDeg
             self.sameDistanceToleranceM = sameDistanceToleranceM
             self.referenceDistanceM = referenceDistanceM
-            self.rolloff = rolloff
+            self.gainMinSpanM = gainMinSpanM
             self.maxGain = maxGain
             self.minGain = minGain
             self.routeBlend = routeBlend
@@ -163,15 +177,19 @@ public struct MusicSpot: Equatable {
     /// - Parameter referenceBearingDeg: 定位の基準(顔の向き。取れなければ進行方位)
     /// - Parameter routeBearingDeg: **道をたどってスポットへ向かう向き**。
     ///   取れなければ nil(直線の向きだけを使う)
+    /// - Parameter gainFromDistanceM: 音量の幅の**起点**(鳴り始めた地点でのスポットまでの
+    ///   距離)[m]。ここで最小、スポットの手前で最大になる(→ `Params.gain`)
     public func placement(from listener: GeoPoint, referenceBearingDeg: Double,
                           routeBearingDeg: Double? = nil,
+                          gainFromDistanceM: Double,
                           p: Params) -> (relDeg: Double, gain: Double, distanceM: Double,
                                          worldBearingDeg: Double) {
         let direct = Geo.bearingDeg(from: listener, to: center)
         let distance = Geo.distanceM(listener, center)
         let world = Self.blend(direct: direct, route: routeBearingDeg, weight: p.routeBlend)
         return (Geo.angularDiffDeg(world, referenceBearingDeg),
-                p.gain(atDistanceM: distance), distance, world)
+                p.gain(atDistanceM: distance, fromDistanceM: gainFromDistanceM),
+                distance, world)
     }
 
     /// 直線の向きと、道をたどる向きの**間**を取る(→ `Params.routeBlend`)。

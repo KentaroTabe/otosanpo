@@ -18,7 +18,7 @@ final class MusicSpotTests: XCTestCase {
             minDistanceM: min, maxDistanceM: max, distanceStepCount: steps,
             reachedM: reached,
             bearingStepDeg: step, sameDistanceToleranceM: tolerance,
-            referenceDistanceM: 15, rolloff: 1.0,
+            referenceDistanceM: 15, gainMinSpanM: 30,
             maxGain: 0.9, minGain: 0.08, routeBlend: blend)
     }
 
@@ -152,7 +152,8 @@ final class MusicSpotTests: XCTestCase {
         let p = params()
         // 真北 80 m にスポット。南(180°)を向いていれば、音源は真後ろ
         let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: 80))
-        let placed = spot.placement(from: origin, referenceBearingDeg: 180, p: p)
+        let placed = spot.placement(from: origin, referenceBearingDeg: 180,
+                                    gainFromDistanceM: 80, p: p)
         XCTAssertEqual(abs(placed.relDeg), 180, accuracy: 1.0,
                        "真後ろは真後ろのまま返る(畳まない)")
         // 参考: earcon の経路なら前へ畳まれる。ここを通らないことが今回の要点
@@ -163,62 +164,95 @@ final class MusicSpotTests: XCTestCase {
     func testPlacementKeepsLeftAndRight() {
         let p = params()
         let right = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 90, distanceM: 80))
-        XCTAssertEqual(right.placement(from: origin, referenceBearingDeg: 0, p: p).relDeg,
+        XCTAssertEqual(right.placement(from: origin, referenceBearingDeg: 0,
+                                       gainFromDistanceM: 80, p: p).relDeg,
                        90, accuracy: 1.0)
         let left = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 270, distanceM: 80))
-        XCTAssertEqual(left.placement(from: origin, referenceBearingDeg: 0, p: p).relDeg,
+        XCTAssertEqual(left.placement(from: origin, referenceBearingDeg: 0,
+                                      gainFromDistanceM: 80, p: p).relDeg,
                        -90, accuracy: 1.0)
     }
 
-    /// 近づくほど大きくなる。**距離が音量で伝わる**(ビーコンと同じ形)
-    func testGainRisesAsYouApproach() {
+    // MARK: - 音量(2026-09-11 に要求が変わった)
+    //
+    // 以前は逆二乗則で、「近いほど急に変わる」ことを検査していた。3 本の散歩(2026-09-10)で
+    // 音楽はスポットから 135 m / 95 m / 43 m の所で鳴り始め、遠い側では 10 m 近づいても
+    // 1 dB に満たず、「音量の変化が見られない」と言われた。利用者の依頼で、
+    // **鳴り始めた地点の距離に応じて 10 m あたりの差を決める**形に変えた。
+    // 期待値を緩めたのではなく、検査する性質そのもの(近いほど急 → 起点から一定)が変わっている。
+
+    /// **鳴り始めた距離で最小、スポットの手前で最大。** 聞こえ始めてから着くまでに幅を使い切る
+    func testGainSpansFromTheStartDistanceToTheSpot() {
         let p = params()
-        let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: 100))
-        let far = spot.placement(from: origin, referenceBearingDeg: 0, p: p)
-        let mid = spot.placement(from: Geo.destination(from: origin, bearingDeg: 0, distanceM: 50),
-                                 referenceBearingDeg: 0, p: p)
-        let near = spot.placement(from: Geo.destination(from: origin, bearingDeg: 0, distanceM: 90),
-                                  referenceBearingDeg: 0, p: p)
-        XCTAssertLessThan(far.gain, mid.gain)
-        XCTAssertLessThan(mid.gain, near.gain)
-        XCTAssertLessThanOrEqual(near.gain, p.maxGain)
-        XCTAssertGreaterThanOrEqual(far.gain, p.minGain)
+        XCTAssertEqual(p.gain(atDistanceM: 95, fromDistanceM: 95), p.minGain, accuracy: 1e-9,
+                       "鳴り始めた地点では最小")
+        XCTAssertEqual(p.gain(atDistanceM: 15, fromDistanceM: 95), p.maxGain, accuracy: 1e-9,
+                       "スポットの手前で最大")
+        XCTAssertEqual(p.gain(atDistanceM: 5, fromDistanceM: 95), p.maxGain, accuracy: 1e-9,
+                       "手前より近くても最大のまま")
+        XCTAssertEqual(p.gain(atDistanceM: 200, fromDistanceM: 95), p.minGain, accuracy: 1e-9,
+                       "起点より遠ざかっても最小のまま(床)")
     }
 
-    /// **10 m 近づいたら気づける音量差になっているか**(2026-09-10 利用者依頼)。
-    ///
-    /// 「スポットが左右にあることは分かるが前後が分からない」への対策。
-    /// 前後は HRTF では伝わらないので、**近づけば大きく**で伝えるほかない。
-    /// 人が気づくのは 1 dB 前後、3 dB ではっきり分かる。
-    /// 逆二乗則は近いほど急に変わるので、近づく手応えが出る
-    func testTenMetresMakesAnAudibleDifference() {
+    /// **10 m あたりの差は、起点からスポットの手前まで一定**で、起点が遠いほど小さい
+    func testDecibelsPer10mDependOnTheStartDistance() {
         let p = params()
-        // スポットの置かれる帯(30 分なら 75〜105 m)と、その近くを見る
-        for d in [30.0, 50, 80, 100] {
-            let db = p.decibelGainPer10m(atDistanceM: d)
-            XCTAssertGreaterThan(db, 0.9,
-                                 "\(Int(d))m から 10m 近づいて \(String(format: "%.2f", db)) dB "
-                                 + "では気づけない")
+        let range = 20 * log10(p.maxGain / p.minGain)   // 約 21 dB
+        // 散歩 3 は 43 m で鳴り始めた。最小の長さ(15 + 30 = 45 m)より近いので、
+        // 幅は 30 m に広げて割り振る(10 m で 7.0 dB。28 m で割れば 7.5 dB になる所)
+        XCTAssertEqual(p.decibelsPer10m(fromDistanceM: 43), range * 10 / 30, accuracy: 1e-9)
+        // 散歩 1・2 の鳴り始め(2026-09-10)。どちらも最小の長さより遠い
+        for start in [135.0, 95] {
+            let expected = range * 10 / (start - 15)
+            XCTAssertEqual(p.decibelsPer10m(fromDistanceM: start), expected, accuracy: 1e-9)
+            // どこで測っても同じ差(dB で均等)
+            for d in stride(from: start, through: 25, by: -10) {
+                let far = p.gain(atDistanceM: d, fromDistanceM: start)
+                let near = p.gain(atDistanceM: d - 10, fromDistanceM: start)
+                XCTAssertEqual(20 * log10(near / far), expected, accuracy: 1e-9,
+                               "\(Int(start))m で鳴り始め・\(Int(d))m から 10m 近づく")
+            }
         }
-        // 近いほど差が大きい(近づく手応え)
-        XCTAssertGreaterThan(p.decibelGainPer10m(atDistanceM: 30),
-                             p.decibelGainPer10m(atDistanceM: 100))
+        XCTAssertGreaterThan(p.decibelsPer10m(fromDistanceM: 43),
+                             p.decibelsPer10m(fromDistanceM: 135),
+                             "近くで鳴り始めた散歩ほど 10m の差が大きい")
+        // 95 m で鳴り始めた散歩なら 10 m で 2.6 dB(人が気づく 1 dB を大きく超える)
+        XCTAssertEqual(p.decibelsPer10m(fromDistanceM: 95), 2.6, accuracy: 0.05)
     }
 
-    /// 音量は距離に対して**連続**(段が無い)。
-    ///
-    /// 許容は**比**で見る。絶対差で見ると、基準距離のすぐ外(いちばん急な所)で
-    /// 落ちるが、そこが急なのは逆二乗則の性質であって段ではない
-    func testGainIsContinuousInDistance() {
+    /// 起点がスポットのすぐ近くでも、**最小の長さまで広げる**(1 歩で音量が跳ばない)
+    func testShortStartDistanceIsWidenedToTheMinimumSpan() {
+        let p = params()   // gainMinSpanM = 30
+        XCTAssertEqual(p.decibelsPer10m(fromDistanceM: 20),
+                       20 * log10(p.maxGain / p.minGain) * 10 / 30, accuracy: 1e-9)
+        XCTAssertEqual(p.gain(atDistanceM: 45, fromDistanceM: 20), p.minGain, accuracy: 1e-9,
+                       "広げた先(15 + 30 m)で最小")
+        XCTAssertTrue(p.gain(atDistanceM: 20, fromDistanceM: 20).isFinite)
+    }
+
+    /// 音量は距離に対して**連続**で、近づくほど大きい(段が無い)
+    func testGainIsContinuousAndRisesAsYouApproach() {
         let p = params()
-        var previous = p.gain(atDistanceM: 5)
-        for metres in stride(from: 6.0, through: 300.0, by: 1.0) {
-            let g = p.gain(atDistanceM: metres)
-            XCTAssertLessThanOrEqual(g, previous + 1e-9, "近づかずに大きくなってはいけない")
-            XCTAssertLessThan(previous / g, 1.1,
-                              "\(Int(metres))m で音量が飛んでいる(1m で 10% 超)")
+        var previous = p.gain(atDistanceM: 300, fromDistanceM: 135)
+        for metres in stride(from: 299.0, through: 0.0, by: -1.0) {
+            let g = p.gain(atDistanceM: metres, fromDistanceM: 135)
+            XCTAssertGreaterThanOrEqual(g, previous - 1e-12, "近づいて小さくなってはいけない")
+            XCTAssertLessThan(g / previous, 1.1, "\(Int(metres))m で音量が飛んでいる(1m で 10% 超)")
             previous = g
         }
+    }
+
+    /// `placement` は起点を渡した音量を返す
+    func testPlacementUsesTheStartDistanceForGain() {
+        let p = params()
+        let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: 95))
+        let atStart = spot.placement(from: origin, referenceBearingDeg: 0,
+                                     gainFromDistanceM: 95, p: p)
+        XCTAssertEqual(atStart.gain, p.minGain, accuracy: 1e-3, "鳴り始めた地点では最小")
+        let closer = spot.placement(from: Geo.destination(from: origin, bearingDeg: 0,
+                                                          distanceM: 80),
+                                    referenceBearingDeg: 0, gainFromDistanceM: 95, p: p)
+        XCTAssertGreaterThan(closer.gain, atStart.gain, "15m 近づけば大きくなる")
     }
 
     /// **直線の向きと道をたどる向きの間**から鳴らす(2026-09-10 利用者依頼)。
@@ -245,7 +279,8 @@ final class MusicSpotTests: XCTestCase {
         let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: 80))
         // 直線は北(0°)、道は東(90°)。半々なら北東(45°)から鳴る
         let placed = spot.placement(from: origin, referenceBearingDeg: 0,
-                                    routeBearingDeg: 90, p: params(blend: 0.5))
+                                    routeBearingDeg: 90, gainFromDistanceM: 80,
+                                    p: params(blend: 0.5))
         XCTAssertEqual(placed.worldBearingDeg, 45, accuracy: 1.0)
         XCTAssertEqual(placed.relDeg, 45, accuracy: 1.0)
     }

@@ -153,4 +153,51 @@ final class WalkSummaryTests: XCTestCase {
         let data = try JSONEncoder().encode(s)
         XCTAssertEqual(try JSONDecoder().decode(WalkSummary.self, from: data), s)
     }
+
+    // MARK: - 音楽スポット(2026-09-11 利用者依頼: 散歩のあと経路図に出す)
+
+    /// **近づかなかった散歩でも、スポットの印が図からはみ出さない**
+    func testFrameIncludesTheMusicSpot() {
+        var s = WalkSummary(startedAt: start, home: origin)
+        s.add(origin, minSegmentM: 10, maxPoints: 100)
+        s.add(point(northM: 100), minSegmentM: 10, maxPoints: 100)
+        // 歩いた範囲から外れた所にスポット
+        let spot = point(northM: -80, eastM: 250)
+        s.setMusicSpot(spot)
+        XCTAssertEqual(s.musicSpot, spot)
+        guard let f = s.frame(marginM: 40, minSpanM: 150) else {
+            return XCTFail("枠を作れなかった")
+        }
+        let xy = f.point(spot)
+        XCTAssertTrue((0...f.widthM).contains(xy.x), "x=\(xy.x)")
+        XCTAssertTrue((0...f.heightM).contains(xy.y), "y=\(xy.y)")
+        XCTAssertGreaterThanOrEqual(f.widthM, 250 + 80 - 1, "スポットまでの幅に余白を足した広さ")
+    }
+
+    /// 音楽を選ばなかった散歩ではスポットは無い
+    func testNoMusicSpotUnlessSet() {
+        let s = WalkSummary(startedAt: start, home: origin)
+        XCTAssertNil(s.musicSpot)
+    }
+
+    func testMusicSpotSurvivesEncodingRoundTrip() throws {
+        var s = WalkSummary(startedAt: start, home: origin)
+        s.add(origin, minSegmentM: 10, maxPoints: 100)
+        s.setMusicSpot(point(northM: 60))
+        let data = try JSONEncoder().encode(s)
+        XCTAssertEqual(try JSONDecoder().decode(WalkSummary.self, from: data), s)
+    }
+
+    /// **前の版で保存した記録(`musicSpot` の項目が無い)も読める。**
+    /// 端末に残っている前回の記録を、更新後に開けなくなってはいけない
+    func testDecodesARecordSavedWithoutTheMusicSpot() throws {
+        var s = WalkSummary(startedAt: start, home: origin)
+        s.add(origin, minSegmentM: 10, maxPoints: 100)
+        let data = try JSONEncoder().encode(s)
+        let json = String(decoding: data, as: UTF8.self)
+        XCTAssertFalse(json.contains("musicSpot"), "前提: 項目そのものが無い(前の版と同じ形)")
+        let decoded = try JSONDecoder().decode(WalkSummary.self, from: data)
+        XCTAssertNil(decoded.musicSpot)
+        XCTAssertEqual(decoded, s)
+    }
 }

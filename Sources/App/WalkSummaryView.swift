@@ -34,8 +34,7 @@ struct WalkSummaryView: View {
                 if let frame {
                     figure(frame)
                         .listRowInsets(EdgeInsets())
-                    Text(String(format: "北が上・図の幅 約 %.0f m・道は端末内の経路データ",
-                                frame.widthM))
+                    Text(caption(frame))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -61,6 +60,15 @@ struct WalkSummaryView: View {
             guard let frame, roads.isEmpty else { return }
             roads = roadsProvider(frame)
         }
+    }
+
+    /// 図の下の説明。**音楽スポットがあった散歩だけ**印の意味を添える
+    private func caption(_ frame: MapFrame) -> String {
+        var text = String(format: "北が上・図の幅 約 %.0f m・道は端末内の経路データ", frame.widthM)
+        if summary.musicSpot != nil {
+            text += "・♪ = 音楽スポット"
+        }
+        return text
     }
 
     // MARK: - 経路図
@@ -91,6 +99,11 @@ struct WalkSummaryView: View {
 
             if let h = summary.home {
                 badge(ctx, at: at(h), text: "家", color: .primary, filled: true)
+            }
+            // **音楽スポット**(2026-09-11 利用者依頼)。経路の上に重ねて、どこで鳴っていたかの
+            // 答え合わせに使う。誘導の印より先に描き、番号が隠れないようにする
+            if let m = summary.musicSpot {
+                badge(ctx, at: at(m), text: "♪", color: .pink, filled: true)
             }
             for e in summary.events {
                 mark(ctx, event: e, at: at(e.at))
