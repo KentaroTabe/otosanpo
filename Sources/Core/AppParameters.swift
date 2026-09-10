@@ -265,9 +265,15 @@ public struct AppParameters: Codable, Equatable {
         public var distrustSec: Double
         /// 内側がこれだけ続いたら採用(復帰)[sec]
         public var regainSec: Double
-        /// 取り付けのずれの学習が成立するのに要る実効の標本量(10 Hz で 200 ≈ 20 秒)。
-        /// **ずれは固定値で持たず、歩きながら学習する**(2026-09-01 利用者判断 → MountOffset)
-        public var offsetMinSamples: Double
+        /// 取り付けのずれの学習が成立するのに要る**時間** [sec]。
+        ///
+        /// **標本数ではなく時間で持つ**(2026-09-10)。標本数だと `update_hz` を上げた
+        /// 途端に学習が早まってしまう — 推定の質を決めるのは「どれだけの区間を歩いたか」で、
+        /// 「何件読んだか」ではない。50 Hz にした時に 4 秒で学習が立つのは明らかに誤り
+        public var offsetMinSec: Double
+
+        /// 学習に要る実効の標本量。`update_hz` から導く(直接持たない)
+        public var offsetMinSamples: Double { updateHz * offsetMinSec }
         /// ずれの平均の半減期 [sec]。長め = 付け直し程度の変化にゆっくり追従
         public var offsetHalfLifeSec: Double
         /// ずれが「定数である」と認める合成ベクトル長 R の下限(0..1)
@@ -359,20 +365,20 @@ public struct AppParameters: Codable, Equatable {
         /// 鳴り出した時にはスポットから 258 m 離れて音量は下限、90 秒後に散歩終了)
         public var musicWaitMaxSec: Double
         /// 音楽スポットの音量の範囲 [0..1] と、それが最小・最大になる距離 [m]
-        public var musicSpotGainFar: Double
-        public var musicSpotGainNear: Double
-        public var musicSpotNearDistanceM: Double
+        public var musicSpotMinGain: Double
+        public var musicSpotMaxGain: Double
+
         // 遠い側は musicSpotFarDistancePerMin(散歩時間に比例)へ移した
 
         /// 左右の聴き比べで音を置く角度 [deg]。左右へ交互に振る
         public var abBearingDeg: Double
 
-        /// 音量が最小になる距離も**散歩時間に比例**させる [m/min]。
-        ///
-        /// 固定にしていた頃、8 分の散歩でスポットから最大 92 m しか離れず、
-        /// **写像(15〜250 m)の上の 1/3 しか使われなかった**(音量 0.69〜0.90)。
-        /// 距離が音量で伝わらない = 「音量が効いていない」と感じられる(2026-09-09 の実測)
-        public var musicSpotFarDistancePerMin: Double
+        /// 音量が最大になる距離 [m]。これより近づいても大きくならない
+        public var musicSpotReferenceDistanceM: Double
+        /// 距離による減り方の強さ。1.0 で現実の音と同じ(距離が倍で −6 dB)
+        public var musicSpotRolloff: Double
+        /// **直線の向きと道をたどる向きを混ぜる比** [0..1]。0 = 直線だけ / 1 = 道だけ
+        public var musicSpotRouteBlend: Double
 
         /// MusicSpot に渡す設定値。**散歩時間で距離が決まる**ので時間を渡す
         public func musicSpot(durationMin: Double) -> MusicSpot.Params {
@@ -383,9 +389,10 @@ public struct AppParameters: Codable, Equatable {
                 reachedM: musicSpotReachedM,
                 bearingStepDeg: musicSpotBearingStepDeg,
                 sameDistanceToleranceM: musicSpotSameDistanceToleranceM,
-                gainNear: musicSpotGainNear, gainFar: musicSpotGainFar,
-                nearDistanceM: musicSpotNearDistanceM,
-                farDistanceM: musicSpotFarDistancePerMin * durationMin)
+                referenceDistanceM: musicSpotReferenceDistanceM,
+                rolloff: musicSpotRolloff,
+                maxGain: musicSpotMaxGain, minGain: musicSpotMinGain,
+                routeBlend: musicSpotRouteBlend)
         }
 
         /// 実験ビルドで実際に鳴らす音色を決める。

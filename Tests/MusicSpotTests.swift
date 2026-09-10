@@ -12,12 +12,14 @@ final class MusicSpotTests: XCTestCase {
     private func params(min: Double = 60, max: Double = 100,
                         steps: Int = 1,
                         reached: Double = 15, step: Double = 30,
-                        tolerance: Double = 0.001) -> MusicSpot.Params {
+                        tolerance: Double = 0.001,
+                        blend: Double = 0) -> MusicSpot.Params {
         MusicSpot.Params(
             minDistanceM: min, maxDistanceM: max, distanceStepCount: steps,
             reachedM: reached,
             bearingStepDeg: step, sameDistanceToleranceM: tolerance,
-            gainNear: 0.9, gainFar: 0.25, nearDistanceM: 15, farDistanceM: 100)
+            referenceDistanceM: 15, rolloff: 1.0,
+            maxGain: 0.9, minGain: 0.08, routeBlend: blend)
     }
 
     /// 音楽を待たせる時だけ、出発の一言に一文を足す(2026-09-10 利用者依頼)。
@@ -179,8 +181,73 @@ final class MusicSpotTests: XCTestCase {
                                   referenceBearingDeg: 0, p: p)
         XCTAssertLessThan(far.gain, mid.gain)
         XCTAssertLessThan(mid.gain, near.gain)
-        XCTAssertLessThanOrEqual(near.gain, p.gainNear)
-        XCTAssertGreaterThanOrEqual(far.gain, p.gainFar)
+        XCTAssertLessThanOrEqual(near.gain, p.maxGain)
+        XCTAssertGreaterThanOrEqual(far.gain, p.minGain)
+    }
+
+    /// **10 m 近づいたら気づける音量差になっているか**(2026-09-10 利用者依頼)。
+    ///
+    /// 「スポットが左右にあることは分かるが前後が分からない」への対策。
+    /// 前後は HRTF では伝わらないので、**近づけば大きく**で伝えるほかない。
+    /// 人が気づくのは 1 dB 前後、3 dB ではっきり分かる。
+    /// 逆二乗則は近いほど急に変わるので、近づく手応えが出る
+    func testTenMetresMakesAnAudibleDifference() {
+        let p = params()
+        // スポットの置かれる帯(30 分なら 75〜105 m)と、その近くを見る
+        for d in [30.0, 50, 80, 100] {
+            let db = p.decibelGainPer10m(atDistanceM: d)
+            XCTAssertGreaterThan(db, 0.9,
+                                 "\(Int(d))m から 10m 近づいて \(String(format: "%.2f", db)) dB "
+                                 + "では気づけない")
+        }
+        // 近いほど差が大きい(近づく手応え)
+        XCTAssertGreaterThan(p.decibelGainPer10m(atDistanceM: 30),
+                             p.decibelGainPer10m(atDistanceM: 100))
+    }
+
+    /// 音量は距離に対して**連続**(段が無い)。
+    ///
+    /// 許容は**比**で見る。絶対差で見ると、基準距離のすぐ外(いちばん急な所)で
+    /// 落ちるが、そこが急なのは逆二乗則の性質であって段ではない
+    func testGainIsContinuousInDistance() {
+        let p = params()
+        var previous = p.gain(atDistanceM: 5)
+        for metres in stride(from: 6.0, through: 300.0, by: 1.0) {
+            let g = p.gain(atDistanceM: metres)
+            XCTAssertLessThanOrEqual(g, previous + 1e-9, "近づかずに大きくなってはいけない")
+            XCTAssertLessThan(previous / g, 1.1,
+                              "\(Int(metres))m で音量が飛んでいる(1m で 10% 超)")
+            previous = g
+        }
+    }
+
+    /// **直線の向きと道をたどる向きの間**から鳴らす(2026-09-10 利用者依頼)。
+    /// 角度は円周上の量なので、線形に混ぜてはいけない
+    func testBlendsTheDirectAndRouteBearings() {
+        XCTAssertEqual(MusicSpot.blend(direct: 0, route: 90, weight: 0.5), 45, accuracy: 0.5)
+        XCTAssertEqual(MusicSpot.blend(direct: 0, route: 90, weight: 0), 0, accuracy: 1e-9,
+                       "0 なら直線だけ")
+        XCTAssertEqual(MusicSpot.blend(direct: 0, route: 90, weight: 1), 90, accuracy: 0.5,
+                       "1 なら道だけ")
+        // 350° と 10° の中間は 0°(平均の 180° ではない)。
+        // **0° と 360° は同じ向き**なので、差で見る
+        XCTAssertEqual(abs(Geo.angularDiffDeg(MusicSpot.blend(direct: 350, route: 10,
+                                                              weight: 0.5), 0)),
+                       0, accuracy: 0.5)
+        // 道が取れなければ直線のまま
+        XCTAssertEqual(MusicSpot.blend(direct: 123, route: nil, weight: 0.5), 123, accuracy: 1e-9)
+        // 真反対を等分に混ぜると向きが決まらない。その時は直線を採る
+        XCTAssertEqual(MusicSpot.blend(direct: 0, route: 180, weight: 0.5), 0, accuracy: 1e-9)
+    }
+
+    /// 混ぜた向きが `placement` の結果に効く
+    func testPlacementUsesTheBlendedBearing() {
+        let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: 80))
+        // 直線は北(0°)、道は東(90°)。半々なら北東(45°)から鳴る
+        let placed = spot.placement(from: origin, referenceBearingDeg: 0,
+                                    routeBearingDeg: 90, p: params(blend: 0.5))
+        XCTAssertEqual(placed.worldBearingDeg, 45, accuracy: 1.0)
+        XCTAssertEqual(placed.relDeg, 45, accuracy: 1.0)
     }
 
     /// 着いたら止める(**一度だけ鳴る**という約束)

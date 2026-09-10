@@ -116,6 +116,11 @@ final class WalkSessionController: ObservableObject {
     /// 連続音で方向が伝わるかを試すための実験(2026-09-08 利用者判断)
     @Published var musicSpotWanted = false
     private var musicSpot: MusicSpot?
+    /// **スポットへの**経路の場(自宅への場とは別物)。
+    /// 音楽を「直線の向き」と「道をたどる向き」の間から鳴らすために要る(2026-09-10)
+    private var musicSpotField: RouteField?
+    /// スポットへの経路の追跡の引き継ぎ(→ RouteField.Trace)
+    private var musicSpotTrace: RouteField.Trace?
     /// スポットに着いたことを 1 度だけ記録するための旗(**着いても止めない**)
     private var musicSpotReached = false
     /// 鳴らす準備はできたが、**頭の向きが定まるのを待っている**音源。
@@ -1236,6 +1241,7 @@ final class WalkSessionController: ObservableObject {
         }
         musicSpot = spot
         pendingMusicURL = url
+        buildMusicSpotField(to: spot.center)
         log(String(format: "音楽スポット: %.0fm 先 方位 %.0f°(%@)",
                    Geo.distanceM(start, spot.center),
                    Geo.bearingDeg(from: start, to: spot.center), url.lastPathComponent))
@@ -1250,6 +1256,44 @@ final class WalkSessionController: ObservableObject {
         } else {
             startPendingMusic(at: start)
         }
+    }
+
+    /// **スポットへの**経路の場を背景で解く。
+    ///
+    /// 自宅への場と同じ作り(数万節点の探索)なので背景に回す。できるまでは
+    /// 直線の向きだけで鳴らすので、音楽は待たされない。
+    /// これがあると「あちらに在って、こう行けば着く」を同時に伝えられる(2026-09-10)
+    private func buildMusicSpotField(to goal: GeoPoint) {
+        musicSpotField = nil
+        musicSpotTrace = nil
+        guard params.experiment.musicSpotRouteBlend > 0,
+              let graph, graph.map.covers(goal) else { return }
+        let snapMax = params.route.snapMaxDistanceM
+        let weights = RouteField.Weights(crossCostWeight: params.route.crossCostWeight,
+                                         wayClassWeight: params.route.wayClassWeight)
+        Task.detached(priority: .userInitiated) {
+            let field = RouteField(graph: graph, goal: goal,
+                                   snapMaxDistanceM: snapMax, weights: weights)
+            await MainActor.run { [weak self] in
+                guard let self, self.musicSpot != nil else { return }
+                self.musicSpotField = field
+                self.log(field == nil
+                         ? "音楽スポット: 経路の場を作れません(直線の向きだけで鳴らします)"
+                         : "音楽スポット: 経路の場を作りました(直線と道の間から鳴らします)")
+            }
+        }
+    }
+
+    /// スポットへ**道をたどって**向かう向き。取れなければ nil(直線だけで鳴らす)
+    private func musicRouteBearing(from p: GeoPoint) -> Double? {
+        guard let f = musicSpotField, let graph else { return nil }
+        guard let step = f.nextStep(from: p, graph: graph,
+                                    nodeToleranceM: params.route.nodeArrivalToleranceM,
+                                    trace: musicSpotTrace, tp: params.route.routeTrace) else {
+            return nil
+        }
+        musicSpotTrace = step.trace
+        return step.deg
     }
 
     /// 待たせていた音楽を鳴らし始める。頭部固定を使う時は「使用可能になった瞬間」に呼ばれる
@@ -1271,6 +1315,7 @@ final class WalkSessionController: ObservableObject {
         let placed = spot.placement(from: p,
                                     referenceBearingDeg: reference?.deg
                                         ?? Geo.bearingDeg(from: p, to: spot.center),
+                                    routeBearingDeg: musicRouteBearing(from: p),
                                     p: sp)
         do {
             // **無音から始める。** ここから music_fade_in_sec かけて距離ぶんの音量まで上げる
@@ -1316,6 +1361,7 @@ final class WalkSessionController: ObservableObject {
         let placed = spot.placement(from: p,
                                     referenceBearingDeg: reference?.deg
                                         ?? Geo.bearingDeg(from: p, to: spot.center),
+                                    routeBearingDeg: musicRouteBearing(from: p),
                                     p: sp)
         // **鳴り始めはじんわり。** 距離から決めた音量に、立ち上がりの係数を掛ける。
         // 10 Hz で呼ばれるので、別のタイマーを持たずに滑らかに上がる
@@ -1327,10 +1373,11 @@ final class WalkSessionController: ObservableObject {
             || now.timeIntervalSince(lastMusicLogAt!) >= params.experiment.musicLogIntervalSec
         else { return }
         lastMusicLogAt = now
-        logToFile(String(format: "音楽 距離=%.0fm 向き=%@ 音量=%.2f 基準=%@",
+        logToFile(String(format: "音楽 距離=%.0fm 向き=%@ 音量=%.2f 基準=%@ 音源方位=%.0f°%@",
                          placed.distanceM,
                          reference == nil ? "中央" : String(format: "%+.0f°", placed.relDeg),
-                         placed.gain, reference?.source ?? "なし"))
+                         placed.gain, reference?.source ?? "なし", placed.worldBearingDeg,
+                         musicSpotField == nil ? "(直線)" : "(直線と道の間)"))
     }
 
     /// 鳴り始めの立ち上がり [0..1]。待った末に不意に鳴り出すと驚くので、
@@ -1348,6 +1395,8 @@ final class WalkSessionController: ObservableObject {
         pendingMusicURL = nil
         musicWaitStartedAt = nil
         musicStartedAt = nil
+        musicSpotField = nil
+        musicSpotTrace = nil
         synth?.stopMusic()
         log("音楽スポット: 終了(\(reason))")
     }
