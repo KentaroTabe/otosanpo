@@ -49,6 +49,31 @@ struct ContentView: View {
                             step: 5) {
                         Text("散歩時間: \(Int(controller.durationMin)) 分")
                     }
+                    // **出発前にしか選べない**(歩き出したら画面は見えない)。
+                    // 音源が置かれていない端末には出さない
+                    if controller.musicFileAvailable {
+                        Toggle("音楽スポットを 1 つ作る(実験)", isOn: $controller.musicSpotWanted)
+                        if controller.musicSpotWanted {
+                            Text("出発したら散歩時間に応じた距離に 1 つだけ音楽の鳴る場所を作り、"
+                                 + "そこから聞こえるように鳴らします。"
+                                 + "連続音で方向が伝わるかを試すための実験です")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            // **どちらのビルドを持っているかを、出発前に見えるようにする。**
+                            // 2026-09-10、実験ビルドのつもりで配布ビルドを歩き、
+                            // 「固定する前に鳴り始めた」= 待ちが効いていないことに
+                            // 現地まで気づけなかった。挙動が根本から変わるので明示する
+                            if controller.params.headMount.enabled {
+                                Text("頭部固定: 有効。頭の向きが定まってから鳴り始めます")
+                                    .font(.caption.bold())
+                            } else {
+                                Text("頭部固定: 無効(配布と同じ設定)。"
+                                     + "音楽は待たずにすぐ鳴り始めます")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
                     Toggle("通勤路の学習モード", isOn: $controller.commuteLearning)
                     if controller.commuteLearning {
                         Text("ON の間の移動経路は「日常の道」として記録され、以後の提案から除外されます")
@@ -127,9 +152,34 @@ struct ContentView: View {
                     // 鳴らない音を試聴に並べると「後ろから鳴ることがある」という誤解を教えてしまう。
                     // かつては前後の聴き比べ実験用の対だったが、その実験は決着済み(2026-08-18)
                     Button("ビーコン(正面)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: 0) }
+                    Button("ビーコン(左 90°)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: -90) }
+                    Button("ビーコン(右 90°)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: 90) }
                     Button("時間到来") { controller.debugPlay(.timeUpPrompt) }
                     Button("帰路の確認音") { controller.debugPlay(.returnAck) }
                     Button("到着音") { controller.debugPlay(.arrival) }
+                }
+
+                // **散歩に出てよいかの判定**(→ docs/05 の前提条件)。実験ビルドだけに出す。
+                // build-demo/ab-*.wav でも同じ並びを聴けるが、あちらは等パワーのパンによる
+                // 近似で、実機の HRTF とは経路が違う。**判定は判定したい経路で行う**
+                if controller.params.headMount.enabled {
+                    Section("左右の聴き比べ(実験・AirPods 装着)") {
+                        Button("ビーコンで聴き比べる") {
+                            controller.debugPlayABComparison(.homeBeacon)
+                        }
+                        Button("提案音で聴き比べる") {
+                            controller.debugPlayABComparison(.suggestion)
+                        }
+                        // Text の markdown はリテラルにしか効かない。連結した文字列では
+                        // 記号がそのまま出るので、強調は行を分けて font で付ける
+                        Text("後半で左右がはっきり分かれないなら、散歩に出ないでください。")
+                            .font(.caption.bold())
+                        Text("前半 4 音が配布版(純音)、後半 4 音が実験値(倍音とアタック)。"
+                             + "各 左・右・左・右。方向が聴き取れない音のままでは、"
+                             + "頭部固定の良否と音素材の良否を分けられません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 // 経路データを配信先から入れる。**手で入れる道は残す**

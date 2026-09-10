@@ -86,6 +86,22 @@ public enum TravelDirection {
         return nil
     }
 
+    /// **学習・検疫へ渡してよい「いま有効な生の course」**(→ docs/13)。
+    ///
+    /// `resolve` と違い、**保持値もコンパス退避も通さない**。立ち止まっている間に
+    /// 「止まる直前の course」と「回っている頭」を突き合わせると R が落ち、検疫が退避に落ちる
+    /// — 首を回して世界固定を確かめる試験が、自分の前提を壊す(2026-09-08)。
+    ///
+    /// 規則を Core の 1 か所に置くのは、**呼び出し側の配線を単体テストで押さえるため**。
+    /// Controller に `resolve(held: nil)` と書いていた頃は、うっかり保持値を渡す変更が入っても
+    /// どのテストも落ちなかった
+    public static func rawCourse(_ fix: MotionFix, params: AppParameters.Location) -> Double? {
+        guard let t = resolve(fix, held: nil, params: params), t.source == .course else {
+            return nil
+        }
+        return t.deg
+    }
+
     /// course が無効になった理由。ログに残して「なぜ左右が付かなかったか」を追えるようにする
     public static func rejectionReason(_ fix: MotionFix, params: AppParameters.Location) -> String? {
         guard let course = fix.courseDeg, course >= 0 else { return "course が無効" }

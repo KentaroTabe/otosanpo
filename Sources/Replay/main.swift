@@ -18,6 +18,10 @@ struct LoggedFix {
     let speedMps: Double?
     let courseDeg: Double?
     let accuracyM: Double?
+    /// course の許容誤差。**製品と同じ有効性判定を再現するのに要る**
+    let courseAccuracyDeg: Double?
+    /// この行を書いた時点での fix の古さ [sec]。後の時刻での古さは経過時間を足して求める
+    let ageSec: Double?
 }
 
 /// "…速度=1.23m/s…" のように、キーの直後の数値を取り出す。単位や括弧は無視される
@@ -56,7 +60,9 @@ func readFixes(_ path: String) -> [LoggedFix] {
             point: GeoPoint(latitude: lat, longitude: lon),
             speedMps: numberAfter("速度=", in: msg),
             courseDeg: numberAfter("course=", in: msg),
-            accuracyM: numberAfter("水平精度=", in: msg)
+            accuracyM: numberAfter("水平精度=", in: msg),
+            courseAccuracyDeg: numberAfter("course精度=", in: msg),
+            ageSec: numberAfter("経過=", in: msg)
         ))
     }
     return out
@@ -988,4 +994,355 @@ if v.used < 20 {
     } else {
         print("  → 符号は揃っている。yaw_sign は +1 のままでよい。")
     }
+}
+
+// MARK: - 頭部固定(学習・検疫・使用可能)を再生する
+//
+// docs/13 は「`頭方位` 行があるので閾値も学習の条件も再生で振り直せる(歩き直し不要)」と
+// 約束していたが、**その道具は存在しなかった**(2026-09-08 に判明)。ここがその実装。
+//
+// 判定には**製品と同じ Core の `HeadMountFusion`** を使う。再生専用の複製を書くと
+// 必ず本体とずれる(そして、ずれたことに気づかない)。
+
+/// ログに残った 1 件の頭方位
+struct LoggedHeadHeading {
+    let time: Date
+    /// 生の方位。旧形式では「補正後 + 補正値」から復元する
+    let rawDeg: Double
+    /// ログに残っていた学習値(照合用。学習前は nil)
+    let loggedOffsetDeg: Double?
+    /// ログに残っていた検疫の状態(照合用)
+    let loggedState: String
+    /// 旧形式から復元した値か
+    let reconstructed: Bool
+}
+
+/// `頭方位` 行はあったが `raw=` も `heading=` も無くて使えなかった行数。
+/// **0 件を「問題なし」と読ませない**ための材料(→ 受け入れ条件 E6)
+var headLinesMissingHeading = 0
+
+/// `頭方位` 行を読む。**新旧どちらの形式も読む**。
+///
+/// - 新形式: `raw=` を持つ(2026-09-08 以降)
+/// - 旧形式: `heading=` は**補正後**の値。`補正=` が数値なら生値は `heading + 補正`、
+///   `補正=学習中` なら補正されていないので `heading` がそのまま生値
+func readHeadHeadings(_ path: String) -> [LoggedHeadHeading] {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    var out: [LoggedHeadHeading] = []
+    for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+        let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        guard cols.count >= 5, cols[4].hasPrefix("頭方位 ") else { continue }
+        guard let time = formatter.date(from: cols[0]) else { continue }
+        let msg = cols[4]
+        let offset = numberAfter("補正=", in: msg)   // 「学習中」なら nil
+        // 状態は日本語ラベルなので数値抽出が使えない。区切りまでを切り出す
+        var stateLabel = "-"
+        if let r = msg.range(of: "状態=") {
+            stateLabel = String(msg[r.upperBound...].prefix { !$0.isWhitespace })
+        }
+        if let raw = numberAfter("raw=", in: msg) {
+            out.append(LoggedHeadHeading(time: time, rawDeg: raw, loggedOffsetDeg: offset,
+                                         loggedState: stateLabel, reconstructed: false))
+        } else if let corrected = numberAfter("heading=", in: msg) {
+            let raw = Geo.normalizeDeg(corrected + (offset ?? 0))
+            out.append(LoggedHeadHeading(time: time, rawDeg: raw, loggedOffsetDeg: offset,
+                                         loggedState: stateLabel, reconstructed: true))
+        } else {
+            // **黙って捨てない。** 捨てた行を数えて、後で「何が足りないか」を言う
+            headLinesMissingHeading += 1
+        }
+    }
+    return out
+}
+
+let headSamples = readHeadHeadings(logPath)
+
+// MARK: - ビーコンの指す向きの安定性(引き継ぎの有無で比べる)
+//
+// 2026-09-08 の散歩で、ビーコンの指す向きが **1.5 秒で 180° 往復**していた
+// (274 発のうち 67 発が後ろを指した)。原因は、スナップも端点の選択も
+// **前回の選択を見ていない**こと(docs/05)。ここはその前後を測る口。
+
+print("\n== ビーコンの指す向きの安定性 ==")
+
+if let beaconMap = loadedMap, let last = all.last {
+    let graph = WalkGraph(map: beaconMap, cellSizeM: r.mapIndexCellSizeM)
+    // 自宅は到着地点で近似する(実機の到着判定は arrival_radius_m 以内で成立している)
+    if let field = RouteField(graph: graph, goal: last.point,
+                              snapMaxDistanceM: r.snapMaxDistanceM,
+                              weights: RouteField.Weights(
+                                crossCostWeight: r.crossCostWeight,
+                                wayClassWeight: r.wayClassWeight)) {
+
+        // **帰路の fix だけを見る。** ビーコンが鳴るのは帰路だけで、
+        // 散策中は自宅から遠ざかるので「経路が後ろを指す」のが正しい。
+        // 混ぜると「後ろ向き」の数字が意味を失う(2026-09-09 に一度混ぜて誤った)
+        let returning = all.filter { $0.state == "returning" }
+        print("  対象: 帰路の fix \(returning.count) 件(全 \(all.count) 件)")
+
+        /// 引き継ぎ設定を 1 つ与えて、帰路を通したときの跳びを数える
+        func measure(_ tp: RouteField.TraceParams) -> (jumps: Int, reversals: Int,
+                                                       behind: Int, samples: Int) {
+            var trace: RouteField.Trace?
+            var previous: Double?
+            var jumps = 0, reversals = 0, behind = 0, samples = 0
+            for f in returning {
+                guard let step = field.nextStep(from: f.point, graph: graph,
+                                                nodeToleranceM: r.nodeArrivalToleranceM,
+                                                trace: trace, tp: tp) else { continue }
+                trace = step.trace
+                samples += 1
+                if let prev = previous {
+                    let jump = abs(Geo.angularDiffDeg(step.deg, prev))
+                    if jump > 90 { jumps += 1 }
+                    if jump > 150 { reversals += 1 }
+                }
+                previous = step.deg
+                // 進行方位が取れている時だけ「後ろを指したか」を数える
+                if let course = TravelDirection.rawCourse(
+                    MotionFix(courseDeg: f.courseDeg, courseAccuracyDeg: f.courseAccuracyDeg,
+                              speedMps: f.speedMps, compassHeadingDeg: nil,
+                              ageSec: f.ageSec, horizontalAccuracyM: f.accuracyM),
+                    params: params.location),
+                   abs(Geo.angularDiffDeg(step.deg, course)) > 90 {
+                    behind += 1
+                }
+            }
+            return (jumps, reversals, behind, samples)
+        }
+
+        func row(_ label: String,
+                 _ m: (jumps: Int, reversals: Int, behind: Int, samples: Int)) {
+            let pct = m.samples > 0 ? 100 * Double(m.behind) / Double(m.samples) : 0
+            print(String(format: "  %-16@ %8d %8d %8d(%.0f%%)", label as NSString,
+                         m.jumps, m.reversals, m.behind, pct))
+        }
+        print(String(format: "  %-16@ %8@ %8@ %10@", "道 / 端点" as NSString,
+                     "90°超" as NSString, "150°超" as NSString, "後ろ向き" as NSString))
+        // **組み合わせを振る。** どちらの引き継ぎが効くのかは、片方ずつ動かさないと分からない
+        let sweep: [(Double, Double)] = [(0, 0), (8, 0), (16, 0), (25, 0),
+                                         (0, 10), (8, 10), (16, 10)]
+        for (way, node) in sweep {
+            let tp = RouteField.TraceParams(waySwitchMarginM: way, nodeSwitchMarginM: node)
+            let label = way == 0 && node == 0
+                ? "引き継ぎ無し" : String(format: "%.0fm / %.0fm", way, node)
+            row(label, measure(tp))
+        }
+        print(String(format: "  いまの設定: 道 %.0fm / 端点 %.0fm",
+                     r.waySwitchMarginM, r.nodeSwitchMarginM))
+        print("  ※ 自宅は到着地点で近似している。ログの実機値と一致はしないが、"
+              + "**同じ入力で前後を比べる**分には足りる")
+    } else {
+        print("  経路の場を作れませんでした(自宅が道に乗らない)")
+    }
+} else {
+    print("  経路データがないので判定できません(maps/otosanpo-map.json が要ります)")
+}
+
+print("\n== 頭部固定の再生(学習・検疫・使用可能)==")
+
+if headSamples.isEmpty {
+    // **0 件を「問題なし」と読ませない。** 何が足りないのかを書く
+    if headLinesMissingHeading > 0 {
+        print("  判定不能: 「頭方位」行が \(headLinesMissingHeading) 件ありましたが、"
+              + "raw= も heading= も入っていません。")
+        print("  方位の列を持つ版でログを取り直してください。")
+    } else {
+        print("  「頭方位」行がありません。判定できません。")
+        print("  この行は head_mount.enabled = true でビルドした版でしか記録されません。")
+        print("  実験のビルドで歩いたログを取り込んでから、もう一度実行してください。")
+    }
+} else {
+    let reconstructed = headSamples.filter(\.reconstructed).count
+    print("  頭方位 行: \(headSamples.count) 件"
+          + (reconstructed > 0 ? "(うち \(reconstructed) 件は旧形式から生値を復元)" : ""))
+    print("  設定: \(configPath)")
+    let hm = params.headMount
+    print(String(format: "    distrust %.0f°/%.0fs・regain %.0fs・"
+                 + "学習 標本 %.0f・半減期 %.0fs・R≥%.2f・鮮度 %.1fs",
+                 hm.distrustDeg, hm.distrustSec, hm.regainSec,
+                 hm.offsetMinSamples, hm.offsetHalfLifeSec,
+                 hm.offsetMinConcentration, hm.staleSec))
+
+    if headLinesMissingHeading > 0 {
+        print("  ※ raw= も heading= も無い「頭方位」行を \(headLinesMissingHeading) 件"
+              + "読み飛ばしました(この分は判定に入っていません)")
+    }
+
+    // **course は fix 行から作り直す。** ログの `頭方位 course=` は、
+    // 2026-09-08 以前は「止まる直前の保持値」が混ざった値なので正解にしてはいけない
+    let sortedFixes = all.sorted { $0.time < $1.time }
+    // 製品と同じ規則で course を出すには、fix 行に速度と course が要る。
+    // **欠けたまま「成立せず・0%」と出すと、実装の問題と読み違える**(→ E6)
+    /// 判定を出してよいか。必要な列が丸ごと無ければ false にして、数字を出さない
+    var headMountJudged = true
+    let noSpeed = sortedFixes.filter { $0.speedMps == nil }.count
+    let noCourse = sortedFixes.filter { $0.courseDeg == nil }.count
+    if noSpeed == sortedFixes.count || noCourse == sortedFixes.count {
+        // **全件欠けていれば計算しない。** 「0%・成立せず」を結果として出すと、
+        // 実装の問題と読み違える(2026-09-09 の検証で指摘)
+        var missing: [String] = []
+        if noSpeed == sortedFixes.count { missing.append("速度=") }
+        if noCourse == sortedFixes.count { missing.append("course=") }
+        print("  判定不能: fix 行に \(missing.joined(separator: " と ")) がありません"
+              + "(\(sortedFixes.count) 件すべて)。")
+        print("  生の course を復元できないので、学習も検疫も評価できません。")
+        print("  これらの列を持つ版でログを取り直してください。")
+        print("  **使用可能率も学習の成立時刻も出しません**(0% ではなく、判定できない)。")
+        headMountJudged = false
+    } else if noSpeed > 0 || noCourse > 0 {
+        // 部分的な欠落は「不完全な入力」として明示する。数字は出すが、鵜呑みにさせない
+        var missing: [String] = []
+        if noSpeed > 0 { missing.append("速度= が \(noSpeed) 件") }
+        if noCourse > 0 { missing.append("course= が \(noCourse) 件") }
+        print("  ※ 不完全な入力: fix \(sortedFixes.count) 件のうち "
+              + "\(missing.joined(separator: " / ")) 欠けています。")
+        print("     その区間は course なしとして扱われ、**学習も検疫も進みません**。")
+        print("     下の数字は実機と食い違います。**高く出ることも低く出ることもあります** —")
+        print("     欠けたのが「合っていた区間」なら低く、「ずれていた区間」なら"
+              + "退避を再現できず高く出ます")
+    }
+    func rawCourse(at t: Date) -> Double? {
+        // t 以下で最も新しい fix を二分探索で拾う
+        var lo = 0, hi = sortedFixes.count - 1, found = -1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            if sortedFixes[mid].time <= t { found = mid; lo = mid + 1 } else { hi = mid - 1 }
+        }
+        guard found >= 0 else { return nil }
+        let f = sortedFixes[found]
+        // fix 行に書かれた古さは「書いた時点」のもの。そこからの経過を足す
+        let age = (f.ageSec ?? 0) + t.timeIntervalSince(f.time)
+        let motion = MotionFix(courseDeg: f.courseDeg, courseAccuracyDeg: f.courseAccuracyDeg,
+                               speedMps: f.speedMps, compassHeadingDeg: nil,
+                               ageSec: age, horizontalAccuracyM: f.accuracyM)
+        // **製品と同じ規則**。保持値もコンパスも渡さない(→ WalkSessionController.rawCourseBearing)
+        guard let t = TravelDirection.resolve(motion, held: nil, params: params.location),
+              t.source == .course else { return nil }
+        return t.deg
+    }
+
+    // ログは log_interval_sec(既定 1 秒)に間引かれている。実機は update_hz(既定 10 Hz)。
+    // **学習の重みは標本数で数える**ので、間引いたまま流すと立ち上がりが 10 倍遅く見える。
+    // 標本を間隔ぶん複製して近似する(下の但し書きのとおり、あくまで近似)
+    let subdivisions = max(1, Int((params.headMount.updateHz * params.headMount.logIntervalSec)
+                                  .rounded()))
+    var fusion = HeadMountFusion()
+    let fp = params.headMount.fusion
+    let t0 = headSamples[0].time
+    var counts: [String: Int] = [:]
+    var transitions: [(Double, String)] = []
+    var lastLabel: String?
+    var firstLearnedAt: Double?
+    var firstUsableAt: Double?
+    var usableSamples = 0
+    var offsetAgreementSum = 0.0
+    var offsetAgreementCount = 0
+
+    for (i, s) in headSamples.enumerated() {
+        let dt = i + 1 < headSamples.count
+            ? headSamples[i + 1].time.timeIntervalSince(s.time) : params.headMount.logIntervalSec
+        let step = dt / Double(subdivisions)
+        let course = rawCourse(at: s.time)
+        var use = HeadMountFusion.Use.noSample
+        for k in 0..<subdivisions {
+            let t = s.time.timeIntervalSinceReferenceDate + Double(k) * step
+            use = fusion.ingest(headingDeg: s.rawDeg, rawCourseDeg: course, at: t, p: fp)
+        }
+        let elapsed = s.time.timeIntervalSince(t0)
+        if firstLearnedAt == nil, fusion.learnedOffsetDeg != nil { firstLearnedAt = elapsed }
+        if firstUsableAt == nil, use.isUsable { firstUsableAt = elapsed }
+        if use.isUsable { usableSamples += 1 }
+        counts[use.label, default: 0] += 1
+        if lastLabel != use.label {
+            transitions.append((elapsed, use.label))
+            lastLabel = use.label
+        }
+        // 再生で得た学習値が、ログに残っていた値と合っているか(配線の照合)
+        if let logged = s.loggedOffsetDeg, let replayed = fusion.learnedOffsetDeg {
+            offsetAgreementSum += abs(Geo.angularDiffDeg(logged, replayed))
+            offsetAgreementCount += 1
+        }
+    }
+
+    // **門の強さを振る。** 首を回すと R が落ちて頭方位が使えなくなる循環
+    // (2026-09-09 の実測)への対策が効くかを、歩き直さずに見る
+    func sweepGate(_ gateDeg: Double) -> (usable: Int, firstUsable: Double?, finalR: Double) {
+        var f = HeadMountFusion()
+        var p = fp
+        p.offset.gateDeg = gateDeg
+        var usable = 0
+        var firstUsable: Double?
+        for (i, s) in headSamples.enumerated() {
+            let dt = i + 1 < headSamples.count
+                ? headSamples[i + 1].time.timeIntervalSince(s.time)
+                : params.headMount.logIntervalSec
+            let step = dt / Double(subdivisions)
+            let course = rawCourse(at: s.time)
+            var use = HeadMountFusion.Use.noSample
+            for k in 0..<subdivisions {
+                let t = s.time.timeIntervalSinceReferenceDate + Double(k) * step
+                use = f.ingest(headingDeg: s.rawDeg, rawCourseDeg: course, at: t, p: p)
+            }
+            if use.isUsable {
+                usable += 1
+                if firstUsable == nil { firstUsable = s.time.timeIntervalSince(t0) }
+            }
+        }
+        return (usable, firstUsable, f.concentration)
+    }
+
+    print("\n  門(推定から離れた標本を捨てる角度)を振る:")
+    print("    門      使用可能        最初に使えた   最終 R")
+    for gate in [0.0, 30, 45, 60, 90] {
+        let s = sweepGate(gate)
+        let pct = 100 * Double(s.usable) / Double(headSamples.count)
+        let first = s.firstUsable.map { String(format: "%.0f 秒", $0) } ?? "成立せず"
+        print(String(format: "    %3.0f°  %5d 件(%3.0f%%)  %10@  %.2f",
+                     gate, s.usable, pct, first as NSString, s.finalR))
+    }
+    print("    ※ 0° = 門なし(2026-09-09 以前の挙動)")
+
+    func secs(_ v: Double?) -> String { v.map { String(format: "%.0f 秒", $0) } ?? "成立せず" }
+    guard headMountJudged else {
+        // 必要な列が無い。**数字を出さずに終える**(判定不能と失敗を混ぜない)
+        print("  ※ 上記のとおり判定できないため、使用可能率・成立時刻・遷移は出しません。")
+        exit(0)
+    }
+    print("  最初に学習が成立: \(secs(firstLearnedAt))")
+    print("  最初に使用可能: \(secs(firstUsableAt))")
+    print(String(format: "  使用可能だった割合: %.0f%%(%d / %d 件)",
+                 100 * Double(usableSamples) / Double(headSamples.count),
+                 usableSamples, headSamples.count))
+    print("  内訳:")
+    for (label, n) in counts.sorted(by: { $0.value > $1.value }) {
+        print(String(format: "    %-10@ %5d 件(%.0f%%)", label as NSString, n,
+                     100 * Double(n) / Double(headSamples.count)))
+    }
+    if let learned = fusion.learnedOffsetDeg {
+        print(String(format: "  最終的な学習値: %+.1f°(R=%.2f)", learned, fusion.concentration))
+    } else {
+        print(String(format: "  最終的な学習値: 成立せず(R=%.2f)", fusion.concentration))
+    }
+    if offsetAgreementCount > 0 {
+        print(String(format: "  ログに残っていた学習値との差(平均): %.1f°(%d 件で照合)",
+                     offsetAgreementSum / Double(offsetAgreementCount), offsetAgreementCount))
+    }
+    print("  遷移(先頭 12 件):")
+    for (t, label) in transitions.prefix(12) {
+        print(String(format: "    %6.0f 秒  → %@", t, label as NSString))
+    }
+    if transitions.count > 12 { print("    …ほか \(transitions.count - 12) 回") }
+
+    print("")
+    print("  ※ これは**間引いたログからの再評価**であって、実機の完全な再現ではありません。")
+    print("     ログは \(params.headMount.logIntervalSec) 秒間隔、実機は "
+          + "\(params.headMount.updateHz) Hz。学習の重みは標本を \(subdivisions) 倍に"
+          + "複製して近似しています。1 秒未満の磁気の乱れは復元できません。")
+    print("     検疫の 5 秒窓や大きな分布の評価には十分ですが、"
+          + "offset_min_samples の立ち上がりは近似値として読んでください。")
+    print("  ※ 閾値を振り直すには、設定 JSON を書き換えて "
+          + "scripts/replay_log.sh <ログ> <設定JSON> を実行してください。")
 }

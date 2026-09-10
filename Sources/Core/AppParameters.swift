@@ -9,6 +9,7 @@ public struct AppParameters: Codable, Equatable {
     public var route: Route
     public var heading: Heading
     public var headMount: HeadMountSettings
+    public var experiment: Experiment
     public var gesture: Gesture
     public var audio: Audio
     public var location: Location
@@ -87,9 +88,24 @@ public struct AppParameters: Codable, Equatable {
         public var mapIndexCellSizeM: Double
         /// この距離より離れた点は道に乗せない [m]。水平精度(実測 3〜5 m)より大きく取る
         public var snapMaxDistanceM: Double
+        /// 別の道へ乗り換えるのに要求する差 [m]。**既定 0 = 引き継がない。**
+        ///
+        /// 「指す向きが 180° 往復する」への対策として入れてみたが、
+        /// **再生で測ると入れるほど単調に悪化した**(2026-09-09。docs/05)。
+        /// 仕組みは再生で振り直せるように残し、配る値は 0 にしてある
+        public var waySwitchMarginM: Double
+        /// 線分の別の端点へ乗り換えるのに要求する差 [m]。**既定 0 = 引き継がない。**
+        /// こちらは悪化しなかったが、良くもならなかったので 0 のまま
+        public var nodeSwitchMarginM: Double
         /// 経路上の節点に「着いた」とみなす距離 [m]。
         /// 真上に立つと、そこへ向かう方位が雑音で暴れるため
         public var nodeArrivalToleranceM: Double
+
+        /// RouteField に渡す追跡の引き継ぎ設定
+        public var routeTrace: RouteField.TraceParams {
+            RouteField.TraceParams(waySwitchMarginM: waySwitchMarginM,
+                                   nodeSwitchMarginM: nodeSwitchMarginM)
+        }
         /// 前方この距離以内の交差点を「これから曲がる場所」として扱う [m]
         public var intersectionLookaheadM: Double
         /// 進行方向との差がこれ以内の分岐は「直進」とみなす [deg]
@@ -177,6 +193,11 @@ public struct AppParameters: Codable, Equatable {
     /// 散歩を始めるときの一言。**文言も時間帯もここに置く**(コードに埋めない)
     public struct Greeting: Codable, Equatable {
         public var windows: [GreetingWindow]
+        /// 音楽スポットを選んだ時だけ、**時間帯の一言のうしろに足す**一文。
+        ///
+        /// 三種それぞれに同じ文を書き写すのではなく、1 つ持って継ぎ足す。
+        /// 音楽を選んでいない散歩では出さないため(2026-09-10 利用者依頼)
+        public var musicNote: String
     }
 
     public struct GreetingWindow: Codable, Equatable {
@@ -244,15 +265,30 @@ public struct AppParameters: Codable, Equatable {
         public var distrustSec: Double
         /// 内側がこれだけ続いたら採用(復帰)[sec]
         public var regainSec: Double
-        /// 取り付けのずれの学習が成立するのに要る実効の標本量(10 Hz で 200 ≈ 20 秒)。
-        /// **ずれは固定値で持たず、歩きながら学習する**(2026-09-01 利用者判断 → MountOffset)
-        public var offsetMinSamples: Double
+        /// 取り付けのずれの学習が成立するのに要る**時間** [sec]。
+        ///
+        /// **標本数ではなく時間で持つ**(2026-09-10)。標本数だと `update_hz` を上げた
+        /// 途端に学習が早まってしまう — 推定の質を決めるのは「どれだけの区間を歩いたか」で、
+        /// 「何件読んだか」ではない。50 Hz にした時に 4 秒で学習が立つのは明らかに誤り
+        public var offsetMinSec: Double
+
+        /// 学習に要る実効の標本量。`update_hz` から導く(直接持たない)
+        public var offsetMinSamples: Double { updateHz * offsetMinSec }
         /// ずれの平均の半減期 [sec]。長め = 付け直し程度の変化にゆっくり追従
         public var offsetHalfLifeSec: Double
         /// ずれが「定数である」と認める合成ベクトル長 R の下限(0..1)
         public var offsetMinConcentration: Double
+        /// 推定から離れた標本を捨てる門 [deg]。0 で無効。
+        /// **首を回している間の標本で推定を汚さないため**(→ MountOffset)
+        public var offsetGateDeg: Double
+        /// 門が閉じ続けた時に学び直すまでの時間 [sec]。**付け直しから復帰するため**
+        public var offsetGateReopenSec: Double
         /// 生データ(頭方位 行)をログに残す間隔 [sec]。replay で閾値を振り直す材料
         public var logIntervalSec: Double
+        /// 頭方位の最終受信からこれを超えたら「古い」として定位に使わない [sec]。
+        /// **画面を消して頭に載せる構成の要**: CoreMotion の配信が止まっても、
+        /// 最後の頭の向きに音が凍りついたまま残らないようにする(2026-09-08)
+        public var staleSec: Double
 
         /// HeadingQuarantine に渡す設定値
         public var quarantine: HeadingQuarantine.Params {
@@ -265,7 +301,121 @@ public struct AppParameters: Codable, Equatable {
         public var offsetEstimator: MountOffset.Params {
             MountOffset.Params(minWeight: offsetMinSamples,
                                halfLifeSec: offsetHalfLifeSec,
-                               minConcentration: offsetMinConcentration)
+                               minConcentration: offsetMinConcentration,
+                               gateDeg: offsetGateDeg,
+                               gateReopenSec: offsetGateReopenSec)
+        }
+
+        /// HeadMountFusion に渡す設定値(学習・検疫・鮮度をまとめたもの)
+        public var fusion: HeadMountFusion.Params {
+            HeadMountFusion.Params(offset: offsetEstimator,
+                                   quarantine: quarantine,
+                                   staleSec: staleSec)
+        }
+    }
+
+    /// 実験装置(頭部固定)を着けた時だけ働く設定。
+    ///
+    /// **スイッチは `head_mount.enabled` ただ 1 つ。** ここに `enabled` を置かない。
+    /// 第 2 のスイッチを作ると「実験のとき片方だけ入れ忘れる」経路が生まれ、
+    /// 取り付けのずれ(`offset_deg`)の決め忘れで散歩 1 回を失った失敗を繰り返す
+    /// (2026-09-08 合議)。配布設定は `head_mount.enabled == false` なので配布版には出ない。
+    public struct Experiment: Codable, Equatable {
+        /// 有効性パルスの間隔 [sec]。**仮置き**(利用者判断待ち)
+        public var validityPulseSec: Double
+        /// 有効性パルスの音量 [0..1]。環境音を覆わない程度に抑える
+        public var validityPulseGain: Double
+        /// 有効性パルスの音色。**既存 5 種を流用しない**(誤った行動を誘わないため)
+        public var validityPulseTone: ToneSpec
+        /// 方向を担う音(suggestion / home_beacon)に載せる倍音の数。
+        /// 1 = 純音(配布版と同じ)。左右の定位は 1.5 kHz 超の成分が要る(→ docs/03)
+        public var directionalHarmonics: Int
+        /// 倍音の減衰(1 つ上の倍音に掛かる比)
+        public var directionalHarmonicDecay: Double
+        /// 立ち上がりが音全体に占める割合 [0..1]。小さいほど鋭い(ITD の手がかり)
+        public var directionalAttackRatio: Double
+        /// 左右の聴き比べで 1 音ごとに空ける時間 [sec]
+        public var abToneIntervalSec: Double
+        /// 聴き比べの前半(配布版)と後半(実験値)の間に足す時間 [sec]
+        public var abGapSec: Double
+        /// 音楽スポットを置く距離の**下限・上限**を、散歩 1 分あたりで表したもの [m/min]。
+        /// **散歩時間に比例させる**(2026-09-09 利用者判断)。
+        /// 30 分なら 75〜105 m。短い散歩で遠くに置くと辿り着けず、
+        /// 長い散歩で近くに置くとすぐ通り過ぎて後は遠ざかるだけになる
+        public var musicSpotMinDistancePerMin: Double
+        public var musicSpotMaxDistancePerMin: Double
+        /// 候補を探す距離の段数(下限から上限までを何段に分けるか)
+        public var musicSpotDistanceSteps: Int
+        /// これより近づいたら着いたとして止める [m]
+        public var musicSpotReachedM: Double
+        /// 候補を探す方位の刻み [deg]
+        public var musicSpotBearingStepDeg: Double
+        /// 距離の差がこれ未満なら「同じ距離」とみなす [m](→ MusicSpot)
+        public var musicSpotSameDistanceToleranceM: Double
+        /// 音楽の行をログに残す間隔 [sec]。**音は頭方位の受信ごと(10 Hz)に付け直す**が、
+        /// ログをその頻度で書くとファイルが音楽で埋まる
+        public var musicLogIntervalSec: Double
+        /// 鳴り始めを何秒かけて立ち上げるか [sec]。**じんわり入る**(2026-09-10 利用者依頼)。
+        /// 待った末に不意に鳴り出すと驚くので、距離から決めた音量まで滑らかに上げる
+        public var musicFadeInSec: Double
+        /// 頭の向きが定まるのを待つ上限 [sec]。**これを過ぎたら待たずに鳴らす。**
+        ///
+        /// 待ちは「進行方位で置かれた音を聴かせない」ためだが、待ち続けると
+        /// **散歩が終わるまで無音になりうる**(2026-09-09 の実測: 待ち 6 分 8 秒。
+        /// 鳴り出した時にはスポットから 258 m 離れて音量は下限、90 秒後に散歩終了)
+        public var musicWaitMaxSec: Double
+        /// 音楽スポットの音量の範囲 [0..1] と、それが最小・最大になる距離 [m]
+        public var musicSpotMinGain: Double
+        public var musicSpotMaxGain: Double
+
+        // 遠い側は musicSpotFarDistancePerMin(散歩時間に比例)へ移した
+
+        /// 左右の聴き比べで音を置く角度 [deg]。左右へ交互に振る
+        public var abBearingDeg: Double
+
+        /// 音量が最大になる距離 [m]。これより近づいても大きくならない
+        public var musicSpotReferenceDistanceM: Double
+        /// 距離による減り方の強さ。1.0 で現実の音と同じ(距離が倍で −6 dB)
+        public var musicSpotRolloff: Double
+        /// **直線の向きと道をたどる向きを混ぜる比** [0..1]。0 = 直線だけ / 1 = 道だけ
+        public var musicSpotRouteBlend: Double
+
+        /// MusicSpot に渡す設定値。**散歩時間で距離が決まる**ので時間を渡す
+        public func musicSpot(durationMin: Double) -> MusicSpot.Params {
+            MusicSpot.Params(
+                minDistanceM: musicSpotMinDistancePerMin * durationMin,
+                maxDistanceM: musicSpotMaxDistancePerMin * durationMin,
+                distanceStepCount: musicSpotDistanceSteps,
+                reachedM: musicSpotReachedM,
+                bearingStepDeg: musicSpotBearingStepDeg,
+                sameDistanceToleranceM: musicSpotSameDistanceToleranceM,
+                referenceDistanceM: musicSpotReferenceDistanceM,
+                rolloff: musicSpotRolloff,
+                maxGain: musicSpotMaxGain, minGain: musicSpotMinGain,
+                routeBlend: musicSpotRouteBlend)
+        }
+
+        /// 実験ビルドで実際に鳴らす音色を決める。
+        ///
+        /// **どの音に上書きするかの判断をここに置く**(2026-09-09)。
+        /// EarconSynth の中に書いていた頃は、その判断を単体テストで押さえられなかった。
+        /// 方向を担う 2 種だけを差し替え、方向を持たない 3 種は配布値のまま
+        public func tones(from shipped: Audio.Tones, active: Bool) -> Audio.Tones {
+            guard active else { return shipped }
+            var out = shipped
+            out.suggestion = applied(to: shipped.suggestion)
+            out.homeBeacon = applied(to: shipped.homeBeacon)
+            return out
+        }
+
+        /// 方向を担う音に実験用の値を載せる。
+        /// **方向を持たない音(時間到来・確認音・到着)は触らない** — 無関係な
+        /// 音色変更を実験に混ぜないため(2026-09-08 合議)
+        public func applied(to tone: ToneSpec) -> ToneSpec {
+            ToneSpec(freqsHz: tone.freqsHz, blipSec: tone.blipSec, gapSec: tone.gapSec,
+                     noiseMix: tone.noiseMix, harmonics: directionalHarmonics,
+                     harmonicDecay: directionalHarmonicDecay,
+                     attackRatio: directionalAttackRatio)
         }
     }
 

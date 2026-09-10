@@ -80,4 +80,66 @@ final class MountOffsetTests: XCTestCase {
         let learned = try! XCTUnwrap(m.offsetDeg(p: p))
         XCTAssertEqual(learned, 60, accuracy: 5, "新しい取り付きへ追従していない")
     }
+
+    // MARK: - 門(2026-09-09)
+
+    /// 門つきの設定。`gateReopenSec` は付け直しから戻るための逃げ道
+    private func gated(gateDeg: Double, reopenSec: Double) -> MountOffset.Params {
+        MountOffset.Params(minWeight: 200, halfLifeSec: 300, minConcentration: 0.8,
+                           gateDeg: gateDeg, gateReopenSec: reopenSec)
+    }
+
+    private func feed(_ m: inout MountOffset, p gp: MountOffset.Params,
+                      offsetDeg: Double, from t0: Double, count: Int,
+                      courseDeg: Double = 30) -> Double {
+        var t = t0
+        for _ in 0..<count {
+            m.ingest(headingDeg: Geo.normalizeDeg(courseDeg + offsetDeg),
+                     courseDeg: courseDeg, at: t, p: gp)
+            t += 0.1
+        }
+        return t
+    }
+
+    /// **首を回している間の標本で推定を汚さない。**
+    ///
+    /// 門が無いと、R(差の一定さ)が落ちて学習が外れる。すると頭方位が信用されず、
+    /// 「音が追従するか確かめようと首を回すほど追従しなくなる」循環になる
+    /// (2026-09-09 の実測: 採用 7%・R 0.77)
+    func testGateKeepsTheEstimateWhileTheHeadTurns() {
+        let gp = gated(gateDeg: 45, reopenSec: 20)
+        var m = MountOffset()
+        var t = feed(&m, p: gp, offsetDeg: 94, from: 0, count: 300)
+        let before = try! XCTUnwrap(m.offsetDeg(p: gp))
+        let rBefore = m.concentration
+
+        // 首を 90° 回した状態の標本を混ぜる(ずれではなく首の向き)
+        t = feed(&m, p: gp, offsetDeg: 94 + 90, from: t, count: 100)
+        XCTAssertEqual(m.offsetDeg(p: gp) ?? .nan, before, accuracy: 1,
+                       "首の向きの標本で推定が動いてはいけない")
+        XCTAssertEqual(m.concentration, rBefore, accuracy: 1e-9, "R が落ちてはいけない")
+    }
+
+    /// **門だけでは付け直しから戻れない。** 閉じ続けたら学び直す
+    func testGateReopensAfterASustainedMismatch() {
+        let gp = gated(gateDeg: 45, reopenSec: 20)
+        var m = MountOffset()
+        var t = feed(&m, p: gp, offsetDeg: 94, from: 0, count: 300)
+        XCTAssertEqual(m.offsetDeg(p: gp) ?? .nan, 94, accuracy: 1)
+
+        // 付け直してずれが 90° 跳ぶ。門は閉じるが、20 秒を超えたら学び直す
+        t = feed(&m, p: gp, offsetDeg: 7, from: t, count: 600)
+        XCTAssertEqual(m.offsetDeg(p: gp) ?? .nan, 7, accuracy: 2,
+                       "閉じ続けたら学び直して新しいずれへ移ること")
+    }
+
+    /// 学び直しを切れば、門は閉じたまま(= 2026-09-09 に踏んだ失敗そのもの)
+    func testWithoutReopenTheGateNeverRecovers() {
+        let gp = gated(gateDeg: 45, reopenSec: 0)
+        var m = MountOffset()
+        var t = feed(&m, p: gp, offsetDeg: 94, from: 0, count: 300)
+        t = feed(&m, p: gp, offsetDeg: 7, from: t, count: 600)
+        XCTAssertEqual(m.offsetDeg(p: gp) ?? .nan, 94, accuracy: 2,
+                       "逃げ道が無いと古いずれに固執する")
+    }
 }

@@ -135,20 +135,41 @@ public struct WalkGraph: @unchecked Sendable {
 
     /// `p` に最も近い道の上の点。`maxDistanceM` を超える場合は nil
     /// (地図に無い場所を無理に道へ乗せない)。
-    public func snap(_ p: GeoPoint, maxDistanceM: Double) -> Snap? {
+    /// - Parameters:
+    ///   - preferringWay: 前回スナップした道。**まだ許容の内側なら、そこに留まる。**
+    ///   - switchMarginM: 別の道へ乗り換えるのに要求する差 [m]。
+    ///     新しい候補がこれ以上近くならない限り替えない
+    ///
+    /// ## なぜ引き継ぎが要るか(2026-09-09)
+    ///
+    /// 引き継ぎ無しでは、そのつど最も近い線分を選び直す。交差点の近くでは許容の内側に
+    /// **複数の道**が入り、GPS の揺れだけで別の道に付き替わる。付き替わると
+    /// `RouteField` の返す向きが逆を向き、**1.5 秒で 180° 往復する**
+    /// (2026-09-08 の実測: ビーコン 274 発のうち 67 発が後ろを指し、
+    /// 1 発で 176〜179° 跳んだ回数が 6 回)。
+    ///
+    /// **線分ではなく道で引き継ぐ。** 同じ道を歩いていれば線分は次々に変わるので、
+    /// 線分で留めると自分の進行で外れてしまう
+    public func snap(_ p: GeoPoint, maxDistanceM: Double,
+                     preferringWay: Int? = nil, switchMarginM: Double = 0) -> Snap? {
         let c = cell(p)
         var best: Snap?
+        var held: Snap?
         // 周囲 1 セル分を見る。セル境界のすぐ外にある線分を取りこぼさないため
         for dx in -1...1 {
             for dy in -1...1 {
                 for entry in buckets[key(c.x + dx, c.y + dy)] ?? [] {
                     guard let s = evaluate(entry, at: p) else { continue }
                     if best == nil || s.distanceM < best!.distanceM { best = s }
+                    if let preferringWay, entry.way == preferringWay,
+                       held == nil || s.distanceM < held!.distanceM { held = s }
                 }
             }
         }
         guard let b = best, b.distanceM <= maxDistanceM else { return nil }
-        return b
+        // 前回の道がまだ許容の内側なら、余裕を超えて近い候補が出るまで留まる
+        guard let h = held, h.distanceM <= maxDistanceM else { return b }
+        return b.distanceM < h.distanceM - switchMarginM ? b : h
     }
 
     // MARK: - 経路探索のための入り口
