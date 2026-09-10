@@ -183,16 +183,23 @@ final class MountOffsetTests: XCTestCase {
         XCTAssertEqual(m.evidence, 5, accuracy: 0.01)
     }
 
-    /// 立ち止まって course の無い fix が続いた後も、上限を超えていれば証拠にしない
+    /// 立ち止まって course の無い fix が続いた後も、上限を超えていれば証拠にしない。
+    /// **上限を超えた時点で、course の無い fix のうちに知らせる**(D6。有効な course の
+    /// 復帰を待つと、長い停止の間ずっと古い証拠が検疫の窓に残る — 2 回目の検証で指摘)
     func testLongRunOfNoCourseFixesIsAGap() {
         var m = MountOffset()
         for i in 0..<5 {
             m.ingest(headingDeg: 124, courseDeg: 30, fixTime: Double(i), p: p)
         }
         // 立ち止まる: fix は 1 秒ごとに来るが course が無い(10 秒)
+        var kinds: [MountOffset.Sample.Kind] = []
         for i in 5..<15 {
-            m.ingest(headingDeg: 124, courseDeg: nil, fixTime: Double(i), p: p)
+            kinds.append(m.ingest(headingDeg: 124, courseDeg: nil, fixTime: Double(i), p: p).kind)
         }
+        XCTAssertTrue(kinds[0..<5].allSatisfy { $0 == .noCourse },
+                      "最後の有効 course(t=4)から 5 秒以内は区間の始点を進めるだけ")
+        XCTAssertEqual(kinds[5], .gapTooLong,
+                       "t=10 で途切れが 6 秒(上限 5 秒)。この時点で知らせる")
         let resumed = m.ingest(headingDeg: 124, courseDeg: 30, fixTime: 15, p: p)
         XCTAssertEqual(resumed.kind, .gapTooLong,
                        "course が 11 秒途切れた(上限 5 秒)。fix が来続けていても証拠にしない")

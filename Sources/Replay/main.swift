@@ -22,6 +22,9 @@ struct LoggedFix {
     let courseAccuracyDeg: Double?
     /// この行を書いた時点での fix の古さ [sec]。後の時刻での古さは経過時間を足して求める
     let ageSec: Double?
+    /// **fix 固有の時刻**(CLLocation.timestamp)。`fix時刻=` 列から読む。
+    /// 2026-09-10 より前のログには無い(nil)。行の時刻は書いた時刻であって fix の時刻ではない
+    var fixTime: Date? = nil
 }
 
 /// "…速度=1.23m/s…" のように、キーの直後の数値を取り出す。単位や括弧は無視される
@@ -62,7 +65,8 @@ func readFixes(_ path: String) -> [LoggedFix] {
             courseDeg: numberAfter("course=", in: msg),
             accuracyM: numberAfter("水平精度=", in: msg),
             courseAccuracyDeg: numberAfter("course精度=", in: msg),
-            ageSec: numberAfter("経過=", in: msg)
+            ageSec: numberAfter("経過=", in: msg),
+            fixTime: numberAfter("fix時刻=", in: msg).map { Date(timeIntervalSinceReferenceDate: $0) }
         ))
     }
     return out
@@ -1207,6 +1211,32 @@ if headSamples.isEmpty {
         print("     欠けたのが「合っていた区間」なら低く、「ずれていた区間」なら"
               + "退避を再現できず高く出ます")
     }
+    // **fix の識別に使う時刻(CLLocation.timestamp)がログにあるか**(受け入れ条件 F4)。
+    // 2026-09-10 より前のログには無く、行を書いた時刻で代用するしかない。行の時刻は fix 固有の
+    // 時刻ではなく、同じ内容の fix 行が 1 ms 差で 2 本並ぶこともある(= 同じ fix か決められない)。
+    // **その場合は使用可能率を出さない**(推定の率を結果として読ませない。2 回目の検証で指摘)
+    let rowsWithFixTime = sortedFixes.filter { $0.fixTime != nil }.count
+    let exactFixTime = !sortedFixes.isEmpty && rowsWithFixTime == sortedFixes.count
+    if !exactFixTime {
+        // 同じ内容の fix 行が続けて並ぶ箇所を数える(識別できない実例の数)
+        var sameContentPairs = 0
+        for (a, b) in zip(sortedFixes, sortedFixes.dropFirst())
+            where a.courseDeg == b.courseDeg && a.speedMps == b.speedMps
+                && a.courseAccuracyDeg == b.courseAccuracyDeg && a.ageSec == b.ageSec
+                && a.accuracyM == b.accuracyM
+                && a.point.latitude == b.point.latitude
+                && a.point.longitude == b.point.longitude {
+            sameContentPairs += 1
+        }
+        print("  ※ 不足している列: fix時刻=(CLLocation.timestamp)。"
+              + "fix 行 \(sortedFixes.count) 件のうち \(rowsWithFixTime) 件にしかありません。")
+        print("     近似: fix の時刻の代わりに**行を書いた時刻**を使います。"
+              + "行の時刻は fix 固有の時刻ではなく、")
+        print("     同じ内容の fix 行が続けて並ぶ箇所が \(sameContentPairs) 組あります"
+              + "(同じ fix かどうか決められない)。")
+        print("     **使用可能率は出しません。** 学習の成立時刻と遷移は近似として読んでください。")
+        print("     fix時刻= を記録する版(2026-09-10 以降)のログなら正確に再生できます。")
+    }
     /// t の時点で見えていた fix の観測(生 course と fix の時刻)。
     ///
     /// **fix の時刻は course が無効でも返す**(製品と同じ・2026-09-10 の検証で指摘)。
@@ -1225,7 +1255,7 @@ if headSamples.isEmpty {
         let motion = MotionFix(courseDeg: f.courseDeg, courseAccuracyDeg: f.courseAccuracyDeg,
                                speedMps: f.speedMps, compassHeadingDeg: nil,
                                ageSec: age, horizontalAccuracyM: f.accuracyM,
-                               fixTime: f.time.timeIntervalSinceReferenceDate)
+                               fixTime: (f.fixTime ?? f.time).timeIntervalSinceReferenceDate)
         // **製品と同じ規則**。保持値もコンパスも渡さない(→ WalkSessionController)
         return TravelDirection.courseObservation(motion, params: params.location)
     }
@@ -1293,19 +1323,27 @@ if headSamples.isEmpty {
         return (usable, firstUsable, learned, distrusts)
     }
 
-    /// 行を 1 本出す
+    /// 行を 1 本出す。**fix の時刻が無いログでは率を出さない**(F4)
     func sweepRow(_ label: String, _ p: HeadMountFusion.Params) {
         let s = sweep(p)
-        let pct = 100 * Double(s.usable) / Double(headSamples.count)
         let first = s.firstUsable.map { String(format: "%.0f 秒", $0) } ?? "成立せず"
         let learn = s.learned.map { String(format: "%.0f 秒", $0) } ?? "成立せず"
-        print(String(format: "    %-12@ %5d 件(%3.0f%%) %10@ %10@  %d 回",
-                     label as NSString, s.usable, pct,
-                     learn as NSString, first as NSString, s.distrusts))
+        if exactFixTime {
+            let pct = 100 * Double(s.usable) / Double(headSamples.count)
+            print(String(format: "    %-12@ %5d 件(%3.0f%%) %10@ %10@  %d 回",
+                         label as NSString, s.usable, pct,
+                         learn as NSString, first as NSString, s.distrusts))
+        } else {
+            print(String(format: "    %-12@ %10@ %10@  %d 回",
+                         label as NSString, learn as NSString, first as NSString, s.distrusts))
+        }
     }
+    let sweepHeader = exactFixTime
+        ? "    設定          使用可能        学習成立   最初に使えた  退避"
+        : "    設定          学習成立   最初に使えた  退避"
 
     print("\n  門(学習した値から外れたと分類する角度)を振る:")
-    print("    設定          使用可能        学習成立   最初に使えた  退避")
+    print(sweepHeader)
     for gate in [0.0, 30, 45, 60, 90] {
         var p = fp
         p.offset.gateDeg = gate
@@ -1314,7 +1352,7 @@ if headSamples.isEmpty {
     print("    ※ 0° = 門なし(すべて門内と分類される = 退避しない)")
 
     print("\n  検疫の割合と窓を振る:")
-    print("    設定          使用可能        学習成立   最初に使えた  退避")
+    print(sweepHeader)
     for ratio in [0.5, 0.6, 0.75, 0.9] {
         var p = fp
         p.quarantine.distrustRatio = ratio
@@ -1334,13 +1372,18 @@ if headSamples.isEmpty {
     }
     print("  最初に学習が成立: \(secs(firstLearnedAt))")
     print("  最初に使用可能: \(secs(firstUsableAt))")
-    print(String(format: "  使用可能だった割合: %.0f%%(%d / %d 件)",
-                 100 * Double(usableSamples) / Double(headSamples.count),
-                 usableSamples, headSamples.count))
-    print("  内訳:")
-    for (label, n) in counts.sorted(by: { $0.value > $1.value }) {
-        print(String(format: "    %-10@ %5d 件(%.0f%%)", label as NSString, n,
-                     100 * Double(n) / Double(headSamples.count)))
+    if exactFixTime {
+        print(String(format: "  使用可能だった割合: %.0f%%(%d / %d 件)",
+                     100 * Double(usableSamples) / Double(headSamples.count),
+                     usableSamples, headSamples.count))
+        print("  内訳:")
+        for (label, n) in counts.sorted(by: { $0.value > $1.value }) {
+            print(String(format: "    %-10@ %5d 件(%.0f%%)", label as NSString, n,
+                         100 * Double(n) / Double(headSamples.count)))
+        }
+    } else {
+        // **率は出さない**(F4)。件数の内訳も率と同じことなので出さない
+        print("  ※ 率は出しません(fix時刻= が無いログ。上の注記を参照)")
     }
     if let learned = fusion.learnedOffsetDeg {
         print(String(format: "  最終的な学習値: %+.1f°(R=%.2f)", learned, fusion.concentration))
@@ -1367,7 +1410,10 @@ if headSamples.isEmpty {
     print("")
     // **何が正確で何が近似かを分けて書く。** 混ぜると数字の読み方を誤る
     print("  ※ 学習と検疫の証拠は fix の時刻で数えるので、頭方位の間引きそのものには"
-          + "影響されません(fix 行が fix の識別子になる)。")
+          + "影響されません。")
+    print(exactFixTime
+          ? "     fix の時刻は fix 行の fix時刻=(CLLocation.timestamp)を使っています。"
+          : "     **このログには fix時刻= が無いので、行を書いた時刻で代用しています**(上の注記)。")
     print("     近似になるのは次の 2 点です:")
     print("     - 頭方位が \(params.headMount.logIntervalSec) 秒間隔なので、実機が "
           + "\(params.headMount.updateHz) Hz で見ていた「fix が変わった瞬間の方位」より")

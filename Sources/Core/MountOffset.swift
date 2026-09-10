@@ -172,7 +172,13 @@ public struct MountOffset: Equatable {
         let previousFix = lastFixTime
         lastFixTime = fixTime
         guard let course = courseDeg else {
-            // 新しい fix だが course が無効。**区間の始点だけ進める**
+            // 新しい fix だが course が無効。**区間の始点だけ進める**。
+            // course の途切れが上限を超えたら、**その時点で**未確定の証拠を捨てる合図を出す
+            // (有効な course が戻るまで待つと、長い停止の間ずっと古い証拠が窓に残る → D6。
+            // 2026-09-10 の 2 回目の検証で指摘)
+            if let lastCourse = lastCourseFixTime, fixTime - lastCourse > p.maxGapSec {
+                return Sample(kind: .gapTooLong, evidenceSec: 0)
+            }
             return Sample(kind: .noCourse, evidenceSec: 0)
         }
         let previousCourseFix = lastCourseFixTime

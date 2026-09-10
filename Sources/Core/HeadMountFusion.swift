@@ -79,11 +79,20 @@ public struct HeadMountFusion: Equatable {
     /// 直前の標本そのものを出すと、50 Hz のうち 49 回は同じ fix の読み直しなので、
     /// 1 秒ごとのログがほぼ常に「同fix」になり、門内・門外が読めない(2026-09-10)
     private var lastNewFix: MountOffset.Sample?
+    /// 直前の標本の種類(ログの「今回」用)
+    private var lastSampleKind: MountOffset.Sample.Kind?
 
     public init() {}
 
     /// 最後に新しい fix を見た標本の分類(ログ用)。まだ無ければ "-"
     public var lastNewFixLabel: String { lastNewFix?.label ?? "-" }
+    /// 直前の標本が新しい fix だったか(ログ用): 「fix無 / 重複 / 新規」。
+    /// 「最後の新 fix の分類」とは別の欄にする — 片方だけだと、いまの標本が
+    /// 読み直しなのか新しい fix なのかがログから読めない(2026-09-10 の 2 回目の検証で指摘)
+    public var currentObservationLabel: String {
+        guard let kind = lastSampleKind, kind != .noFix else { return "fix無" }
+        return kind == .duplicateFix ? "重複" : "新規"
+    }
     /// 検疫の証拠窓の門内時間 [sec](ログ用)
     public var insideEvidenceSec: Double { quarantine.insideEvidenceSec }
     /// 検疫の証拠窓の門外時間 [sec](ログ用)
@@ -129,6 +138,7 @@ public struct HeadMountFusion: Equatable {
         let sample = offset.ingest(headingDeg: headingDeg, courseDeg: rawCourseDeg,
                                    fixTime: fixTime, p: p.offset)
         if sample.isNewFix { lastNewFix = sample }
+        lastSampleKind = sample.kind
         // **成立は一度きり、以後は変わらない。** 成立した瞬間に検疫を採用状態から始める
         // (補正が付くと方位が学習値ぶん飛ぶので、それ以前の証拠は捨てる)
         if learnedDeg == nil, let learned = offset.offsetDeg {

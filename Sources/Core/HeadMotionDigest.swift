@@ -26,13 +26,17 @@ public struct MotionVector: Equatable {
 ///
 /// そこでログ間隔の中で:
 ///
-/// - 方位の変化(先頭と末尾の円差)
+/// - 方位の変化(**前の区間の最後の方位から**、この区間の最後の方位までの円差)
 /// - 標本数と**最大の標本間隔**(背景で間引かれたかが分かる)
 /// - **三軸それぞれの角速度の積分**(符号つき。どの軸が頭の鉛直軸かを後で決める材料)
 /// - 鉛直軸まわりの回転の積分(**符号つき**。方位の変化と比べる相手)
 /// - 区間の最後の標本の**瞬時値**(センサ時刻・角速度 3 軸・重力 3 軸)
 ///
-/// をまとめる。**この値はどの判定にも渡さない**(→ 受け入れ条件 E5)。
+/// をまとめる。**方位の変化と積分は同じ期間を覆う**: どちらも前の区間の最後の標本から
+/// 数える(積分は時計を引き継ぐので境目の区間を含む。方位も同じ境目から数えないと、
+/// 突き合わせる 2 つの量の期間がずれる — 2026-09-10 の 2 回目の検証で指摘)。
+///
+/// **この値はどの判定にも渡さない**(→ 受け入れ条件 E5)。
 /// 渡していないことは「gyro の値を変えても使用可能状態が変わらない」テストで固定する。
 ///
 /// **射影の計算はここ(Core)に置く。** Services は OS の値を運ぶだけ(CLAUDE.md のレイヤ規約)。
@@ -54,8 +58,12 @@ public struct HeadMotionDigest: Equatable {
     /// 区間の最後の標本の重力 [g]
     public private(set) var lastGravity: MotionVector?
 
-    private var firstHeadingDeg: Double?
+    /// 方位の変化の基準。**前の区間の最後の方位を引き継ぐ**。
+    /// 新しい散歩(新しいインスタンス)では最初の標本が基準になる
+    private var baselineHeadingDeg: Double?
     private var lastHeadingDeg: Double?
+    /// 基準より後に来た標本の数(基準になった標本そのものは数えない)
+    private var samplesAfterBaseline = 0
     /// 区間をまたいで引き継ぐ時計(`rollOver` でも消さない)
     private var clock: TimeInterval?
 
@@ -71,12 +79,13 @@ public struct HeadMotionDigest: Equatable {
         return -(r.x * g.x + r.y * g.y + r.z * g.z) / norm
     }
 
-    /// この区間の方位の変化 [deg](円差。標本が 2 件未満なら nil)
+    /// この区間の方位の変化 [deg](基準からの円差)。基準の後に標本が無ければ nil
     public var headingChangeDeg: Double? {
-        guard let first = firstHeadingDeg, let last = lastHeadingDeg, count >= 2 else {
+        guard let base = baselineHeadingDeg, let last = lastHeadingDeg,
+              samplesAfterBaseline >= 1 else {
             return nil
         }
-        return Geo.angularDiffDeg(last, first)
+        return Geo.angularDiffDeg(last, base)
     }
 
     /// 1 標本を足す。
@@ -92,7 +101,11 @@ public struct HeadMotionDigest: Equatable {
                              rotationRate: MotionVector, gravity: MotionVector,
                              magneticAccuracy: Int, maxIntervalSec: Double) {
         count += 1
-        if firstHeadingDeg == nil { firstHeadingDeg = headingDeg }
+        if baselineHeadingDeg == nil {
+            baselineHeadingDeg = headingDeg
+        } else {
+            samplesAfterBaseline += 1
+        }
         lastHeadingDeg = headingDeg
         worstMagneticAccuracy = worstMagneticAccuracy.map { Swift.min($0, magneticAccuracy) }
             ?? magneticAccuracy
@@ -112,12 +125,15 @@ public struct HeadMotionDigest: Equatable {
             * dt * toDeg
     }
 
-    /// 次の区間へ。**時計だけ引き継ぐ**(区間をまたぐ間隔も測りたいため)。
+    /// 次の区間へ。**時計と最後の方位だけ引き継ぐ**(境目をまたぐ区間も数えるため。
+    /// 積分は時計を、方位の変化は最後の方位を基準にして、同じ期間を覆う)。
     /// **散歩をまたぐときは使わない** — 新しい散歩は新しいインスタンスで始める
-    /// (前の散歩の末尾の時刻を持ち越すと、最初の 1 行に何分もの空白が出る)
+    /// (前の散歩の末尾を持ち越すと、最初の 1 行に何分もの空白が出る)
     public mutating func rollOver() {
-        let carried = clock
+        let carriedClock = clock
+        let carriedHeading = lastHeadingDeg
         self = HeadMotionDigest()
-        clock = carried
+        clock = carriedClock
+        baselineHeadingDeg = carriedHeading
     }
 }

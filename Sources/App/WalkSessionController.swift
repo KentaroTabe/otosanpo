@@ -1084,7 +1084,11 @@ final class WalkSessionController: ObservableObject {
             // 位置更新を 1 件ずつ残す。これがあれば、経路長・迂回率・提案の判定といった
             // 純粋ロジックの変更は、歩き直さずに記録したログの再生で検証できる
             // (scripts/replay_log.sh)。docs/05「検証の方針」
-            logToFile("fix [\(summary(of: fix))]")
+            // **fix 固有の時刻(CLLocation.timestamp)も残す**(2026-09-10)。再生で
+            // 「同じ fix を読み直したか」を正確に決めるため。行の時刻は書いた時刻であって
+            // fix の時刻ではなく、同じ fix が 1 ms 差で 2 行書かれることもある(受け入れ条件 F4)
+            logToFile("fix [\(summary(of: fix))]"
+                      + (fix.fixTime.map { String(format: " fix時刻=%.3f", $0) } ?? ""))
             // **馴染み度の減衰の時計は「歩いた総距離」**(docs/04)。歩いた分だけ進める。
             // 経路長は揺れを除いた実距離なので、そのまま時計に使える
             grid.advance(byM: walkMetrics.pathLengthM - odometerBaseM)
@@ -1229,7 +1233,7 @@ final class WalkSessionController: ObservableObject {
             // 50 Hz のうち 49 回は同じ fix の読み直しなので、ほぼ常に「同fix」になる
             logToFile(String(format: "頭方位 raw=%.1f° heading=%.1f° course=%@° 差=%@°"
                              + " 状態=%@ 補正=%@ R=%.2f 証拠=%.1fs 分類=%@"
-                             + " 門内=%.1fs 門外=%.1fs 門外割合=%.2f fix=%@ 使用=%@",
+                             + " 門内=%.1fs 門外=%.1fs 門外割合=%.2f fix=%@ 今回=%@ 使用=%@",
                              headingDeg, corrected, courseLabel, diffLabel,
                              headMountFusion.quarantineState.label,
                              offsetLabel, headMountFusion.concentration,
@@ -1239,6 +1243,7 @@ final class WalkSessionController: ObservableObject {
                              headMountFusion.outsideEvidenceSec,
                              headMountFusion.outsideRatio,
                              fixLabel,
+                             headMountFusion.currentObservationLabel,
                              headMountFusion.use(at: now, p: params.headMount.fusion).label))
             logToFile(headMotionLine())
             motionDigest.rollOver()

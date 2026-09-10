@@ -322,7 +322,6 @@ final class HeadMountFusionTests: XCTestCase {
         let offsetBefore = f.learnedOffsetDeg
         let concentrationBefore = f.concentration
         let stateBefore = f.quarantineState
-        let insideBefore = f.insideEvidenceSec
 
         // 立ち止まって首を左右に大きく振る。fix は来るが course は無効(nil)
         t = feed(&f, fixes: 20, from: t + 0.1, p: p,
@@ -335,9 +334,52 @@ final class HeadMountFusionTests: XCTestCase {
                        "止まっている間に R が下がってはいけない")
         XCTAssertEqual(f.quarantineState, stateBefore,
                        "止まっている間に検疫の状態が変わってはいけない")
-        XCTAssertEqual(f.insideEvidenceSec, insideBefore, accuracy: 1e-9,
-                       "course が無い間は証拠も増減しない")
+        // **証拠については要求を D6 に合わせた**(2026-09-10 の 2 回目の検証で指摘)。
+        // 以前は「course が無い間は証拠も増減しない」と書いていたが、D6 は
+        // 「上限を超えた欠落では未確定の証拠を捨てる」。20 秒の停止は上限 5 秒を超える。
+        // 上限以内の停止で証拠を保つことは testLongCourseGapClearsEvidenceWithoutWaitingForCourse
+        XCTAssertEqual(f.insideEvidenceSec, 0, accuracy: 1e-9,
+                       "上限を超えて止まったら、未確定の証拠は捨てる(状態は変えない)")
+        XCTAssertEqual(f.outsideEvidenceSec, 0, accuracy: 1e-9)
         XCTAssertEqual(f.use(at: t, p: p), .use, "首を回しても使えるまま(だから試験ができる)")
+    }
+
+    /// **course の途切れが上限を超えたら、有効な course の復帰を待たずに証拠を捨てる**
+    /// (受け入れ条件 D6・2026-09-10 の 2 回目の検証で挙がった系列)。
+    ///
+    /// 学習後に門外 8 秒 → 最後の有効 course が t=13 → course の無い新しい fix を t=14〜19。
+    /// 上限 5 秒なので、t=18 までは証拠を保ち、t=19 で門内 0・門外 0。状態は採用のまま。
+    /// 有効な course が戻るまで待っていた版では、長い停止の間ずっと古い証拠が残っていた
+    func testLongCourseGapClearsEvidenceWithoutWaitingForCourse() {
+        let p = learnable(staleSec: 30, halfLifeSec: .infinity)
+        var f = HeadMountFusion()
+        for i in 0...5 { step(&f, fixTime: Double(i), heading: 184, course: 90, p: p) }
+        for i in 6...13 { step(&f, fixTime: Double(i), heading: 304, course: 90, p: p) }
+        XCTAssertEqual(f.outsideEvidenceSec, 8, accuracy: 1e-9, "前提: 門外 8 秒")
+        for i in 14...18 { step(&f, fixTime: Double(i), heading: 304, course: nil, p: p) }
+        XCTAssertEqual(f.outsideEvidenceSec, 8, accuracy: 1e-9, "上限(5 秒)以内の欠落では証拠を保つ")
+        step(&f, fixTime: 19, heading: 304, course: nil, p: p)
+        XCTAssertEqual(f.insideEvidenceSec, 0, accuracy: 1e-9)
+        XCTAssertEqual(f.outsideEvidenceSec, 0, accuracy: 1e-9,
+                       "上限を超えた時点で捨てる(有効な course の復帰を待たない)")
+        XCTAssertEqual(f.quarantineState, .trusted, "欠落だけでは状態を変えない")
+    }
+
+    /// **ログに「今回の観測が新規か重複か」と「最後の新 fix の分類」を別々に出せる**
+    /// (受け入れ条件 E2・2026-09-10 の 2 回目の検証で挙がった系列)
+    func testLogDistinguishesNewAndDuplicateObservations() {
+        let p = learnable(staleSec: 30)
+        var f = HeadMountFusion()
+        XCTAssertEqual(f.currentObservationLabel, "fix無")
+        step(&f, fixTime: 100, heading: 184, course: 90, p: p)
+        XCTAssertEqual(f.currentObservationLabel, "新規")
+        XCTAssertEqual(f.lastNewFixLabel, "始点")
+        step(&f, fixTime: 100, heading: 184, course: 90, p: p)   // 同じ fix の読み直し
+        XCTAssertEqual(f.currentObservationLabel, "重複")
+        XCTAssertEqual(f.lastNewFixLabel, "始点", "読み直しでは最後の新 fix の分類は変わらない")
+        step(&f, fixTime: 101, heading: 184, course: 90, p: p)
+        XCTAssertEqual(f.currentObservationLabel, "新規")
+        XCTAssertEqual(f.lastNewFixLabel, "学習")
     }
 
     // MARK: - A4 渡してよい course の定義

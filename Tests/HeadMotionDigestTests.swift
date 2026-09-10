@@ -117,6 +117,23 @@ final class HeadMotionDigestTests: XCTestCase {
         XCTAssertEqual(d.lastGravity, MotionVector(x: -0.1, y: -0.9, z: 0.2))
     }
 
+    /// **方位の変化は区間の境目をまたいで数える**(2026-09-10 の 2 回目の検証で挙がった系列)。
+    ///
+    /// 10°/t=0・20°/t=1 のあと畳み、50°/t=2 を 1 件だけ足す。次の区間の変化は
+    /// **+30°**(前の区間の最後 20° から)。境目で方位を捨てていた版では nil になり、
+    /// 境目を含む積分と期間が食い違っていた
+    func testHeadingChangeSpansTheIntervalBoundary() {
+        var d = HeadMotionDigest()
+        add(&d, heading: 10, at: 0)
+        add(&d, heading: 20, at: 1)
+        d.rollOver()
+        add(&d, heading: 50, at: 2)
+        XCTAssertEqual(try! XCTUnwrap(d.headingChangeDeg), 30, accuracy: 1e-9,
+                       "前の区間の最後(20°)から数える。積分と同じ期間にそろえる")
+        XCTAssertEqual(d.count, 1)
+        XCTAssertEqual(d.maxGapSec, 1, accuracy: 1e-9)
+    }
+
     /// 畳んだ後も**時刻は引き継ぐ**(区間をまたぐ間隔を測りたいため)
     func testRollOverKeepsTheClock() {
         var d = HeadMotionDigest()
