@@ -322,6 +322,14 @@ final class MusicSpotTests: XCTestCase {
         XCTAssertEqual(p.pinpointWeight(atDistanceM: 5), 1)
         XCTAssertEqual(p.pinpointWeight(atDistanceM: 5.01), 0)
         XCTAssertTrue(p.pinpointWeight(atDistanceM: 3).isFinite)
+        // **逆転**(始まりが最大より近い)も同じ扱い(2026-09-15 の検証で挙がった系列)
+        let reversed = params(pinpointStart: 4, pinpointFull: 5)
+        XCTAssertEqual(reversed.pinpointWeight(atDistanceM: 5), 1)
+        XCTAssertEqual(reversed.pinpointWeight(atDistanceM: 4.5), 1)
+        XCTAssertEqual(reversed.pinpointWeight(atDistanceM: 5.01), 0)
+        for d in stride(from: 0.0, through: 10, by: 0.25) {
+            XCTAssertTrue(reversed.pinpointWeight(atDistanceM: d).isFinite, "\(d)m")
+        }
     }
 
     /// **正面で 0 dB、外れるほど深く、`beam` 以上外れたら一定。左右は対称**

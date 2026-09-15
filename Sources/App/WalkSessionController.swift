@@ -137,7 +137,8 @@ final class WalkSessionController: ObservableObject {
     /// 音量の幅の**起点**: スポットまでの距離 [m]。鳴り始めた地点で決める
     /// (スポットもその時にその地点から置く)。ここで最小、スポットの手前で最大(→ MusicSpot.gain)
     private var musicGainFromM: Double?
-    /// 音楽の行を残した時刻。音は 10 Hz で付け直すが、ログはこの間隔に間引く
+    /// 音楽の行を残した時刻。音は頭方位の受信ごと(`head_mount.update_hz`)に付け直すが、
+    /// ログはこの間隔に間引く
     private var lastMusicLogAt: Date?
     /// 音源が Documents にあるか。無ければ画面に選択肢を出さない
     var musicFileAvailable: Bool { MusicStore.firstFile() != nil }
@@ -1442,7 +1443,7 @@ final class WalkSessionController: ObservableObject {
 
     /// 音源の向きと音量を付け直す。**前半球へ畳まない**。
     ///
-    /// **位置更新(約 1 Hz)だけでなく、頭方位の受信(10 Hz)からも呼ぶ。**
+    /// **位置更新(約 1 Hz)だけでなく、頭方位の受信(`head_mount.update_hz`)からも呼ぶ。**
     /// 位置更新だけに乗せていたときは、首を回してから音が動くまで最大 1 秒かかり、
     /// 「向きの選択肢が数えるほどしかない」ようにも聞こえた(2026-09-08 の散歩)。
     /// 連続音は**基準が動いたら動く**必要がある。
@@ -1475,10 +1476,10 @@ final class WalkSessionController: ObservableObject {
                                         ?? Geo.distanceM(p, spot.center),
                                     p: sp)
         // **鳴り始めはじんわり。** 距離から決めた音量に、立ち上がりの係数を掛ける。
-        // 10 Hz で呼ばれるので、別のタイマーを持たずに滑らかに上がる
+        // 頭方位の受信ごとに呼ばれるので、別のタイマーを持たずに滑らかに上がる
         synth?.setMusicPlacement(relativeBearingDeg: reference == nil ? 0 : placed.relDeg,
                                  gain: placed.gain * musicFadeFactor())
-        // **音は毎回付け直すが、ログは間引く。** 10 Hz で書くとログが音楽で埋まる
+        // **音は毎回付け直すが、ログは間引く。** 受信ごとに書くとログが音楽で埋まる
         let now = Date()
         guard lastMusicLogAt == nil
             || now.timeIntervalSince(lastMusicLogAt!) >= params.experiment.musicLogIntervalSec
