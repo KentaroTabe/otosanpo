@@ -13,13 +13,17 @@ final class MusicSpotTests: XCTestCase {
                         steps: Int = 1,
                         reached: Double = 15, step: Double = 30,
                         tolerance: Double = 0.001,
-                        blend: Double = 0) -> MusicSpot.Params {
+                        blend: Double = 0,
+                        pinpointStart: Double = 15, pinpointFull: Double = 5,
+                        beam: Double = 60, depth: Double = 12) -> MusicSpot.Params {
         MusicSpot.Params(
             minDistanceM: min, maxDistanceM: max, distanceStepCount: steps,
             reachedM: reached,
             bearingStepDeg: step, sameDistanceToleranceM: tolerance,
             referenceDistanceM: 15, gainMinSpanM: 30,
-            maxGain: 0.9, minGain: 0.08, routeBlend: blend)
+            maxGain: 0.9, minGain: 0.08, routeBlend: blend,
+            pinpointStartM: pinpointStart, pinpointFullM: pinpointFull,
+            pinpointBeamDeg: beam, pinpointDepthDb: depth)
     }
 
     /// 音楽を待たせる時だけ、出発の一言に一文を足す(2026-09-10 利用者依頼)。
@@ -283,6 +287,176 @@ final class MusicSpotTests: XCTestCase {
                                     p: params(blend: 0.5))
         XCTAssertEqual(placed.worldBearingDeg, 45, accuracy: 1.0)
         XCTAssertEqual(placed.relDeg, 45, accuracy: 1.0)
+    }
+
+    // MARK: - ピンポイント(2026-09-15 利用者依頼)
+    //
+    // 「スポットに近づいても最終的にどこにあるか分かりにくい」「5 m 以内でピンポイントに
+    // 位置を感じられるように」。2026-09-14 の散歩では、GPS の誤差 14 m・最接近 6 m で、
+    // 15 m より内側は音量が 24 秒間まったく変わらず、方位は道の向きの切り替わりで
+    // 1 秒に 45〜51° 跳んだ。そこで近くでは (1) 正面に向けた時だけ大きく鳴らし、
+    // (2) 道の向きを混ぜない。効果は 15 m から効き始め、5 m 以内で最大になる。
+
+    /// **近さは 15 m から効き始め、5 m 以内で最大**。間は距離に比例する
+    func testPinpointWeightRampsFromStartToFull() {
+        let p = params()
+        XCTAssertEqual(p.pinpointWeight(atDistanceM: 40), 0)
+        XCTAssertEqual(p.pinpointWeight(atDistanceM: 15), 0, accuracy: 1e-12)
+        XCTAssertEqual(p.pinpointWeight(atDistanceM: 10), 0.5, accuracy: 1e-12)
+        XCTAssertEqual(p.pinpointWeight(atDistanceM: 6), 0.9, accuracy: 1e-12,
+                       "実測の最接近 6 m でも 9 割効く(5 m で急に切り替えると一度も発動しない)")
+        XCTAssertEqual(p.pinpointWeight(atDistanceM: 5), 1, accuracy: 1e-12)
+        XCTAssertEqual(p.pinpointWeight(atDistanceM: 0), 1)
+        var previous = p.pinpointWeight(atDistanceM: 30)
+        for d in stride(from: 29.5, through: 0, by: -0.5) {
+            let w = p.pinpointWeight(atDistanceM: d)
+            XCTAssertGreaterThanOrEqual(w, previous, "近づいて弱まってはいけない(\(d)m)")
+            previous = w
+        }
+    }
+
+    /// 始まりと最大が逆転・一致した設定では、最大の距離を境に 0 / 1 で切り替える
+    /// (0 で割らない・既定値で黙って埋めない)
+    func testPinpointWeightWithDegenerateSettings() {
+        let p = params(pinpointStart: 5, pinpointFull: 5)
+        XCTAssertEqual(p.pinpointWeight(atDistanceM: 5), 1)
+        XCTAssertEqual(p.pinpointWeight(atDistanceM: 5.01), 0)
+        XCTAssertTrue(p.pinpointWeight(atDistanceM: 3).isFinite)
+    }
+
+    /// **正面で 0 dB、外れるほど深く、`beam` 以上外れたら一定。左右は対称**
+    func testFacingDbDeepensOffAxis() {
+        let p = params(beam: 60, depth: 12)
+        XCTAssertEqual(p.facingDb(relativeBearingDeg: 0, weight: 1), 0, accuracy: 1e-12)
+        XCTAssertEqual(p.facingDb(relativeBearingDeg: 30, weight: 1), -6, accuracy: 1e-12)
+        XCTAssertEqual(p.facingDb(relativeBearingDeg: -30, weight: 1), -6, accuracy: 1e-12,
+                       "左右で同じ")
+        XCTAssertEqual(p.facingDb(relativeBearingDeg: 60, weight: 1), -12, accuracy: 1e-12)
+        XCTAssertEqual(p.facingDb(relativeBearingDeg: 120, weight: 1), -12, accuracy: 1e-12)
+        XCTAssertEqual(p.facingDb(relativeBearingDeg: 180, weight: 1), -12, accuracy: 1e-12,
+                       "真後ろは正面より 12 dB 小さい = 前後が音量で分かる")
+        XCTAssertEqual(p.facingDb(relativeBearingDeg: 350, weight: 1), -2, accuracy: 1e-9,
+                       "350° は正面から 10° 外れ(折り返しを跨ぐ)")
+        XCTAssertEqual(p.facingDb(relativeBearingDeg: 60, weight: 0.5), -6, accuracy: 1e-12,
+                       "近さ半分なら深さも半分")
+        XCTAssertEqual(p.facingDb(relativeBearingDeg: 180, weight: 0), 0, "遠くでは掛けない")
+        XCTAssertEqual(params(depth: 0).facingDb(relativeBearingDeg: 180, weight: 1), 0)
+    }
+
+    /// **スポットの近くで首を 1 周振ると、音量の山がスポットの向きにちょうど 1 つだけある**。
+    /// これが「ピンポイントに位置を感じられる」の中身(首を振って探す)
+    func testHeadScanPeaksAtTheSpot() {
+        let p = params()
+        // 聴取者から見て北東 45° に 4 m
+        let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 45, distanceM: 4))
+        var best = (heading: -1, gain: -1.0)
+        var quietest = Double.infinity
+        for heading in 0..<360 {
+            let placed = spot.placement(from: origin, referenceBearingDeg: Double(heading),
+                                        headIsReference: true, gainFromDistanceM: 90, p: p)
+            if placed.gain > best.gain { best = (heading, placed.gain) }
+            quietest = Swift.min(quietest, placed.gain)
+        }
+        XCTAssertEqual(Double(best.heading), 45, accuracy: 1, "山はスポットの向き")
+        XCTAssertEqual(20 * log10(best.gain / quietest), 12, accuracy: 0.01,
+                       "向けた時と外した時で 12 dB 違う")
+        // 山は 1 つ: スポットの向きから離れるほど単調に小さくなる(左右どちらへ回っても)
+        for side in [1.0, -1.0] {
+            var previous = best.gain
+            for off in stride(from: 1.0, through: 180, by: 1) {
+                let placed = spot.placement(from: origin, referenceBearingDeg: 45 + side * off,
+                                            headIsReference: true, gainFromDistanceM: 90, p: p)
+                XCTAssertLessThanOrEqual(placed.gain, previous + 1e-12,
+                                         "外れる向きへ回して大きくなってはいけない(\(side * off)°)")
+                previous = placed.gain
+            }
+        }
+    }
+
+    /// **基準が頭の向きでない時は強調しない**(首を振っても基準が動かず、探せないため)
+    func testFacingEmphasisOnlyWhenHeadIsTheReference() {
+        let p = params()
+        let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: 3))
+        let byTravel = spot.placement(from: origin, referenceBearingDeg: 180,
+                                      headIsReference: false, gainFromDistanceM: 90, p: p)
+        XCTAssertEqual(byTravel.facingDb, 0)
+        XCTAssertEqual(byTravel.gain, byTravel.distanceGain, accuracy: 1e-12)
+        let byHead = spot.placement(from: origin, referenceBearingDeg: 180,
+                                    headIsReference: true, gainFromDistanceM: 90, p: p)
+        XCTAssertEqual(byHead.facingDb, -12, accuracy: 1e-9)
+        XCTAssertEqual(byHead.gain, byHead.distanceGain * pow(10, -12.0 / 20), accuracy: 1e-12)
+        XCTAssertEqual(byHead.pinpointWeight, 1, accuracy: 1e-12)
+    }
+
+    /// **遠くでは何も変わらない**(近づく間の体験は 2026-09-11 の形のまま)
+    func testNothingChangesBeyondThePinpointStart() {
+        let p = params(blend: 0.5)
+        let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: 40))
+        for heading in stride(from: 0.0, to: 360, by: 15) {
+            let placed = spot.placement(from: origin, referenceBearingDeg: heading,
+                                        headIsReference: true, routeBearingDeg: 90,
+                                        gainFromDistanceM: 90, p: p)
+            XCTAssertEqual(placed.facingDb, 0)
+            XCTAssertEqual(placed.gain, placed.distanceGain, accuracy: 1e-12)
+            XCTAssertEqual(placed.worldBearingDeg, MusicSpot.blend(direct: 0, route: 90, weight: 0.5),
+                           accuracy: 1e-9, "遠くでは道の向きを混ぜる比もそのまま")
+        }
+    }
+
+    /// **スポットの近くでは道の向きを混ぜない**(2026-09-14 の散歩で、混ぜた方位が
+    /// 道の向きの切り替わりで 1 秒に 45〜51° 跳んだ。直線の方位は滑らかだった)
+    func testRouteIsNotBlendedNearTheSpot() {
+        let p = params(blend: 0.5)
+        func world(at d: Double) -> Double {
+            let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: d))
+            return spot.placement(from: origin, referenceBearingDeg: 0, routeBearingDeg: 90,
+                                  gainFromDistanceM: 90, p: p).worldBearingDeg
+        }
+        XCTAssertEqual(abs(Geo.angularDiffDeg(world(at: 4), 0)), 0, accuracy: 0.01,
+                       "5 m 以内は直線の方位だけ")
+        // 10 m では混ぜる比がほぼ半分。**期待値は実際に測った距離から出す** —
+        // `Geo.destination`(平面近似)で置いた点を `Geo.distanceM`(haversine)で測ると
+        // わずかに短く、近さがちょうど 0.5 にはならない(許容を広げて誤魔化さない)
+        let tenM = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: 10))
+        let measured = Geo.distanceM(origin, tenM.center)
+        // 往復の誤差は 10 m で約 1.1 cm(実測 9.989 m)。前提の確認なので数 cm を許す
+        XCTAssertEqual(measured, 10, accuracy: 0.05, "前提: ほぼ 10 m に置けている")
+        XCTAssertEqual(world(at: 10),
+                       MusicSpot.blend(direct: 0, route: 90,
+                                       weight: 0.5 * (1 - p.pinpointWeight(atDistanceM: measured))),
+                       accuracy: 1e-9, "混ぜる比 = routeBlend × (1 − 近さ)")
+        // 近いほど道の向きの切り替わりに振られない。**実測と同じ形**で組む:
+        // 直線の方位をはさんで、道の向きが −22° → +74° と 96° 切り替わる
+        // (00:19:10 は直線 141° に対し道 119° → 215°。混ぜた方位が 48〜51° 跳んだ)
+        func jump(at d: Double) -> Double {
+            let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: d))
+            let before = spot.placement(from: origin, referenceBearingDeg: 0, routeBearingDeg: -22,
+                                        gainFromDistanceM: 90, p: p).worldBearingDeg
+            let after = spot.placement(from: origin, referenceBearingDeg: 0, routeBearingDeg: 74,
+                                       gainFromDistanceM: 90, p: p).worldBearingDeg
+            return abs(Geo.angularDiffDeg(after, before))
+        }
+        XCTAssertEqual(jump(at: 20), 48, accuracy: 1, "前提: 遠くでは実測どおり約 48° 跳ぶ")
+        XCTAssertLessThan(jump(at: 12), 35)
+        XCTAssertLessThan(jump(at: 8), 15)
+        XCTAssertEqual(jump(at: 5), 0, accuracy: 0.01, "5 m 以内は道の向きが変わっても動かない")
+    }
+
+    /// 強調は距離にも角度にも**連続**(段が無い・近づく途中で急に鳴り方が変わらない)
+    func testPinpointEmphasisIsContinuous() {
+        let p = params()
+        var previous = p.facingDb(relativeBearingDeg: 90, weight: p.pinpointWeight(atDistanceM: 20))
+        for d in stride(from: 19.9, through: 0, by: -0.1) {
+            let db = p.facingDb(relativeBearingDeg: 90, weight: p.pinpointWeight(atDistanceM: d))
+            XCTAssertLessThan(abs(db - previous), 0.2, "\(d)m で強調が跳んだ")
+            previous = db
+        }
+        previous = p.facingDb(relativeBearingDeg: -180, weight: 1)
+        for deg in stride(from: -179.0, through: 180, by: 1) {
+            let db = p.facingDb(relativeBearingDeg: deg, weight: 1)
+            XCTAssertLessThan(abs(db - previous), 0.21, "\(deg)° で強調が跳んだ")
+            previous = db
+        }
     }
 
     /// 着いたら止める(**一度だけ鳴る**という約束)

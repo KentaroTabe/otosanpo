@@ -90,4 +90,18 @@ final class ParametersFileTests: XCTestCase {
         XCTAssertGreaterThan(e.musicSpotReferenceDistanceM, 0)
         XCTAssertGreaterThan(e.musicSpotGainMinSpanM, 0)
     }
+
+    /// ピンポイントの値が届いていること(→ MusicSpot.Params.pinpointWeight / facingDb・2026-09-15)
+    func testMusicSpotPinpointValuesArrive() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        let e = p.experiment
+        XCTAssertGreaterThan(e.musicSpotPinpointFullM, 0)
+        XCTAssertGreaterThan(e.musicSpotPinpointStartM, e.musicSpotPinpointFullM,
+                             "始まりが最大より遠くないと、少しずつ効かせられない")
+        XCTAssertGreaterThan(e.musicSpotPinpointBeamDeg, 0)
+        XCTAssertGreaterThan(e.musicSpotPinpointDepthDb, 0)
+        // **音量はピンポイントの範囲に入るまで上がり続ける**(2026-09-14 の散歩で、
+        // 15 m より内側は 24 秒間音量が変わらず「最終的にどこにあるか分からない」と言われた)
+        XCTAssertLessThanOrEqual(e.musicSpotReferenceDistanceM, e.musicSpotPinpointFullM)
+    }
 }

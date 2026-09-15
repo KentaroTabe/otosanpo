@@ -135,11 +135,15 @@ experiment: {                    // ここに enabled は無い。スイッチ�
   music_spot_reached_m: 15,          // これより近づいたら着いた
   music_spot_bearing_step_deg: 30,   // 候補を探す方位の刻み
   music_spot_same_distance_tolerance_m: 0.001, // これ未満の差は同点(触る必要はない)
-  music_spot_reference_distance_m: 15, // 音量が最大になる距離
+  music_spot_reference_distance_m: 5, // 音量が最大になる距離(2026-09-15 に 15 → 5)
   music_spot_gain_min_span_m: 30,    // 音量の幅を割り振る距離の最小の長さ(2026-09-11)
   music_spot_max_gain: 0.9,          // 音量の上限・下限。**鳴り始めた地点で下限、
   music_spot_min_gain: 0.08,         //   スポットの手前で上限、間は dB で均等**(2026-09-11)
-  music_spot_route_blend: 0.5,       // 直線の向きと道をたどる向きを混ぜる比
+  music_spot_route_blend: 0.5,       // 直線の向きと道をたどる向きを混ぜる比(近くでは 0 へ)
+  music_spot_pinpoint_start_m: 15,   // ピンポイントの効果が効き始める距離(2026-09-15)
+  music_spot_pinpoint_full_m: 5,     // 効果が最大になる距離(利用者の「5 m 以内」)
+  music_spot_pinpoint_beam_deg: 60,  // 正面から外れた時、下げ幅が最大に達する角度
+  music_spot_pinpoint_depth_db: 12,  // 効果が最大の時に外れたら下げる音量。首を振って探せる
   music_log_interval_sec: 1.0,       // 音は 10 Hz で付け直すが、ログはこの間隔
   music_fade_in_sec: 4.0,            // 鳴り始めの立ち上がり
   music_wait_max_sec: 120            // 頭の向きが定まるのを待つ上限

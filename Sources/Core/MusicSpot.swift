@@ -57,8 +57,22 @@ public struct MusicSpot: Equatable {
         /// 直線だけだと、建物の向こうから鳴っているのに「そちらへ行けない」ことになる。
         /// 道だけだと、曲がり角のたびに音が飛んで**スポットに居る感じ**が薄れる。
         /// 間を取ると「あちらに在って、こう行けば着く」が同時に伝わる
-        /// (2026-09-10 利用者依頼)
+        /// (2026-09-10 利用者依頼)。**スポットの近くでは混ぜない**(→ `pinpointWeight`)
         public var routeBlend: Double
+        /// **ピンポイントの効果が始まる距離** [m]。これより遠くでは何も変えない。
+        ///
+        /// 利用者の依頼は「スポットの 5 m 以内でピンポイントに感じられる」(2026-09-15)。
+        /// ただし実測の GPS の誤差は 14 m で、GPS 上の最接近は 6 m だった
+        /// (2026-09-14 の散歩)。**5 m で急に切り替えると一度も発動しない**ので、
+        /// ここから少しずつ効かせ、`pinpointFullM` で最大にする
+        public var pinpointStartM: Double
+        /// **ピンポイントの効果が最大になる距離** [m](利用者の言う「5 m 以内」)
+        public var pinpointFullM: Double
+        /// 正面から外れた時に、音量の下げ幅が最大に達する角度 [deg]。
+        /// 小さいほど「この向きだ」が鋭く分かる。これより外側は同じ音量(左右は HRTF が担う)
+        public var pinpointBeamDeg: Double
+        /// 効果が最大の時、正面から `pinpointBeamDeg` 以上外れたら下げる音量 [dB]
+        public var pinpointDepthDb: Double
 
         /// 距離 `d` [m] での音量。**鳴り始めた地点の距離 `start` で最小、
         /// スポットの手前 `referenceDistanceM` で最大とし、その間を dB で均等につなぐ**
@@ -98,11 +112,43 @@ public struct MusicSpot: Equatable {
             return 20 * log10(maxGain / minGain) * 10 / (far - near)
         }
 
+        /// **スポットの近さ** [0..1]。`pinpointStartM` より遠いと 0、`pinpointFullM` 以内で 1、
+        /// 間は距離に比例する。ピンポイントの効果(正面の強調・道の向きを混ぜない)の強さになる。
+        ///
+        /// 始まりと最大が逆転・一致している設定では、`pinpointFullM` を境に 0 / 1 で切り替える
+        /// (既定値で埋めない — 設定の誤りを黙って直すと気づけなくなる)
+        public func pinpointWeight(atDistanceM d: Double) -> Double {
+            guard pinpointStartM > pinpointFullM else { return d <= pinpointFullM ? 1 : 0 }
+            let t = (pinpointStartM - d) / (pinpointStartM - pinpointFullM)
+            return Swift.min(1, Swift.max(0, t))
+        }
+
+        /// **正面から外れた分だけ音量を下げる量** [dB](0 以下)。首を振って探せるようにする。
+        ///
+        /// ## なぜ要るか(2026-09-15 利用者依頼)
+        ///
+        /// 「スポットに近づいても最終的にどこにあるか分かりにくい」。
+        /// HRTF で確かに伝わるのは左右だけで、前後と細かい向きは伝わらない(docs/03)。
+        /// 現実の音源は近づくほど頭の向きで聞こえ方が変わるが、汎用 HRTF ではその差が小さい。
+        /// そこで**スポットの近くでは、正面に向けた時だけ大きく**聞こえるようにする。
+        /// 首を振ると音量の山が 1 つだけあり、その向きがスポット — 前後も音量で分かる。
+        ///
+        /// 正面から `pinpointBeamDeg` まで外れる間は角度に比例して下げ(山を尖らせる)、
+        /// それより外側は `pinpointDepthDb × weight` のまま(大まかな左右は HRTF が担う)
+        public func facingDb(relativeBearingDeg rel: Double, weight: Double) -> Double {
+            guard weight > 0, pinpointDepthDb > 0, pinpointBeamDeg > 0 else { return 0 }
+            let off = abs(Geo.angularDiffDeg(rel, 0))
+            let w = Swift.min(1, weight)
+            return -pinpointDepthDb * w * Swift.min(1, off / pinpointBeamDeg)
+        }
+
         public init(minDistanceM: Double, maxDistanceM: Double, distanceStepCount: Int,
                     reachedM: Double,
                     bearingStepDeg: Double, sameDistanceToleranceM: Double,
                     referenceDistanceM: Double, gainMinSpanM: Double,
-                    maxGain: Double, minGain: Double, routeBlend: Double) {
+                    maxGain: Double, minGain: Double, routeBlend: Double,
+                    pinpointStartM: Double, pinpointFullM: Double,
+                    pinpointBeamDeg: Double, pinpointDepthDb: Double) {
             self.minDistanceM = minDistanceM
             self.maxDistanceM = maxDistanceM
             self.distanceStepCount = distanceStepCount
@@ -114,6 +160,38 @@ public struct MusicSpot: Equatable {
             self.maxGain = maxGain
             self.minGain = minGain
             self.routeBlend = routeBlend
+            self.pinpointStartM = pinpointStartM
+            self.pinpointFullM = pinpointFullM
+            self.pinpointBeamDeg = pinpointBeamDeg
+            self.pinpointDepthDb = pinpointDepthDb
+        }
+    }
+
+    /// 聴取者から見た音楽の置き方(→ `placement`)
+    public struct Placement: Equatable {
+        /// 定位の基準から見た相対方位 [deg](右が正)。**前半球へ畳まない**
+        public var relDeg: Double
+        /// 実際に鳴らす音量 [0..1] = 距離の音量 × 正面の強調
+        public var gain: Double
+        /// 距離だけから決めた音量 [0..1](ログと分析用。正面の強調を含まない)
+        public var distanceGain: Double
+        /// 正面の強調で下げた量 [dB](0 以下。頭の向きが基準でない時は 0)
+        public var facingDb: Double
+        /// スポットの近さ [0..1](→ `Params.pinpointWeight`)
+        public var pinpointWeight: Double
+        public var distanceM: Double
+        /// 鳴らす向き(真北基準)。直線と道の向きを混ぜた結果
+        public var worldBearingDeg: Double
+
+        public init(relDeg: Double, gain: Double, distanceGain: Double, facingDb: Double,
+                    pinpointWeight: Double, distanceM: Double, worldBearingDeg: Double) {
+            self.relDeg = relDeg
+            self.gain = gain
+            self.distanceGain = distanceGain
+            self.facingDb = facingDb
+            self.pinpointWeight = pinpointWeight
+            self.distanceM = distanceM
+            self.worldBearingDeg = worldBearingDeg
         }
     }
 
@@ -173,24 +251,41 @@ public struct MusicSpot: Equatable {
         return best.map { MusicSpot(center: $0.point) }
     }
 
-    /// 聴取者から見た**畳まない**相対方位と、距離から決めた音量。
+    /// 聴取者から見た**畳まない**相対方位と、距離と向きから決めた音量。
     ///
     /// - Parameter referenceBearingDeg: 定位の基準(顔の向き。取れなければ進行方位)
+    /// - Parameter headIsReference: 基準が**頭の向き**か。true の時だけ正面の強調を掛ける。
+    ///   進行方位を基準にしている間は首を振っても基準が動かないので、強調しても探せない。
+    ///   しかも低速の進行方位は 1 秒に数十度跳ぶ(2026-09-10 実測)ので、音量が暴れるだけになる
     /// - Parameter routeBearingDeg: **道をたどってスポットへ向かう向き**。
     ///   取れなければ nil(直線の向きだけを使う)
     /// - Parameter gainFromDistanceM: 音量の幅の**起点**(鳴り始めた地点でのスポットまでの
     ///   距離)[m]。ここで最小、スポットの手前で最大になる(→ `Params.gain`)
     public func placement(from listener: GeoPoint, referenceBearingDeg: Double,
+                          headIsReference: Bool = false,
                           routeBearingDeg: Double? = nil,
                           gainFromDistanceM: Double,
-                          p: Params) -> (relDeg: Double, gain: Double, distanceM: Double,
-                                         worldBearingDeg: Double) {
+                          p: Params) -> Placement {
         let direct = Geo.bearingDeg(from: listener, to: center)
         let distance = Geo.distanceM(listener, center)
-        let world = Self.blend(direct: direct, route: routeBearingDeg, weight: p.routeBlend)
-        return (Geo.angularDiffDeg(world, referenceBearingDeg),
-                p.gain(atDistanceM: distance, fromDistanceM: gainFromDistanceM),
-                distance, world)
+        let weight = p.pinpointWeight(atDistanceM: distance)
+        // **スポットの近くでは道の向きを混ぜない**(2026-09-15)。
+        // 近くを通り過ぎる時、「スポットへの次の一歩」は道の節点を越えるたびに切り替わる。
+        // 実測では 96° / 86° 切り替わり、混ぜた方位が 1 秒に 51° / 45° 跳んだ
+        // (直線の方位は同じ間 1 秒に 15° 以内で滑らかだった)。ピンポイントを壊すので、
+        // 近さに応じて混ぜる比を 0 へ下げる
+        let blendWeight = p.routeBlend * (1 - weight)
+        let world = Self.blend(direct: direct, route: routeBearingDeg, weight: blendWeight)
+        let rel = Geo.angularDiffDeg(world, referenceBearingDeg)
+        let distanceGain = p.gain(atDistanceM: distance, fromDistanceM: gainFromDistanceM)
+        let facing = headIsReference ? p.facingDb(relativeBearingDeg: rel, weight: weight) : 0
+        return Placement(relDeg: rel,
+                         gain: distanceGain * pow(10, facing / 20),
+                         distanceGain: distanceGain,
+                         facingDb: facing,
+                         pinpointWeight: weight,
+                         distanceM: distance,
+                         worldBearingDeg: world)
     }
 
     /// 直線の向きと、道をたどる向きの**間**を取る(→ `Params.routeBlend`)。

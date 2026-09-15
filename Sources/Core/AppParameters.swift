@@ -386,6 +386,14 @@ public struct AppParameters: Codable, Equatable {
         public var musicSpotGainMinSpanM: Double
         /// **直線の向きと道をたどる向きを混ぜる比** [0..1]。0 = 直線だけ / 1 = 道だけ
         public var musicSpotRouteBlend: Double
+        /// ピンポイントの効果が始まる距離 [m](→ MusicSpot.Params.pinpointStartM・2026-09-15)
+        public var musicSpotPinpointStartM: Double
+        /// ピンポイントの効果が最大になる距離 [m]。利用者の言う「スポットの 5 m 以内」
+        public var musicSpotPinpointFullM: Double
+        /// 正面から外れた時に、音量の下げ幅が最大に達する角度 [deg]
+        public var musicSpotPinpointBeamDeg: Double
+        /// 効果が最大の時、正面から外れたら下げる音量 [dB]。**首を振って探せる**ようにする
+        public var musicSpotPinpointDepthDb: Double
 
         /// MusicSpot に渡す設定値。**散歩時間で距離が決まる**ので時間を渡す
         public func musicSpot(durationMin: Double) -> MusicSpot.Params {
@@ -399,7 +407,11 @@ public struct AppParameters: Codable, Equatable {
                 referenceDistanceM: musicSpotReferenceDistanceM,
                 gainMinSpanM: musicSpotGainMinSpanM,
                 maxGain: musicSpotMaxGain, minGain: musicSpotMinGain,
-                routeBlend: musicSpotRouteBlend)
+                routeBlend: musicSpotRouteBlend,
+                pinpointStartM: musicSpotPinpointStartM,
+                pinpointFullM: musicSpotPinpointFullM,
+                pinpointBeamDeg: musicSpotPinpointBeamDeg,
+                pinpointDepthDb: musicSpotPinpointDepthDb)
         }
 
         /// 実験ビルドで実際に鳴らす音色を決める。
