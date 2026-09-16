@@ -2,7 +2,7 @@ import Foundation
 
 /// 歩ける道の種別。OSM の `highway` タグを、提案スコアに効く粒度まで畳んだもの。
 /// 数値は保存形式に載るため、**既存の値を変えない**(増やすのは可)。
-public enum WayClass: Int, Codable, Equatable, CaseIterable {
+public enum WayClass: Int, Codable, Equatable, CaseIterable, Sendable {
     /// 歩行者専用(footway / path / pedestrian / steps)
     case footway = 0
     /// 生活道路(residential / living_street / service)
@@ -29,7 +29,7 @@ public enum WayClass: Int, Codable, Equatable, CaseIterable {
 /// 保存形式は JSON。デバッグと再生ツールから直接読めることを優先した。
 /// 生成は PC 側の `scripts/build_map.sh`(osmium + MapBuild)。
 public struct WalkMap: Codable, Equatable, Sendable {
-    public struct Way: Codable, Equatable {
+    public struct Way: Codable, Equatable, Sendable {
         /// `nodes` への添字列。2 点未満の way は生成側で捨てる
         public var n: [Int]
         /// 道の種別
