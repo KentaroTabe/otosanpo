@@ -17,6 +17,19 @@ CONF="${1:-Release}"
 PLACEHOLDER='$(HOTPEPPER_API_KEY)'
 STATUS=0
 
+# Info.plist を見て「設定済み / 未設定」だけ報告する(**値は表示しない**。桁数のみ)
+report_plist() {
+  local label="$1" plist="$2" value
+  value=$(plutil -extract HotPepperAPIKey raw -o - "$plist" 2>/dev/null || true)
+  if [ -z "$value" ] || [ "$value" = "$PLACEHOLDER" ]; then
+    echo "${label}: APIキー 未設定(差し込みの記号のまま)"
+    echo "  → このまま配ると、店舗の機能は何も動きません"
+    STATUS=1
+  else
+    echo "${label}: APIキー 設定済み(${#value} 文字)"
+  fi
+}
+
 CONFIG=Support/Signing.xcconfig
 if [ ! -f "$CONFIG" ]; then
   echo "設定ファイルがありません: $CONFIG"
@@ -39,16 +52,16 @@ APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -maxdepth 6 -name OtoSanp
       -path "*${CONF}-iphonesimulator*" 2>/dev/null | head -n 1)
 if [ -z "$APP" ]; then
   echo "ビルド済みアプリ($CONF): まだありません(scripts/build.sh などでビルドしてから確かめます)"
-  exit "$STATUS"
+else
+  report_plist "ビルド済みアプリ($CONF)" "$APP/Info.plist"
 fi
 
-BUILT=$(plutil -extract HotPepperAPIKey raw -o - "$APP/Info.plist" 2>/dev/null || true)
-if [ -z "$BUILT" ] || [ "$BUILT" = "$PLACEHOLDER" ]; then
-  echo "ビルド済みアプリ($CONF): APIキー 未設定(差し込みの記号のまま)"
-  echo "  → このまま配ると、店舗の機能は何も動きません"
-  STATUS=1
+# **配るのはこれ。** アーカイブの中身を直接見る(配布物に入っていなければ意味がない)
+ARCHIVE_PLIST=build/OtoSanpo.xcarchive/Products/Applications/OtoSanpo.app/Info.plist
+if [ -f "$ARCHIVE_PLIST" ]; then
+  report_plist "アーカイブ(配布物)" "$ARCHIVE_PLIST"
 else
-  echo "ビルド済みアプリ($CONF): APIキー 設定済み(${#BUILT} 文字)"
+  echo "アーカイブ: まだありません(scripts/archive.sh で作ります)"
 fi
 
 exit "$STATUS"
