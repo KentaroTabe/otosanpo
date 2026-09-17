@@ -378,6 +378,11 @@ final class WalkSessionController: ObservableObject {
             + " 許可=\(pedometer.authorizationLabel)")
         log("ヘッドフォンモーション: 利用可能=\(motion.isAvailable ? "はい" : "いいえ")"
             + " 許可=\(motion.authorizationLabel) 更新中=\(motion.isActive ? "はい" : "いいえ")")
+        // **キーの有無をログに残す(キーそのものは書かない)。**
+        // 配布物にキーが入っていないと店舗の機能は黙って何もしない。
+        // 後から「なぜ 0 軒だったのか」をログだけで切り分けられるようにする(2026-09-17)
+        log("店舗の記録: \(shopSearchWanted ? "する(現在地を送ります)" : "しない")"
+            + " APIキー=\(HotPepperShopCandidateProvider.apiKey() == nil ? "未設定" : "設定済み")")
         apply(.start)
         scheduleTimeUp()
         log("散歩を開始(\(Int(durationMin)) 分)")
