@@ -125,48 +125,11 @@ struct ContentView: View {
                         summary: s,
                         discoverySummary: controller.lastDiscoverySummary,
                         shopHistoryRecords: controller.shopHistoryRecords) {
-                        Section("今日の音さんぽ") {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(walkDateLine(s))
-                                    .font(.subheadline.bold())
-                                Text(walkTimeRangeLine(s))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            LabeledContent("歩いた時間", value: String(format: "%.0f 分", s.durationSec / 60))
-                            LabeledContent("距離", value: String(format: "%.1f km", s.pathLengthM / 1_000))
-                            discoveryMetric(title: "NEW", value: "\(receipt.newShopCount) 軒")
-
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("今日見つけた店")
-                                    .font(.subheadline.bold())
-                                if receipt.shopItems.isEmpty {
-                                    // 調べていない時に「出会いがなかった」と書くと、
-                                    // 探した末に見つからなかったように読めるので分ける
-                                    Text(controller.shopSearchWanted
-                                         ? "今日は新しい店との出会いはありませんでした"
-                                         : "お店の記録は OFF です(設定から ON にできます)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                } else {
-                                    ForEach(receipt.shopItems) { item in
-                                        receiptShopRow(item)
-                                    }
-                                    // 店名を出す所には提供元を添える(規約の求め・→ ShopCreditLabel)
-                                    ShopCreditLabel()
-                                }
-                            }
-                            .padding(.vertical, 4)
-
-                            NavigationLink("経路図と店を見る") {
-                                WalkSummaryView(summary: s,
-                                                marginM: controller.params.summary.mapMarginM,
-                                                minSpanM: controller.params.summary.mapMinSpanM,
-                                                discoveredShops: receipt.shopItems,
-                                                showsDiscoveredShops: true,
-                                                roadsProvider: { controller.roadSegments(in: $0) })
-                            }
-                        }
+                        WalkReceiptView(content: receipt,
+                                        shopSearchOn: controller.shopSearchWanted,
+                                        marginM: controller.params.summary.mapMarginM,
+                                        minSpanM: controller.params.summary.mapMinSpanM,
+                                        roadsProvider: { controller.roadSegments(in: $0) })
                     } else {
                         Section("前回の散歩(開発用)") {
                             LabeledContent("距離", value: String(format: "%.0f m", s.pathLengthM))
@@ -189,40 +152,9 @@ struct ContentView: View {
                     }
                 }
 
-                // **ここから下は開発用。配布ビルド(Release)には出さない**
-                // (2026-09-17 利用者依頼「テスター向けの画面から不要なものを削る」)。
-                // 消さずに残すのは、CLAUDE.md が「シミュレータでの代替手段」として
-                // 指している道具だから。実機の開発ビルド(scripts/build_device.sh は Debug)
-                // とシミュレータでは今までどおり出る
-                #if DEBUG
-                // 歩かずに符号と手応えを決めるための机上テスト。
-                // 姿勢(yaw)の系統は散歩 1 回を丸ごと潰した前科があるので、
-                // 角速度の系統は先にここで確かめる(docs/08)
-                Section("頭の追従の確認(机上・AirPods 装着)") {
-                    if controller.headCheckActive {
-                        Text(controller.headCheckLine)
-                            .font(.caption.monospaced())
-                        Text("正面を向いた時の方向に音が置かれています。"
-                             + "首を右に向けると音は左へ動くのが正しい動作です")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("確認を終了", role: .destructive) { controller.stopHeadCheck() }
-                    } else {
-                        Button("頭の追従を確認する") { controller.startHeadCheck() }
-                        Text("歩かずに確認できます。動かない・逆に動く場合は "
-                             + "head_rate_sign を反転させてください")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("デバッグ(シミュレータ・モーション非対応時の代替)") {
-                    Button("時間到来を発火") { controller.debugTimeUp() }
-                    // 帰る / 延長はデバッグ専用ではなくなったので、上の「時間になりました」に移した
-                }
-                #endif
-                // earcon の試聴は「案内音」の画面へ移した(上の「設定」から開く)。
-                // 音が鳴らない時の確認手段としてテスターにも要るので、消さずに移動している
+                // 「頭の追従の確認(机上)」と「時間到来の発火」は削除した
+                // (2026-09-17 利用者判断: もう要らない)。earcon の試聴は
+                // 「案内音」の画面へ移した(上の「設定」から開く)
 
                 // **散歩に出てよいかの判定**(→ docs/05 の前提条件)。実験ビルドだけに出す。
                 // build-demo/ab-*.wav でも同じ並びを聴けるが、あちらは等パワーのパンによる
@@ -345,47 +277,4 @@ struct ContentView: View {
         }
     }
 
-    private func discoveryMetric(title: String, value: String) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("街の発見")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(title)
-                    .font(.subheadline.bold())
-            }
-            Spacer()
-            Text(value)
-                .font(.headline.monospacedDigit())
-        }
-    }
-
-    private func receiptShopRow(_ shop: WalkReceiptShopItem) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(shop.name)
-                    .font(.subheadline)
-                if let category = shop.category, !category.isEmpty {
-                    Text(category)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            Text(shop.passageLabel)
-                .font(.caption.bold())
-                .foregroundStyle(shop.isNew ? Color.accentColor : Color.secondary)
-        }
-    }
-
-    private func walkDateLine(_ summary: WalkSummary) -> String {
-        summary.startedAt.formatted(.dateTime.month().day())
-    }
-
-    private func walkTimeRangeLine(_ summary: WalkSummary) -> String {
-        let start = summary.startedAt.formatted(.dateTime.hour().minute())
-        guard let endedAt = summary.endedAt else { return start }
-        let end = endedAt.formatted(.dateTime.hour().minute())
-        return "\(start)–\(end)"
-    }
 }

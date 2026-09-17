@@ -171,12 +171,6 @@ final class WalkSessionController: ObservableObject {
     private var lastMusicLogAt: Date?
     /// 音源が Documents にあるか。無ければ画面に選択肢を出さない
     var musicFileAvailable: Bool { MusicStore.firstFile() != nil }
-    /// 机上で頭の追従を確かめている最中か(散歩とは独立に回す)
-    @Published private(set) var headCheckActive = false
-    /// 机上テストの現在値。画面に出して符号と追従を目で確かめる
-    @Published private(set) var headCheckLine = ""
-    private var headCheckTimer: Timer?
-
     // MARK: - 経路データの取得(→ docs/12)
 
     /// 取得中か。二重に走らせないための旗
@@ -634,66 +628,6 @@ final class WalkSessionController: ObservableObject {
         }
     }
 
-    // MARK: - 頭の追従の机上テスト
-
-    /// **歩かずに「頭の向きが音に乗るか」を確かめる。**
-    ///
-    /// 始めた瞬間に向いていた方向へ音を置き続ける。首を右に向ければ音は左へ動くのが正しい。
-    /// 動かない・逆に動くなら `head_rate_sign` か配線が違う。
-    ///
-    /// これを机上に置く理由: 姿勢(yaw)を使った系統は 2026-08-19 に散歩 1 回を丸ごと潰した
-    /// (左右が壊れた)。**符号と手応えは、散歩を使わずに決められる。**
-    func startHeadCheck() {
-        guard state == .idle || state == .arrived else {
-            alertMessage = "散歩中は確認できません。終了してからお試しください。"
-            return
-        }
-        ensureSynth()
-        headTracker.reset()
-        motion.start()
-        // 頭部固定の机上確認(docs/13 未確認 2・3)もここで一緒にできるようにする。
-        // 画面に生の方位が出るので、取り付け補正(offset_deg)と磁気の乱れを目で確かめられる
-        if params.headMount.enabled {
-            headMountMotion.start(updateHz: params.headMount.updateHz)
-        }
-        headCheckActive = true
-        headCheckLine = "正面を向いたまま始めてください(音は正面から鳴ります)"
-        log("頭の追従の確認を開始(首を右に向けると音は左へ動くのが正しい)")
-        fireHeadCheckTick()
-    }
-
-    func stopHeadCheck() {
-        headCheckTimer?.invalidate()
-        headCheckTimer = nil
-        headCheckActive = false
-        headCheckLine = ""
-        if state == .idle || state == .arrived {
-            motion.stop()
-            headMountMotion.stop()
-        }
-        log("頭の追従の確認を終了")
-    }
-
-    private func fireHeadCheckTick() {
-        headCheckTimer?.invalidate()
-        guard headCheckActive else { return }
-        // 音源は「始めた時に向いていた方向」に固定。頭から見た相対方位はその逆符号になる
-        let offset = headTracker.offsetDeg
-        synth?.play(.homeBeacon, relativeBearingDeg: -offset)
-        headCheckLine = String(format: "首の向き %+.0f°(右が正)→ 音は %+.0f° に鳴る",
-                               offset, -offset)
-        if params.headMount.enabled {
-            let heading = headMountFusion.rawHeadingDeg.map { String(format: "%.0f°", $0) } ?? "未取得"
-            // 机上では course が無く、取り付けのずれは学習できない(歩き出してから)。
-            // ここで見るのは**追従と符号**: 首を回して数字が滑らかに追うか・北で 0° 近辺か
-            headCheckLine += "\nスマホ方位(生): \(heading)(北=0・時計回り。取り付けのずれは歩行中に自動学習)"
-        }
-        headCheckTimer = Timer.scheduledTimer(withTimeInterval: params.audio.guidanceIntervalSec,
-                                              repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.fireHeadCheckTick() }
-        }
-    }
-
     // MARK: - 時間到来への応答
 
     /// 残りの延長回数。画面に出して「押しても延びない」を防ぐ
@@ -707,9 +641,6 @@ final class WalkSessionController: ObservableObject {
 
     /// もう少し歩く(延長)。首振りと同じイベントを流す
     func answerExtend() { apply(.shake) }
-
-    // デバッグ用(シミュレータ・モーション非対応時の代替)
-    func debugTimeUp() { apply(.timeUp) }
 
     // MARK: - イベント適用
 
@@ -1700,7 +1631,6 @@ final class WalkSessionController: ObservableObject {
         // (`use_gyro_head_offset`)。姿勢の yaw を使う系統とは別物(docs/08)
         headTracker.ingest(yawRateDegPerSec: s.yawRateDegPerSec, time: s.time,
                            p: params.heading.headTracker)
-        if headCheckActive { return }
         updateFacingBearing(s)
 
         if state == .promptingReturn {
