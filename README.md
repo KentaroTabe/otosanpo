@@ -151,6 +151,17 @@ HOTPEPPER_API_KEY = your_api_key_here
 `project.yml` から生成される `Info.plist` の `HotPepperAPIKey` にこの値が入り、アプリ起動時にキーが空でなければ Hot Pepper provider を使う。
 `$(HOTPEPPER_API_KEY)` のまま、または空文字の場合は未設定として扱う。
 
+**テスター配布では、使い捨ての口座で作ったキー 1 つを全員が使う**(2026-09-17 利用者判断)。
+ビルドすると実キーはアプリの `Info.plist` に入るので、**配布物から取り出せる**。
+避けられないので、使い捨ての口座で作り、漏れたら作り直す運用で受け止める。
+
+キーがリポジトリに載る経路は `Tests/DistributionHygieneTests.swift` が塞いでいる
+(`Support/Info.plist` と `project.yml` は差し込みの記号のまま・手本の xcconfig は空・
+`.gitignore` に `Support/Signing.xcconfig` の行がある、の 3 点を検査する)。
+
+店名を出す画面には提供元の表示(`ShopCreditLabel`)を添える。利用規約が
+「本サイト内の情報が、リクルートより提供されたものである旨を表示すること」を求めているため。
+
 ### 実機で店舗候補取得を確認する
 
 1. `Support/Signing.xcconfig` に `DEVELOPMENT_TEAM` と `HOTPEPPER_API_KEY` を設定する。

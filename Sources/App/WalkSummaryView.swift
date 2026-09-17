@@ -66,6 +66,8 @@ struct WalkSummaryView: View {
                         ForEach(discoveredShops) { shop in
                             shopRow(shop)
                         }
+                        // 店名を出す所には提供元を添える(規約の求め・→ ShopCreditLabel)
+                        ShopCreditLabel()
                     }
                 } else {
                     Section("見つけた店") {

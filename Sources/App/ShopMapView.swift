@@ -83,7 +83,8 @@ struct ShopMapView: View {
     }
 
     private var creditText: some View {
-        Text("Powered by ホットペッパーグルメ Webサービス")
+        // 文言は ShopCreditLabel と共通(画面ごとに違う名前で出さない)
+        Text(ShopCreditLabel.text)
             .font(.caption2)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
