@@ -105,6 +105,19 @@ final class ParametersFileTests: XCTestCase {
         XCTAssertLessThanOrEqual(e.musicSpotReferenceDistanceM, e.musicSpotPinpointFullM)
     }
 
+    /// 後ろの音を暗くする値が届いていること(→ MusicSpot.Params.rearShelfDb・2026-09-18)
+    func testMusicSpotRearShelfValuesArrive() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        let e = p.experiment
+        XCTAssertGreaterThan(e.musicSpotRearShelfDepthDb, 0, "0 だと何も変わらない")
+        XCTAssertLessThan(e.musicSpotRearShelfDepthDb, 12,
+                          "深く削ると HRTF が前後に使う高域まで失われる(合議)")
+        XCTAssertGreaterThanOrEqual(e.musicSpotRearShelfStartDeg, 0)
+        XCTAssertLessThan(e.musicSpotRearShelfStartDeg, 180)
+        XCTAssertGreaterThan(e.musicSpotRearShelfHz, 1_000,
+                             "耳介の手がかりが載る帯域より上から落とす")
+    }
+
     /// **設定から Core への受け渡し**で、音楽スポットの値が取り違えられていないこと
     /// (2026-09-15 の検証で挙がった系列)。
     ///
@@ -131,6 +144,8 @@ final class ParametersFileTests: XCTestCase {
         e.musicSpotPinpointFullM = 4.3
         e.musicSpotPinpointBeamDeg = 53.9
         e.musicSpotPinpointDepthDb = 11.3
+        e.musicSpotRearShelfStartDeg = 71.7
+        e.musicSpotRearShelfDepthDb = 4.9
         let sp = e.musicSpot(durationMin: 20)
         XCTAssertEqual(sp.minDistanceM, 1.1 * 20, accuracy: 1e-9)
         XCTAssertEqual(sp.maxDistanceM, 2.3 * 20, accuracy: 1e-9)
@@ -147,6 +162,8 @@ final class ParametersFileTests: XCTestCase {
         XCTAssertEqual(sp.pinpointFullM, 4.3)
         XCTAssertEqual(sp.pinpointBeamDeg, 53.9)
         XCTAssertEqual(sp.pinpointDepthDb, 11.3)
+        XCTAssertEqual(sp.rearShelfStartDeg, 71.7)
+        XCTAssertEqual(sp.rearShelfDepthDb, 4.9)
     }
 
     func testShopHistoryValuesArrive() throws {

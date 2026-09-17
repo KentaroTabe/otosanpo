@@ -405,6 +405,12 @@ public struct AppParameters: Codable, Equatable {
         public var musicSpotPinpointBeamDeg: Double
         /// 効果が最大の時、正面から外れたら下げる音量 [dB]。**首を振って探せる**ようにする
         public var musicSpotPinpointDepthDb: Double
+        /// 後ろの音を暗くし始める角度 [deg](正面から測る・2026-09-18)
+        public var musicSpotRearShelfStartDeg: Double
+        /// 真後ろで高域を落とす量 [dB](正の値)。**前後を音色で補助する**(→ MusicSpot.rearShelfDb)
+        public var musicSpotRearShelfDepthDb: Double
+        /// 高域を落とし始める周波数 [Hz]。耳介の手がかりが載る帯域より上に置く
+        public var musicSpotRearShelfHz: Double
 
         /// MusicSpot に渡す設定値。**散歩時間で距離が決まる**ので時間を渡す
         public func musicSpot(durationMin: Double) -> MusicSpot.Params {
@@ -422,7 +428,9 @@ public struct AppParameters: Codable, Equatable {
                 pinpointStartM: musicSpotPinpointStartM,
                 pinpointFullM: musicSpotPinpointFullM,
                 pinpointBeamDeg: musicSpotPinpointBeamDeg,
-                pinpointDepthDb: musicSpotPinpointDepthDb)
+                pinpointDepthDb: musicSpotPinpointDepthDb,
+                rearShelfStartDeg: musicSpotRearShelfStartDeg,
+                rearShelfDepthDb: musicSpotRearShelfDepthDb)
         }
 
         /// 実験ビルドで実際に鳴らす音色を決める。

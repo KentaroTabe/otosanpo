@@ -256,6 +256,10 @@ enum SettingStore {
     private static let shopSearchKey = "shop_search_enabled"
     /// 案内音に倍音を足すか。**未設定(nil)ならビルドの既定に従う**
     private static let guidanceToneKey = "guidance_tone_experimental"
+    /// 音の向きの基準(→ Core の OrientationMode)。**既定は進む向き**(配布版の従来どおり)
+    private static let orientationModeKey = "orientation_mode"
+    /// 後ろの音を暗くするか。前後の手がかりの比較用(2026-09-18)
+    private static let rearDarkeningKey = "rear_darkening"
 
     /// 保存先を差し替えられるようにしてあるのは、テストが**本物の設定を汚さない**ため
     static func loadShopSearchEnabled(from defaults: UserDefaults = .standard) -> Bool {
@@ -274,6 +278,29 @@ enum SettingStore {
 
     static func saveGuidanceToneExperimental(_ on: Bool, to defaults: UserDefaults = .standard) {
         defaults.set(on, forKey: guidanceToneKey)
+    }
+
+    /// **既定は進む向き。** 頭部固定は利用者が選んだ時だけ使う(2026-09-18 利用者依頼)
+    static func loadOrientationMode(from defaults: UserDefaults = .standard) -> OrientationMode {
+        guard let raw = defaults.string(forKey: orientationModeKey),
+              let mode = OrientationMode(rawValue: raw) else { return .travelDirection }
+        return mode
+    }
+
+    static func saveOrientationMode(_ mode: OrientationMode,
+                                    to defaults: UserDefaults = .standard) {
+        defaults.set(mode.rawValue, forKey: orientationModeKey)
+    }
+
+    /// **既定は暗くする。** 前後が分からないという感想への手当て(2026-09-18)。
+    /// 比較のために画面から切れる
+    static func loadRearDarkening(from defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: rearDarkeningKey) != nil else { return true }
+        return defaults.bool(forKey: rearDarkeningKey)
+    }
+
+    static func saveRearDarkening(_ on: Bool, to defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: rearDarkeningKey)
     }
 }
 

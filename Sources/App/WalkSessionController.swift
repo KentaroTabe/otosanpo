@@ -22,6 +22,24 @@ final class WalkSessionController: ObservableObject {
             log("通りかかった店の記録: \(shopSearchWanted ? "する(現在地を送ります)" : "しない")")
         }
     }
+    /// **音の向きの基準**(→ Core の OrientationMode・2026-09-18 利用者依頼)。
+    /// 画面から選べるのは**音楽スポットを選んだ時だけ**。実験ビルドは設定によらず頭部固定を使う
+    @Published var orientationMode: OrientationMode {
+        didSet {
+            guard orientationMode != oldValue else { return }
+            SettingStore.saveOrientationMode(orientationMode)
+            log("音の向きの基準: \(orientationMode == .phoneHeadMounted ? "頭の向き" : "進む向き")")
+        }
+    }
+    /// **後ろの音を暗くするか**(前後の手がかりの比較用・2026-09-18)。
+    /// 同じ散歩の中で切り替えて聴き比べられるように画面へ出す
+    @Published var rearDarkening: Bool {
+        didSet {
+            guard rearDarkening != oldValue else { return }
+            SettingStore.saveRearDarkening(rearDarkening)
+            log("後ろの音を暗くする: \(rearDarkening ? "する" : "しない")")
+        }
+    }
     /// 案内音に**倍音を足した音**(実験の音色)を使うか。
     /// 画面の「案内音」から選べる(2026-09-17 利用者依頼)。既定はビルドの設定に従う
     @Published var guidanceToneExperimental: Bool {
@@ -169,8 +187,22 @@ final class WalkSessionController: ObservableObject {
     /// 音楽の行を残した時刻。音は頭方位の受信ごと(`head_mount.update_hz`)に付け直すが、
     /// ログはこの間隔に間引く
     private var lastMusicLogAt: Date?
+    /// **この散歩で頭部固定の方位を定位の基準に使うか。** 出発時に決め、歩き出してから変えない
+    /// (途中で設定を触っても、鳴り方が散歩の途中で変わらないようにする)。
+    /// **実験の音(有効性パルス・実験音色)はこれに含めない** — それらは
+    /// `head_mount.enabled` のまま(画面の選択から実験の値へ到達しない・2026-09-18 合議)
+    private(set) var headMountActive = false
     /// 音源が Documents にあるか。無ければ画面に選択肢を出さない
     var musicFileAvailable: Bool { MusicStore.firstFile() != nil }
+
+    /// **音楽スポットの最中は、散策の案内音を鳴らさない**(2026-09-18 利用者依頼)。
+    ///
+    /// 連続音を聴いている所へ方向を持つ点の音が重なると、どちらの向きの話か分からなくなる。
+    /// **帰路の音はそのまま鳴らす** — 帰れなくなる方が困るため(利用者判断)。
+    /// 記録は残すので、「どこで鳴るはずだったか」は後からログで追える
+    private var suppressesGuidanceSounds: Bool {
+        musicSpotWanted && state == .wandering
+    }
     // MARK: - 経路データの取得(→ docs/12)
 
     /// 取得中か。二重に走らせないための旗
@@ -210,6 +242,8 @@ final class WalkSessionController: ObservableObject {
         durationMin = params.session.defaultDurationMin
         // **まだ選んでいなければ、このビルドの既定に従う**(実験ビルド = 倍音を足した音)。
         // 一度選んだら次からはその選択(→ SettingStore)
+        orientationMode = SettingStore.loadOrientationMode()
+        rearDarkening = SettingStore.loadRearDarkening()
         guidanceToneExperimental = SettingStore.loadGuidanceToneExperimental()
             ?? params.headMount.enabled
         grid = GridStore.load(cellSizeM: params.route.cellSizeM,
@@ -340,7 +374,13 @@ final class WalkSessionController: ObservableObject {
             motion.start()
             pedometer.start()
         }
-        if params.headMount.enabled {
+        // **この散歩で頭部固定を使うかは、出発時に決める**(歩き出してから変えない)。
+        // 実験ビルドは従来どおり常に使い、配布ビルドでは画面の選択が効く(→ OrientationMode)
+        headMountActive = OrientationMode.usesHeadMount(
+            mode: orientationMode,
+            musicSpotWanted: musicSpotWanted,
+            experimentEnabled: params.headMount.enabled)
+        if headMountActive {
             // 検疫も取り付けのずれの学習も**散歩ごとに白紙から**。
             // 前回の散歩の信頼を持ち越さない(乱れた場所で終えた場合も、正常な場所で
             // 終えた場合も、実績は今回の分だけ)。付け直しでずれも変わる
@@ -359,13 +399,14 @@ final class WalkSessionController: ObservableObject {
             ) { [weak self] _ in
                 Task { @MainActor in self?.tickHeadMount() }
             }
-            log("頭部固定: 有効(利用可能=\(headMountMotion.isAvailable ? "はい" : "いいえ")"
+            log("頭部固定: 有効(\(params.headMount.enabled ? "実験ビルド" : "画面の設定")・"
+                + "利用可能=\(headMountMotion.isAvailable ? "はい" : "いいえ")"
                 + " 取り付けのずれは歩きながら学習)")
         } else {
             // **無効であることも残す。** 黙っていると「実験ビルドのつもりで配布ビルドを
             // 歩いた」ことに気づけない(2026-09-10 に実際に 1 回分の散歩を失った)。
             // 無音や即時再生の理由が、後からログだけで分かるようにする
-            log("頭部固定: 無効(配布と同じ設定。音楽は待たずに鳴り始めます)")
+            log("頭部固定: 無効(進む向きを基準にします。音楽は待たずに鳴り始めます)")
         }
         startMusicSpotIfWanted()
         log("歩調: 利用可能=\(PedometerService.isAvailable ? "はい" : "いいえ")"
@@ -750,7 +791,7 @@ final class WalkSessionController: ObservableObject {
             // 定位の基準を進行方位に戻す(次の散歩の検疫が通るまで使わない)。
             // 学習と検疫は散歩ごとに白紙なので、判断ごと捨てる
             latestFacingBearing = nil
-            if params.headMount.enabled {
+            if headMountActive {
                 headMountFusion = HeadMountFusion()
                 // 記録の集計も散歩ごとに作り直す(前の散歩の末尾の時刻を持ち越さない)
                 motionDigest = HeadMotionDigest()
@@ -850,6 +891,14 @@ final class WalkSessionController: ObservableObject {
             }
             lastSuggestionPoint = p
             lastSuggestionAt = Date()
+            // 音楽スポットの最中は鳴らさない(記録だけ残す・→ `suppressesGuidanceSounds`)
+            if suppressesGuidanceSounds {
+                logToFile(String(format: "提案(音楽スポット中につき鳴らさない): 相対 %+.0f° %@ "
+                                 + "交差点まで=%.0fm score=%.2f [%@]",
+                                 c.relativeBearingDeg, "\(c.branch.cls)",
+                                 x.distanceM, c.score, context))
+                return
+            }
             log(String(format: "提案(分岐): 相対 %+.0f° %@ 横断=%d 交差点まで=%.0fm score=%.2f [%@]",
                        c.relativeBearingDeg, "\(c.branch.cls)", c.branch.crossCost,
                        x.distanceM, c.score, context))
@@ -868,9 +917,14 @@ final class WalkSessionController: ObservableObject {
             // 頭部固定が使えていればそちらが基準になる(同じ resolver を通す)
             let reference = placementReference(travel)?.deg ?? heading
             let rel = Geo.angularDiffDeg(s.absoluteBearingDeg, reference)
-            synth?.play(.suggestion, relativeBearingDeg: rel)
             lastSuggestionPoint = p
             lastSuggestionAt = Date()
+            // 音楽スポットの最中は鳴らさない(記録だけ残す・→ `suppressesGuidanceSounds`)
+            if suppressesGuidanceSounds {
+                logToFile("提案(音楽スポット中につき鳴らさない): \(label(for: s.direction)) [\(context)]")
+                return
+            }
+            synth?.play(.suggestion, relativeBearingDeg: rel)
             log("提案: \(label(for: s.direction)) [\(context)]")
         } else {
             // 「なぜ鳴らなかったか」を後から追えるようにする(直進が最良 or スコア不足)
@@ -973,7 +1027,7 @@ final class WalkSessionController: ObservableObject {
         // AirPods の融合(latestFacingBearing)は進行方位から育てる推定値で、
         // 鮮度の判定も持たない。立ち止まりで基準に使えるようにはしない
         // (2026-08-19 に左右を壊した系統。既定でも切ってある)
-        if params.headMount.enabled, let facing = facingBearing(now: now) {
+        if headMountActive, let facing = facingBearing(now: now) {
             return (facing, Self.headReferenceLabel)
         }
         guard let travel else { return nil }
@@ -995,7 +1049,7 @@ final class WalkSessionController: ObservableObject {
     /// 画面を消して頭にスマホを載せる構成では、これが
     /// 「音が最後の頭の向きに凍りついたまま戻らない」という形で出る
     private func facingBearing(now: Date = Date()) -> Double? {
-        guard params.headMount.enabled else { return latestFacingBearing }
+        guard headMountActive else { return latestFacingBearing }
         return headMountFusion.facingDeg(at: now.timeIntervalSinceReferenceDate,
                                          p: params.headMount.fusion)
     }
@@ -1165,7 +1219,7 @@ final class WalkSessionController: ObservableObject {
         }
         guard params.heading.useHeadOrientation else { return }
         // 頭部固定が有効な間は、スマホの方位が定位の基準を持つ(書き手を 2 つにしない)
-        guard !params.headMount.enabled else { return }
+        guard !headMountActive else { return }
         let p = HeadingFusion.Params(baselineAlpha: params.heading.baselineAlpha,
                                      maxOffsetDeg: params.heading.maxOffsetDeg,
                                      minSamples: params.heading.minSamples,
@@ -1187,7 +1241,7 @@ final class WalkSessionController: ObservableObject {
     /// 使用可能でない間は `facingBearing()` が nil を返し、従来どおり進行方位で定位する
     /// (同じビルドで装着あり / なしを比べられるのはこのため。docs/14)
     private func onHeadMountSample(_ sample: HeadMotionService.Sample) {
-        guard params.headMount.enabled else { return }
+        guard headMountActive else { return }
         let headingDeg = sample.headingDeg
         let nowDate = Date()
         let now = nowDate.timeIntervalSinceReferenceDate
@@ -1310,7 +1364,7 @@ final class WalkSessionController: ObservableObject {
         // 定まる前に鳴らすと、音は進行方位を基準に置かれる。首を回しても動かないので
         // 「頭に追従しない」体験になり、しかも確かめようと首を回すほど
         // ずれの学習が汚れて、いつまでも定まらない(2026-09-09 の実測: 採用 7%)
-        if params.headMount.enabled {
+        if headMountActive {
             musicWaitStartedAt = Date()
             log(String(format: "音楽スポット: 頭の向きが定まるまで待ち、鳴り始める地点から置きます"
                        + "(上限 %.0f 秒・%@)",
@@ -1415,7 +1469,8 @@ final class WalkSessionController: ObservableObject {
                                     p: sp)
         do {
             // **無音から始める。** ここから music_fade_in_sec かけて距離ぶんの音量まで上げる
-            try synth.startMusic(url: url, relativeBearingDeg: placed.relDeg, gain: 0)
+            try synth.startMusic(url: url, relativeBearingDeg: placed.relDeg, gain: 0,
+                                 rearShelfDb: appliedRearShelfDb(placed))
         } catch {
             log("音楽スポット: 音源を開けませんでした(\(error.localizedDescription))")
             pendingMusicURL = nil
@@ -1478,7 +1533,8 @@ final class WalkSessionController: ObservableObject {
         // **鳴り始めはじんわり。** 距離から決めた音量に、立ち上がりの係数を掛ける。
         // 頭方位の受信ごとに呼ばれるので、別のタイマーを持たずに滑らかに上がる
         synth?.setMusicPlacement(relativeBearingDeg: reference == nil ? 0 : placed.relDeg,
-                                 gain: placed.gain * musicFadeFactor())
+                                 gain: placed.gain * musicFadeFactor(),
+                                 rearShelfDb: appliedRearShelfDb(placed))
         // **音は毎回付け直すが、ログは間引く。** 受信ごとに書くとログが音楽で埋まる
         let now = Date()
         guard lastMusicLogAt == nil
@@ -1488,12 +1544,18 @@ final class WalkSessionController: ObservableObject {
         // `音量=` は**距離だけ**から決めた値のまま残す(過去のログと比べられるように)。
         // 実際に鳴らしたのは 音量 × 10^(正面/20) × 立ち上がり
         logToFile(String(format: "音楽 距離=%.0fm 向き=%@ 音量=%.2f 基準=%@ 音源方位=%.0f°%@"
-                         + " 近さ=%.2f 正面=%.1fdB",
+                         + " 近さ=%.2f 正面=%.1fdB 後方=%.1fdB",
                          placed.distanceM,
                          reference == nil ? "中央" : String(format: "%+.0f°", placed.relDeg),
                          placed.distanceGain, reference?.source ?? "なし", placed.worldBearingDeg,
                          musicSpotField == nil ? "(直線)" : "(直線と道の間)",
-                         placed.pinpointWeight, placed.facingDb))
+                         placed.pinpointWeight, placed.facingDb,
+                         appliedRearShelfDb(placed)))
+    }
+
+    /// 実際に掛ける「後ろの暗さ」[dB]。画面で切っていれば 0(同じ散歩で聴き比べるため)
+    private func appliedRearShelfDb(_ placed: MusicSpot.Placement) -> Double {
+        rearDarkening ? placed.rearShelfDb : 0
     }
 
     /// 鳴り始めの立ち上がり [0..1]。待った末に不意に鳴り出すと驚くので、
@@ -1532,7 +1594,7 @@ final class WalkSessionController: ObservableObject {
     /// 「古い」への遷移もパルスの停止も記録に残らず、`lastValidityPulseAt` も残り続けて
     /// 復帰時の鳴り直しが遅れる。**鮮度を扱う処理は時計仕掛けでなければならない。**
     private func tickHeadMount(now: Date = Date()) {
-        guard params.headMount.enabled else { return }
+        guard headMountActive else { return }
         let use = headMountFusion.use(at: now.timeIntervalSinceReferenceDate,
                                       p: params.headMount.fusion)
         headMountLabel = use.label
@@ -1786,7 +1848,7 @@ final class WalkSessionController: ObservableObject {
         parts.append("方向: \(travel.map { label(for: $0.source) } ?? "不明")")
         // 頭部固定の実験中は、方位が採用されているかを常に見えるようにする(docs/13)。
         // 「退避」が出続けるなら磁気が乱れている(それ自体が実験の観測値)
-        if params.headMount.enabled {
+        if headMountActive {
             parts.append("頭部: \(headMountLabel ?? HeadMountFusion.Use.noSample.label)")
         }
         statusLine = parts.joined(separator: " / ")

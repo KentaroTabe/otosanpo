@@ -15,7 +15,8 @@ final class MusicSpotTests: XCTestCase {
                         tolerance: Double = 0.001,
                         blend: Double = 0,
                         pinpointStart: Double = 15, pinpointFull: Double = 5,
-                        beam: Double = 60, depth: Double = 12) -> MusicSpot.Params {
+                        beam: Double = 60, depth: Double = 12,
+                        rearStart: Double = 90, rearDepth: Double = 0) -> MusicSpot.Params {
         MusicSpot.Params(
             minDistanceM: min, maxDistanceM: max, distanceStepCount: steps,
             reachedM: reached,
@@ -23,7 +24,8 @@ final class MusicSpotTests: XCTestCase {
             referenceDistanceM: 15, gainMinSpanM: 30,
             maxGain: 0.9, minGain: 0.08, routeBlend: blend,
             pinpointStartM: pinpointStart, pinpointFullM: pinpointFull,
-            pinpointBeamDeg: beam, pinpointDepthDb: depth)
+            pinpointBeamDeg: beam, pinpointDepthDb: depth,
+            rearShelfStartDeg: rearStart, rearShelfDepthDb: rearDepth)
     }
 
     /// 音楽を待たせる時だけ、出発の一言に一文を足す(2026-09-10 利用者依頼)。
@@ -465,6 +467,58 @@ final class MusicSpotTests: XCTestCase {
             XCTAssertLessThan(abs(db - previous), 0.21, "\(deg)° で強調が跳んだ")
             previous = db
         }
+    }
+
+    // MARK: - 後ろの音を暗くする(2026-09-18 利用者依頼「前後が弱い」)
+
+    /// **正面から真横までは何も変えない。** そこから真後ろへ向けて滑らかに深くなる
+    func testRearShelfOnlyDarkensBehind() {
+        let p = params(rearStart: 90, rearDepth: 6)
+        XCTAssertEqual(p.rearShelfDb(relativeBearingDeg: 0), 0)
+        XCTAssertEqual(p.rearShelfDb(relativeBearingDeg: 60), 0)
+        XCTAssertEqual(p.rearShelfDb(relativeBearingDeg: 90), 0)
+        XCTAssertEqual(p.rearShelfDb(relativeBearingDeg: 135), -3, accuracy: 1e-9,
+                       "真横と真後ろの中間で半分")
+        XCTAssertEqual(p.rearShelfDb(relativeBearingDeg: 180), -6, accuracy: 1e-9)
+        XCTAssertEqual(p.rearShelfDb(relativeBearingDeg: -135), -3, accuracy: 1e-9,
+                       "左右で同じ")
+        // 折り返しを跨いでも同じ扱い(200° は正面から 160° 外れ = −160° と同じ)
+        XCTAssertEqual(p.rearShelfDb(relativeBearingDeg: 200),
+                       p.rearShelfDb(relativeBearingDeg: -160), accuracy: 1e-12)
+        XCTAssertLessThan(p.rearShelfDb(relativeBearingDeg: 200), -5, "後ろ側は深い")
+    }
+
+    /// **境目で音色が跳ばない。** 真横をまたぐ所で急に暗くなると「壁」に聞こえる
+    func testRearShelfIsContinuous() {
+        let p = params(rearStart: 90, rearDepth: 6)
+        var previous = p.rearShelfDb(relativeBearingDeg: 0)
+        for deg in stride(from: 1.0, through: 180, by: 1) {
+            let db = p.rearShelfDb(relativeBearingDeg: deg)
+            XCTAssertLessThan(abs(db - previous), 0.15, "\(deg)° で跳んだ")
+            XCTAssertLessThanOrEqual(db, previous + 1e-12, "後ろへ回るほど深くなること")
+            previous = db
+        }
+    }
+
+    /// 深さ 0 なら何もしない(切ってある時に余計な処理をしない)
+    func testRearShelfIsOffWhenDepthIsZero() {
+        let p = params(rearStart: 90, rearDepth: 0)
+        for deg in stride(from: -180.0, through: 180, by: 15) {
+            XCTAssertEqual(p.rearShelfDb(relativeBearingDeg: deg), 0, "\(deg)°")
+        }
+    }
+
+    /// 置き方の結果にも入る(画面で切る判断は Controller 側が行う)
+    func testPlacementCarriesTheRearShelf() {
+        let p = params(rearStart: 90, rearDepth: 6)
+        let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: 80))
+        // 北のスポットに背を向ける(南を向く)= 真後ろ
+        let behind = spot.placement(from: origin, referenceBearingDeg: 180,
+                                    gainFromDistanceM: 90, p: p)
+        XCTAssertEqual(behind.rearShelfDb, -6, accuracy: 1e-9)
+        let front = spot.placement(from: origin, referenceBearingDeg: 0,
+                                   gainFromDistanceM: 90, p: p)
+        XCTAssertEqual(front.rearShelfDb, 0)
     }
 
     /// 着いたら止める(**一度だけ鳴る**という約束)

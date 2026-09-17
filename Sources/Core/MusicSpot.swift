@@ -73,6 +73,10 @@ public struct MusicSpot: Equatable {
         public var pinpointBeamDeg: Double
         /// 効果が最大の時、正面から `pinpointBeamDeg` 以上外れたら下げる音量 [dB]
         public var pinpointDepthDb: Double
+        /// **後ろの音を暗くし始める角度** [deg](正面から測る)。ここまでは何も変えない
+        public var rearShelfStartDeg: Double
+        /// 真後ろで高域を落とす量 [dB](正の値で置く)。0 なら何もしない
+        public var rearShelfDepthDb: Double
 
         /// 距離 `d` [m] での音量。**鳴り始めた地点の距離 `start` で最小、
         /// スポットの手前 `referenceDistanceM` で最大とし、その間を dB で均等につなぐ**
@@ -142,13 +146,36 @@ public struct MusicSpot: Equatable {
             return -pinpointDepthDb * w * Swift.min(1, off / pinpointBeamDeg)
         }
 
+        /// **後ろから鳴っている時だけ高域を落とす量** [dB](0 以下)。
+        ///
+        /// ## なぜ要るか(2026-09-18 利用者依頼)
+        ///
+        /// 「音楽の前後が弱い。前で鳴っているか後ろで鳴っているか分からない」。
+        /// 汎用 HRTF では前後が伝わらないことは純音で確定していて(docs/03)、
+        /// 広帯域の音楽なら伝わるかもしれない、というのが当初の見込みだった。
+        /// 実測(2026-09-18)では伝わらなかった。
+        ///
+        /// 現実でも、後ろの音は頭と耳介に遮られて高域が減る。それを**弱く**模す。
+        /// **強いローパスにしない** — HRTF が前後の判断に使う高域まで削ってしまう(合議)。
+        ///
+        /// 正面〜`rearShelfStartDeg` は 0。そこから真後ろへ向けて滑らかに増やす
+        /// (両端で傾きが 0 になる形。向きの境目で音色が急に変わらないように)
+        public func rearShelfDb(relativeBearingDeg rel: Double) -> Double {
+            guard rearShelfDepthDb > 0, rearShelfStartDeg < 180 else { return 0 }
+            let off = abs(Geo.angularDiffDeg(rel, 0))
+            guard off > rearShelfStartDeg else { return 0 }
+            let t = Swift.min(1, (off - rearShelfStartDeg) / (180 - rearShelfStartDeg))
+            return -rearShelfDepthDb * (1 - cos(.pi * t)) / 2
+        }
+
         public init(minDistanceM: Double, maxDistanceM: Double, distanceStepCount: Int,
                     reachedM: Double,
                     bearingStepDeg: Double, sameDistanceToleranceM: Double,
                     referenceDistanceM: Double, gainMinSpanM: Double,
                     maxGain: Double, minGain: Double, routeBlend: Double,
                     pinpointStartM: Double, pinpointFullM: Double,
-                    pinpointBeamDeg: Double, pinpointDepthDb: Double) {
+                    pinpointBeamDeg: Double, pinpointDepthDb: Double,
+                    rearShelfStartDeg: Double = 90, rearShelfDepthDb: Double = 0) {
             self.minDistanceM = minDistanceM
             self.maxDistanceM = maxDistanceM
             self.distanceStepCount = distanceStepCount
@@ -164,6 +191,8 @@ public struct MusicSpot: Equatable {
             self.pinpointFullM = pinpointFullM
             self.pinpointBeamDeg = pinpointBeamDeg
             self.pinpointDepthDb = pinpointDepthDb
+            self.rearShelfStartDeg = rearShelfStartDeg
+            self.rearShelfDepthDb = rearShelfDepthDb
         }
     }
 
@@ -177,6 +206,8 @@ public struct MusicSpot: Equatable {
         public var distanceGain: Double
         /// 正面の強調で下げた量 [dB](0 以下。頭の向きが基準でない時は 0)
         public var facingDb: Double
+        /// 後ろの時に高域を落とす量 [dB](0 以下。→ `Params.rearShelfDb`)
+        public var rearShelfDb: Double
         /// スポットの近さ [0..1](→ `Params.pinpointWeight`)
         public var pinpointWeight: Double
         public var distanceM: Double
@@ -184,11 +215,13 @@ public struct MusicSpot: Equatable {
         public var worldBearingDeg: Double
 
         public init(relDeg: Double, gain: Double, distanceGain: Double, facingDb: Double,
+                    rearShelfDb: Double = 0,
                     pinpointWeight: Double, distanceM: Double, worldBearingDeg: Double) {
             self.relDeg = relDeg
             self.gain = gain
             self.distanceGain = distanceGain
             self.facingDb = facingDb
+            self.rearShelfDb = rearShelfDb
             self.pinpointWeight = pinpointWeight
             self.distanceM = distanceM
             self.worldBearingDeg = worldBearingDeg
@@ -283,6 +316,8 @@ public struct MusicSpot: Equatable {
                          gain: distanceGain * pow(10, facing / 20),
                          distanceGain: distanceGain,
                          facingDb: facing,
+                         // 基準が取れていない時は相対方位が 0 になるので、ここも自然に 0 になる
+                         rearShelfDb: p.rearShelfDb(relativeBearingDeg: rel),
                          pinpointWeight: weight,
                          distanceM: distance,
                          worldBearingDeg: world)

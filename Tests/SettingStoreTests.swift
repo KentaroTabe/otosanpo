@@ -41,6 +41,29 @@ final class SettingStoreTests: XCTestCase {
         XCTAssertNil(SettingStore.loadGuidanceToneExperimental(from: defaults))
     }
 
+    /// **既定は進む向き**(2026-09-18)。選んでいない人の鳴り方は変わらない
+    func testOrientationModeIsTravelDirectionUntilChosen() {
+        XCTAssertEqual(SettingStore.loadOrientationMode(from: defaults), .travelDirection)
+        SettingStore.saveOrientationMode(.phoneHeadMounted, to: defaults)
+        XCTAssertEqual(SettingStore.loadOrientationMode(from: defaults), .phoneHeadMounted)
+        SettingStore.saveOrientationMode(.travelDirection, to: defaults)
+        XCTAssertEqual(SettingStore.loadOrientationMode(from: defaults), .travelDirection)
+    }
+
+    /// 壊れた値が入っていても落ちない(既定へ戻す)
+    func testUnknownOrientationModeFallsBack() {
+        defaults.set("何か別のもの", forKey: "orientation_mode")
+        XCTAssertEqual(SettingStore.loadOrientationMode(from: defaults), .travelDirection)
+    }
+
+    /// **後ろの音を暗くするのは既定で ON**(前後が分からないという感想への手当て)
+    func testRearDarkeningIsOnByDefaultAndSurvives() {
+        XCTAssertTrue(SettingStore.loadRearDarkening(from: defaults))
+        SettingStore.saveRearDarkening(false, to: defaults)
+        XCTAssertFalse(SettingStore.loadRearDarkening(from: defaults),
+                       "「暗くしない」を選んだことが、未設定と混ざってはいけない")
+    }
+
     func testGuidanceToneChoiceSurvivesIncludingTheOriginalSound() {
         SettingStore.saveGuidanceToneExperimental(false, to: defaults)
         XCTAssertEqual(SettingStore.loadGuidanceToneExperimental(from: defaults), false,

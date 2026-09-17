@@ -158,11 +158,14 @@
     "music_spot_gain_min_span_m": 30,
     "music_spot_max_gain": 0.9,
     "music_spot_min_gain": 0.08,
-    "music_spot_route_blend": 0.5,
+    "music_spot_route_blend": 0,
     "music_spot_pinpoint_start_m": 15,
     "music_spot_pinpoint_full_m": 5,
     "music_spot_pinpoint_beam_deg": 60,
-    "music_spot_pinpoint_depth_db": 12
+    "music_spot_pinpoint_depth_db": 12,
+    "music_spot_rear_shelf_start_deg": 90,
+    "music_spot_rear_shelf_depth_db": 6,
+    "music_spot_rear_shelf_hz": 4000
   },
   "gesture": {
     "nod_pitch_threshold_deg": 8,

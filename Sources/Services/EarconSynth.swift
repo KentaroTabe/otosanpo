@@ -21,6 +21,12 @@ final class EarconSynth {
     /// `AVAudioEnvironmentNode` はモノラル入力にしか効かないので、
     /// ステレオの音源はミキサでモノラルへ落としてから環境ノードへ入れる
     private let musicPlayer = AVAudioPlayerNode()
+    /// **後ろの時に高域を落とす**ための EQ(→ docs/08「前後を音色で補助する」・2026-09-18)。
+    ///
+    /// **定位の設定より上流に置く。** `AVAudioMixing` の `position` が効くのは
+    /// 環境ノードに直結した入力バス(= `musicMixer`)なので、そこを動かさないため
+    /// 「player → EQ → musicMixer → environment」の順に繋ぐ
+    private let musicEQ = AVAudioUnitEQ(numberOfBands: 1)
     private let musicMixer = AVAudioMixerNode()
     /// 音楽が止まったときに理由つきで呼ばれる(**一度だけ**鳴らす約束のため)。
     /// 鳴り終わった場合と、音声経路が切れて中断した場合を区別する
@@ -89,7 +95,15 @@ final class EarconSynth {
         engine.attach(player)
         engine.attach(pulsePlayer)
         engine.attach(musicPlayer)
+        engine.attach(musicEQ)
         engine.attach(musicMixer)
+        // 高域の棚。**既定は 0 dB(何もしない)**で、向きに応じて下げる
+        if let band = musicEQ.bands.first {
+            band.filterType = .highShelf
+            band.frequency = Float(experiment.musicSpotRearShelfHz)
+            band.gain = 0
+            band.bypass = false
+        }
         if audio.useSpatialAudio {
             engine.attach(environment)
             isSpatial = true
@@ -173,7 +187,8 @@ final class EarconSynth {
         // **音源側も繋ぎ直す。** エンジンが再起動すると接続は全部壊れるので、
         // ここで戻さないと「音楽だけが黙って鳴らなくなる」(2026-09-09 に自分で踏んだ)
         if let musicFormat {
-            engine.connect(musicPlayer, to: musicMixer, format: musicFormat)
+            engine.connect(musicPlayer, to: musicEQ, format: musicFormat)
+            engine.connect(musicEQ, to: musicMixer, format: musicFormat)
         }
     }
 
@@ -212,16 +227,20 @@ final class EarconSynth {
     ///   - relativeBearingDeg: 鳴らし始める向き。**鳴らす前に置く** —
     ///     既定の音量・正面のまま鳴り出すと、最初の一瞬だけ間違った大きさで聞こえる
     ///   - gain: 同上。距離から決めた音量
-    func startMusic(url: URL, relativeBearingDeg: Double, gain: Double) throws {
+    func startMusic(url: URL, relativeBearingDeg: Double, gain: Double,
+                    rearShelfDb: Double = 0) throws {
         stopMusic()
         let file = try AVAudioFile(forReading: url)
         // 音源の形式で繋ぎ直す(ステレオ / モノラル・標本化周波数が音源ごとに違う)
         musicFormat = file.processingFormat
         engine.disconnectNodeOutput(musicPlayer)
-        engine.connect(musicPlayer, to: musicMixer, format: file.processingFormat)
+        engine.disconnectNodeOutput(musicEQ)
+        engine.connect(musicPlayer, to: musicEQ, format: file.processingFormat)
+        engine.connect(musicEQ, to: musicMixer, format: file.processingFormat)
         if !engine.isRunning { recover(reason: "音楽の再生前") }
         // **鳴らす前に置く。** 位置と音量を決めてから再生を始める
-        setMusicPlacement(relativeBearingDeg: relativeBearingDeg, gain: gain)
+        setMusicPlacement(relativeBearingDeg: relativeBearingDeg, gain: gain,
+                          rearShelfDb: rearShelfDb)
         // **世代を進める。** 前の再生の完了通知が遅れて届いても、
         // 新しい再生を止めないようにする(「一度だけ」の約束が競合で崩れないため)
         musicGeneration &+= 1
@@ -248,8 +267,12 @@ final class EarconSynth {
     ///
     /// 設定するのは **`musicMixer`**(環境ノードに直結している側)。
     /// 上流の `musicPlayer` に設定しても定位には効かない
-    func setMusicPlacement(relativeBearingDeg deg: Double, gain: Double) {
+    /// - Parameter rearShelfDb: 後ろの時に高域を落とす量 [dB](0 以下)。
+    ///   **音量ではなく音色**を変える(→ MusicSpot.Params.rearShelfDb)
+    func setMusicPlacement(relativeBearingDeg deg: Double, gain: Double,
+                           rearShelfDb: Double = 0) {
         musicMixer.volume = Float(max(0, min(1, gain)))
+        musicEQ.bands.first?.gain = Float(max(-24, min(0, rearShelfDb)))
         if isSpatial {
             let p = SoundPlacement.position(relativeBearingDeg: deg)
             musicMixer.position = AVAudio3DPoint(x: Float(p.x), y: Float(p.y), z: Float(p.z))

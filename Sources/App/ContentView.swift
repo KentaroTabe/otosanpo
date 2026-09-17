@@ -59,19 +59,37 @@ struct ContentView: View {
                                  + "連続音で方向が伝わるかを試すための実験です")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            // **どちらのビルドを持っているかを、出発前に見えるようにする。**
-                            // 2026-09-10、実験ビルドのつもりで配布ビルドを歩き、
-                            // 「固定する前に鳴り始めた」= 待ちが効いていないことに
-                            // 現地まで気づけなかった。挙動が根本から変わるので明示する
+                            // **音の向きの基準を、ここで選ぶ**(2026-09-18 利用者依頼)。
+                            // 実験ビルドは設定によらず頭部固定を使うので、選択肢を出さずに伝える
                             if controller.params.headMount.enabled {
-                                Text("頭部固定: 有効。頭の向きが定まってから鳴り始めます")
+                                Text("頭部固定: 有効(実験ビルド)。"
+                                     + "頭の向きが定まってから鳴り始めます")
                                     .font(.caption.bold())
                             } else {
-                                Text("頭部固定: 無効(配布と同じ設定)。"
-                                     + "音楽は待たずにすぐ鳴り始めます")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(.orange)
+                                Picker("音の向きの基準", selection: $controller.orientationMode) {
+                                    Text("進む向き").tag(OrientationMode.travelDirection)
+                                    Text("頭の向き").tag(OrientationMode.phoneHeadMounted)
+                                }
+                                if controller.orientationMode == .phoneHeadMounted {
+                                    Text("スマホを頭に固定してください。"
+                                         + "頭の向きが定まってから音楽が鳴り始めます(数分かかることがあります)。"
+                                         + "立ち止まっても左右が消えません")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("進む向きを基準にします。"
+                                         + "音楽は待たずにすぐ鳴り始めますが、立ち止まると左右が保持値になります")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
+                            // **前後の手がかりの比較用**(2026-09-18)。同じ散歩の中で
+                            // 切り替えて聴き比べられるようにする
+                            Toggle("後ろの音を暗くする", isOn: $controller.rearDarkening)
+                            Text("後ろから鳴っている時だけ高い音を少し落とします。"
+                                 + "前後が分かりやすくなるかを確かめるための試みです")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                     Toggle("通勤路の学習モード", isOn: $controller.commuteLearning)
