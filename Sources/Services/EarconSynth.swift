@@ -42,6 +42,12 @@ final class EarconSynth {
     private let frontHemisphereOnly: Bool
     private let behindThresholdDeg: Double
     private let behindDarkness: Double
+    /// 音色を**後から選び直す**ために持っておく(→ `setDirectionalTones`)
+    private let audio: AppParameters.Audio
+    private let experimentParams: AppParameters.Experiment
+    /// 方向を担う 2 音に**実験の音色(倍音とアタック)**を使っているか。
+    /// 画面から選び直せる(2026-09-17 利用者依頼)
+    private(set) var usesExperimentalDirectionalTones: Bool
     /// 3D 音響として繋げられたか。false の間はステレオパンで代替する
     private(set) var isSpatial = false
 
@@ -76,6 +82,9 @@ final class EarconSynth {
         frontHemisphereOnly = audio.frontHemisphereOnly
         behindThresholdDeg = audio.behindThresholdDeg
         behindDarkness = audio.behindDarkness
+        self.audio = audio
+        experimentParams = experiment
+        usesExperimentalDirectionalTones = experimentActive
 
         engine.attach(player)
         engine.attach(pulsePlayer)
@@ -166,6 +175,33 @@ final class EarconSynth {
         if let musicFormat {
             engine.connect(musicPlayer, to: musicMixer, format: musicFormat)
         }
+    }
+
+    // MARK: - 案内音の音色
+
+    /// **方向を担う 2 音(提案音・ビーコン)の音色を選び直す**(2026-09-17 利用者依頼)。
+    ///
+    /// 実験ビルドは倍音とアタックを足した音を使う(→ `Experiment.applied(to:)`)。
+    /// 「元の音も選べるように」という依頼で、画面から切り替えられるようにした。
+    ///
+    /// **方向を持たない音(時間到来・確認音・到着)は触らない** — 無関係な音色変更を
+    /// 実験に混ぜないという 2026-09-08 の取り決めをそのまま守る。
+    /// 有効性パルスと聴き比べ用の音も触らない(実験のスイッチに紐づくもの)
+    func setDirectionalTones(experimental: Bool) {
+        guard experimental != usesExperimentalDirectionalTones else { return }
+        usesExperimentalDirectionalTones = experimental
+        let tones = experimentParams.tones(from: audio.tones, active: experimental)
+        let gain = audio.earconGain
+        let lead = audio.earconLeadSilenceSec
+        buffers[.suggestion] = Self.render(tones.suggestion, format: monoFormat,
+                                           gain: gain, leadSilenceSec: lead)
+        buffers[.homeBeacon] = Self.render(tones.homeBeacon, format: monoFormat,
+                                           gain: gain, leadSilenceSec: lead)
+        // 真後ろ用の暗い変種も同じ音色から作り直す(元の音に戻した時に取り残さない)
+        behindBuffers[.homeBeacon] = Self.render(
+            Self.darken(tones.homeBeacon, by: behindDarkness),
+            format: monoFormat, gain: gain, leadSilenceSec: lead)
+        onEvent?("案内音の音色: \(experimental ? "倍音を足した音" : "元の音")")
     }
 
     // MARK: - 音楽スポット(実験)

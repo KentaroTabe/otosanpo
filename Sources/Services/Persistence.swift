@@ -248,6 +248,35 @@ enum SpeedStore {
     }
 }
 
+/// 画面で選ぶ設定の永続化(端末内・UserDefaults)。
+///
+/// 散歩ごとに選び直させないためのもの。**外へ何かを送る設定は、既定を「送らない」側に置く**
+enum SettingStore {
+    /// 通りかかった店を調べるか。**既定は false**(現在地を外へ送らない側・2026-09-17 利用者判断)
+    private static let shopSearchKey = "shop_search_enabled"
+    /// 案内音に倍音を足すか。**未設定(nil)ならビルドの既定に従う**
+    private static let guidanceToneKey = "guidance_tone_experimental"
+
+    /// 保存先を差し替えられるようにしてあるのは、テストが**本物の設定を汚さない**ため
+    static func loadShopSearchEnabled(from defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: shopSearchKey)   // 未設定は false
+    }
+
+    static func saveShopSearchEnabled(_ on: Bool, to defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: shopSearchKey)
+    }
+
+    /// nil = まだ選んでいない(実験ビルドなら倍音、配布ビルドなら元の音)
+    static func loadGuidanceToneExperimental(from defaults: UserDefaults = .standard) -> Bool? {
+        guard defaults.object(forKey: guidanceToneKey) != nil else { return nil }
+        return defaults.bool(forKey: guidanceToneKey)
+    }
+
+    static func saveGuidanceToneExperimental(_ on: Bool, to defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: guidanceToneKey)
+    }
+}
+
 enum HomeStore {
     private static let key = "home_point"
 

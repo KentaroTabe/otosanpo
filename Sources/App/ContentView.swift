@@ -80,6 +80,23 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    // **既定は OFF。** ON の間だけ現在地が外へ出るので、それを明記する
+                    // (2026-09-17 利用者判断)
+                    Toggle("通りかかったお店を記録する", isOn: $controller.shopSearchWanted)
+                    if controller.shopSearchWanted {
+                        Text("ON の間は、周りのお店を調べるために現在地(緯度・経度)を"
+                             + "ホットペッパーグルメのサーバへ送ります。"
+                             + "歩いた経路・自宅・ログは送りません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("OFF の間は、お店を調べません。現在地が外へ送られることもありません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    NavigationLink("案内音") {
+                        GuidanceSoundView(controller: controller)
+                    }
                 }
 
                 Section("セッション") {
@@ -124,7 +141,11 @@ struct ContentView: View {
                                 Text("今日見つけた店")
                                     .font(.subheadline.bold())
                                 if receipt.shopItems.isEmpty {
-                                    Text("今日は新しい店との出会いはありませんでした")
+                                    // 調べていない時に「出会いがなかった」と書くと、
+                                    // 探した末に見つからなかったように読めるので分ける
+                                    Text(controller.shopSearchWanted
+                                         ? "今日は新しい店との出会いはありませんでした"
+                                         : "お店の記録は OFF です(設定から ON にできます)")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 } else {
@@ -168,6 +189,12 @@ struct ContentView: View {
                     }
                 }
 
+                // **ここから下は開発用。配布ビルド(Release)には出さない**
+                // (2026-09-17 利用者依頼「テスター向けの画面から不要なものを削る」)。
+                // 消さずに残すのは、CLAUDE.md が「シミュレータでの代替手段」として
+                // 指している道具だから。実機の開発ビルド(scripts/build_device.sh は Debug)
+                // とシミュレータでは今までどおり出る
+                #if DEBUG
                 // 歩かずに符号と手応えを決めるための机上テスト。
                 // 姿勢(yaw)の系統は散歩 1 回を丸ごと潰した前科があるので、
                 // 角速度の系統は先にここで確かめる(docs/08)
@@ -193,21 +220,9 @@ struct ContentView: View {
                     Button("時間到来を発火") { controller.debugTimeUp() }
                     // 帰る / 延長はデバッグ専用ではなくなったので、上の「時間になりました」に移した
                 }
-
-                Section("earcon の試聴") {
-                    Button("提案音(左 90°)") { controller.debugPlay(.suggestion, relativeBearingDeg: -90) }
-                    Button("提案音(右 90°)") { controller.debugPlay(.suggestion, relativeBearingDeg: 90) }
-                    // 「真後ろ」の試聴ボタンは置かない(2026-08-31 利用者判断)。
-                    // 定位は前半球のみで、後ろから鳴ることは無い(docs/03「前後からの撤退」)。
-                    // 鳴らない音を試聴に並べると「後ろから鳴ることがある」という誤解を教えてしまう。
-                    // かつては前後の聴き比べ実験用の対だったが、その実験は決着済み(2026-08-18)
-                    Button("ビーコン(正面)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: 0) }
-                    Button("ビーコン(左 90°)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: -90) }
-                    Button("ビーコン(右 90°)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: 90) }
-                    Button("時間到来") { controller.debugPlay(.timeUpPrompt) }
-                    Button("帰路の確認音") { controller.debugPlay(.returnAck) }
-                    Button("到着音") { controller.debugPlay(.arrival) }
-                }
+                #endif
+                // earcon の試聴は「案内音」の画面へ移した(上の「設定」から開く)。
+                // 音が鳴らない時の確認手段としてテスターにも要るので、消さずに移動している
 
                 // **散歩に出てよいかの判定**(→ docs/05 の前提条件)。実験ビルドだけに出す。
                 // build-demo/ab-*.wav でも同じ並びを聴けるが、あちらは等パワーのパンによる
@@ -279,12 +294,15 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                // 直近のイベントの生表示も開発用(テスターはログの書き出しで送る)
+                #if DEBUG
                 Section("イベントログ") {
                     ForEach(Array(controller.eventLog.suffix(12).reversed().enumerated()),
                             id: \.offset) { _, line in
                         Text(line).font(.caption.monospaced())
                     }
                 }
+                #endif
 
                 // 経路データは OpenStreetMap 由来。**ODbL は出典表示を求める**ので、
                 // 地図を読み込んでいるかによらず常に出す(docs/04「OSM データの持ち方」)

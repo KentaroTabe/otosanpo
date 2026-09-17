@@ -10,6 +10,27 @@ final class WalkSessionController: ObservableObject {
     @Published var commuteLearning = false {
         didSet { commuteLearningChanged(oldValue) }
     }
+    /// **通りかかった店を調べるか(既定は調べない)。**
+    ///
+    /// ON の間だけ、周辺の店を探すために**現在地をホットペッパーグルメのサーバへ送る**。
+    /// 既定を「送らない」側に置くのは、外へ位置が出る機能を黙って動かさないため
+    /// (2026-09-17 利用者判断)。OFF でも散歩・音・帰路の案内はそのまま動く
+    @Published var shopSearchWanted = SettingStore.loadShopSearchEnabled() {
+        didSet {
+            guard shopSearchWanted != oldValue else { return }
+            SettingStore.saveShopSearchEnabled(shopSearchWanted)
+            log("通りかかった店の記録: \(shopSearchWanted ? "する(現在地を送ります)" : "しない")")
+        }
+    }
+    /// 案内音に**倍音を足した音**(実験の音色)を使うか。
+    /// 画面の「案内音」から選べる(2026-09-17 利用者依頼)。既定はビルドの設定に従う
+    @Published var guidanceToneExperimental: Bool {
+        didSet {
+            guard guidanceToneExperimental != oldValue else { return }
+            SettingStore.saveGuidanceToneExperimental(guidanceToneExperimental)
+            synth?.setDirectionalTones(experimental: guidanceToneExperimental)
+        }
+    }
     @Published private(set) var home: GeoPoint?
     @Published private(set) var statusLine = "位置情報待ち"
     /// ヘッドフォンモーションの受信状況。検出できない原因の切り分けに使う
@@ -193,6 +214,10 @@ final class WalkSessionController: ObservableObject {
         self.params = params
         shouldStartLocationServices = startLocationServices
         durationMin = params.session.defaultDurationMin
+        // **まだ選んでいなければ、このビルドの既定に従う**(実験ビルド = 倍音を足した音)。
+        // 一度選んだら次からはその選択(→ SettingStore)
+        guidanceToneExperimental = SettingStore.loadGuidanceToneExperimental()
+            ?? params.headMount.enabled
         grid = GridStore.load(cellSizeM: params.route.cellSizeM,
                               halfLifeM: params.route.visitHalfLifeM)
         detector = HeadGestureDetector(params: params.gesture)
@@ -298,7 +323,11 @@ final class WalkSessionController: ObservableObject {
         summary = WalkSummary(walkID: walkID, startedAt: startedAt, home: home)
         beginDiscoverySummary(walkID: walkID, startedAt: startedAt)
         let shopHistory = shopHistory
-        shopHistorySessionTask = Task { await shopHistory.startSession() }
+        // **選んだ時だけ店を調べる**(既定は調べない・2026-09-17 利用者判断)。
+        // OFF の間はセッションを作らないので、現在地が外へ出る経路そのものが動かない
+        shopHistorySessionTask = shopSearchWanted
+            ? Task { await shopHistory.startSession() }
+            : nil
         // **位置が確定したこの時点で、地図の選び直しが要るか見る。**
         // タイルがある端末だけ(初期化時は位置が無く、近傍の絞り込みも選択も
         // 位置なしで行っている。旅行先ではタイルのほうが現在地を覆うことがある)
@@ -387,6 +416,8 @@ final class WalkSessionController: ObservableObject {
         s?.onEvent = { [weak self] message in
             Task { @MainActor in self?.log(message) }
         }
+        // 画面で選んだ音色を反映する(選んでいなければビルドの既定のまま)
+        s?.setDirectionalTones(experimental: guidanceToneExperimental)
         synth = s
     }
 
@@ -2170,6 +2201,8 @@ final class WalkSessionController: ObservableObject {
     }
 
     private func recordShopPassages(at p: GeoPoint, fix: MotionFix, now: Date) {
+        // 選んでいなければ何もしない(候補の取得も、履歴への記録も)
+        guard shopSearchWanted else { return }
         let service = shopHistory
         let sessionTask = shopHistorySessionTask
         Task {
