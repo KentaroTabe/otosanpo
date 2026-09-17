@@ -2,7 +2,9 @@ import Foundation
 
 /// 歩ける道の種別。OSM の `highway` タグを、提案スコアに効く粒度まで畳んだもの。
 /// 数値は保存形式に載るため、**既存の値を変えない**(増やすのは可)。
-public enum WayClass: Int, Codable, Equatable, CaseIterable {
+// **public な型には暗黙の Sendable が付かない**(付くのは非 public 型だけ)。
+// 生値だけの enum なので実態は元から安全で、宣言が要るだけ
+public enum WayClass: Int, Codable, Equatable, CaseIterable, Sendable {
     /// 歩行者専用(footway / path / pedestrian / steps)
     case footway = 0
     /// 生活道路(residential / living_street / service)
@@ -29,7 +31,12 @@ public enum WayClass: Int, Codable, Equatable, CaseIterable {
 /// 保存形式は JSON。デバッグと再生ツールから直接読めることを優先した。
 /// 生成は PC 側の `scripts/build_map.sh`(osmium + MapBuild)。
 public struct WalkMap: Codable, Equatable, Sendable {
-    public struct Way: Codable, Equatable {
+    // **Sendable を明示する。** `WalkMap` を Sendable にしたのは、
+    // `RouteField` の構築(数万節点の探索)を背景で行うために渡すから。
+    // その時に入れ子の `Way` へ付け忘れており、Swift 6 の言語モードでは
+    // エラーになる警告が出ていた。持っているのは [Int] / WayClass / Int だけで
+    // **実態としては元から安全**、宣言が抜けていただけ(2026-09-09)
+    public struct Way: Codable, Equatable, Sendable {
         /// `nodes` への添字列。2 点未満の way は生成側で捨てる
         public var n: [Int]
         /// 道の種別

@@ -11,3 +11,7 @@
 // 空のままだと実機ビルドは失敗する(シミュレータビルドとテストは空でも通る)。
 
 DEVELOPMENT_TEAM =
+
+// Hot Pepper グルメサーチ API のキー。実キーは .gitignore 済みの
+// Support/Signing.xcconfig にだけ書く。空なら店舗候補取得は行わない。
+HOTPEPPER_API_KEY =

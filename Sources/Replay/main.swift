@@ -18,6 +18,13 @@ struct LoggedFix {
     let speedMps: Double?
     let courseDeg: Double?
     let accuracyM: Double?
+    /// course の許容誤差。**製品と同じ有効性判定を再現するのに要る**
+    let courseAccuracyDeg: Double?
+    /// この行を書いた時点での fix の古さ [sec]。後の時刻での古さは経過時間を足して求める
+    let ageSec: Double?
+    /// **fix 固有の時刻**(CLLocation.timestamp)。`fix時刻=` 列から読む。
+    /// 2026-09-10 より前のログには無い(nil)。行の時刻は書いた時刻であって fix の時刻ではない
+    var fixTime: Date? = nil
 }
 
 /// "…速度=1.23m/s…" のように、キーの直後の数値を取り出す。単位や括弧は無視される
@@ -56,7 +63,10 @@ func readFixes(_ path: String) -> [LoggedFix] {
             point: GeoPoint(latitude: lat, longitude: lon),
             speedMps: numberAfter("速度=", in: msg),
             courseDeg: numberAfter("course=", in: msg),
-            accuracyM: numberAfter("水平精度=", in: msg)
+            accuracyM: numberAfter("水平精度=", in: msg),
+            courseAccuracyDeg: numberAfter("course精度=", in: msg),
+            ageSec: numberAfter("経過=", in: msg),
+            fixTime: numberAfter("fix時刻=", in: msg).map { Date(timeIntervalSinceReferenceDate: $0) }
         ))
     }
     return out
@@ -988,4 +998,430 @@ if v.used < 20 {
     } else {
         print("  → 符号は揃っている。yaw_sign は +1 のままでよい。")
     }
+}
+
+// MARK: - 頭部固定(学習・検疫・使用可能)を再生する
+//
+// docs/13 は「`頭方位` 行があるので閾値も学習の条件も再生で振り直せる(歩き直し不要)」と
+// 約束していたが、**その道具は存在しなかった**(2026-09-08 に判明)。ここがその実装。
+//
+// 判定には**製品と同じ Core の `HeadMountFusion`** を使う。再生専用の複製を書くと
+// 必ず本体とずれる(そして、ずれたことに気づかない)。
+
+/// ログに残った 1 件の頭方位
+struct LoggedHeadHeading {
+    let time: Date
+    /// 生の方位。旧形式では「補正後 + 補正値」から復元する
+    let rawDeg: Double
+    /// ログに残っていた学習値(照合用。学習前は nil)
+    let loggedOffsetDeg: Double?
+    /// ログに残っていた検疫の状態(照合用)
+    let loggedState: String
+    /// 旧形式から復元した値か
+    let reconstructed: Bool
+}
+
+/// `頭方位` 行はあったが `raw=` も `heading=` も無くて使えなかった行数。
+/// **0 件を「問題なし」と読ませない**ための材料(→ 受け入れ条件 E6)
+var headLinesMissingHeading = 0
+
+/// `頭方位` 行を読む。**新旧どちらの形式も読む**。
+///
+/// - 新形式: `raw=` を持つ(2026-09-08 以降)
+/// - 旧形式: `heading=` は**補正後**の値。`補正=` が数値なら生値は `heading + 補正`、
+///   `補正=学習中` なら補正されていないので `heading` がそのまま生値
+func readHeadHeadings(_ path: String) -> [LoggedHeadHeading] {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    var out: [LoggedHeadHeading] = []
+    for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+        let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        guard cols.count >= 5, cols[4].hasPrefix("頭方位 ") else { continue }
+        guard let time = formatter.date(from: cols[0]) else { continue }
+        let msg = cols[4]
+        let offset = numberAfter("補正=", in: msg)   // 「学習中」なら nil
+        // 状態は日本語ラベルなので数値抽出が使えない。区切りまでを切り出す
+        var stateLabel = "-"
+        if let r = msg.range(of: "状態=") {
+            stateLabel = String(msg[r.upperBound...].prefix { !$0.isWhitespace })
+        }
+        if let raw = numberAfter("raw=", in: msg) {
+            out.append(LoggedHeadHeading(time: time, rawDeg: raw, loggedOffsetDeg: offset,
+                                         loggedState: stateLabel, reconstructed: false))
+        } else if let corrected = numberAfter("heading=", in: msg) {
+            let raw = Geo.normalizeDeg(corrected + (offset ?? 0))
+            out.append(LoggedHeadHeading(time: time, rawDeg: raw, loggedOffsetDeg: offset,
+                                         loggedState: stateLabel, reconstructed: true))
+        } else {
+            // **黙って捨てない。** 捨てた行を数えて、後で「何が足りないか」を言う
+            headLinesMissingHeading += 1
+        }
+    }
+    return out
+}
+
+let headSamples = readHeadHeadings(logPath)
+
+// MARK: - ビーコンの指す向きの安定性(引き継ぎの有無で比べる)
+//
+// 2026-09-08 の散歩で、ビーコンの指す向きが **1.5 秒で 180° 往復**していた
+// (274 発のうち 67 発が後ろを指した)。原因は、スナップも端点の選択も
+// **前回の選択を見ていない**こと(docs/05)。ここはその前後を測る口。
+
+print("\n== ビーコンの指す向きの安定性 ==")
+
+if let beaconMap = loadedMap, let last = all.last {
+    let graph = WalkGraph(map: beaconMap, cellSizeM: r.mapIndexCellSizeM)
+    // 自宅は到着地点で近似する(実機の到着判定は arrival_radius_m 以内で成立している)
+    if let field = RouteField(graph: graph, goal: last.point,
+                              snapMaxDistanceM: r.snapMaxDistanceM,
+                              weights: RouteField.Weights(
+                                crossCostWeight: r.crossCostWeight,
+                                wayClassWeight: r.wayClassWeight)) {
+
+        // **帰路の fix だけを見る。** ビーコンが鳴るのは帰路だけで、
+        // 散策中は自宅から遠ざかるので「経路が後ろを指す」のが正しい。
+        // 混ぜると「後ろ向き」の数字が意味を失う(2026-09-09 に一度混ぜて誤った)
+        let returning = all.filter { $0.state == "returning" }
+        print("  対象: 帰路の fix \(returning.count) 件(全 \(all.count) 件)")
+
+        /// 引き継ぎ設定を 1 つ与えて、帰路を通したときの跳びを数える
+        func measure(_ tp: RouteField.TraceParams) -> (jumps: Int, reversals: Int,
+                                                       behind: Int, samples: Int) {
+            var trace: RouteField.Trace?
+            var previous: Double?
+            var jumps = 0, reversals = 0, behind = 0, samples = 0
+            for f in returning {
+                guard let step = field.nextStep(from: f.point, graph: graph,
+                                                nodeToleranceM: r.nodeArrivalToleranceM,
+                                                trace: trace, tp: tp) else { continue }
+                trace = step.trace
+                samples += 1
+                if let prev = previous {
+                    let jump = abs(Geo.angularDiffDeg(step.deg, prev))
+                    if jump > 90 { jumps += 1 }
+                    if jump > 150 { reversals += 1 }
+                }
+                previous = step.deg
+                // 進行方位が取れている時だけ「後ろを指したか」を数える
+                if let course = TravelDirection.rawCourse(
+                    MotionFix(courseDeg: f.courseDeg, courseAccuracyDeg: f.courseAccuracyDeg,
+                              speedMps: f.speedMps, compassHeadingDeg: nil,
+                              ageSec: f.ageSec, horizontalAccuracyM: f.accuracyM),
+                    params: params.location),
+                   abs(Geo.angularDiffDeg(step.deg, course)) > 90 {
+                    behind += 1
+                }
+            }
+            return (jumps, reversals, behind, samples)
+        }
+
+        func row(_ label: String,
+                 _ m: (jumps: Int, reversals: Int, behind: Int, samples: Int)) {
+            let pct = m.samples > 0 ? 100 * Double(m.behind) / Double(m.samples) : 0
+            print(String(format: "  %-16@ %8d %8d %8d(%.0f%%)", label as NSString,
+                         m.jumps, m.reversals, m.behind, pct))
+        }
+        print(String(format: "  %-16@ %8@ %8@ %10@", "道 / 端点" as NSString,
+                     "90°超" as NSString, "150°超" as NSString, "後ろ向き" as NSString))
+        // **組み合わせを振る。** どちらの引き継ぎが効くのかは、片方ずつ動かさないと分からない
+        let sweep: [(Double, Double)] = [(0, 0), (8, 0), (16, 0), (25, 0),
+                                         (0, 10), (8, 10), (16, 10)]
+        for (way, node) in sweep {
+            let tp = RouteField.TraceParams(waySwitchMarginM: way, nodeSwitchMarginM: node)
+            let label = way == 0 && node == 0
+                ? "引き継ぎ無し" : String(format: "%.0fm / %.0fm", way, node)
+            row(label, measure(tp))
+        }
+        print(String(format: "  いまの設定: 道 %.0fm / 端点 %.0fm",
+                     r.waySwitchMarginM, r.nodeSwitchMarginM))
+        print("  ※ 自宅は到着地点で近似している。ログの実機値と一致はしないが、"
+              + "**同じ入力で前後を比べる**分には足りる")
+    } else {
+        print("  経路の場を作れませんでした(自宅が道に乗らない)")
+    }
+} else {
+    print("  経路データがないので判定できません(maps/otosanpo-map.json が要ります)")
+}
+
+print("\n== 頭部固定の再生(学習・検疫・使用可能)==")
+
+if headSamples.isEmpty {
+    // **0 件を「問題なし」と読ませない。** 何が足りないのかを書く
+    if headLinesMissingHeading > 0 {
+        print("  判定不能: 「頭方位」行が \(headLinesMissingHeading) 件ありましたが、"
+              + "raw= も heading= も入っていません。")
+        print("  方位の列を持つ版でログを取り直してください。")
+    } else {
+        print("  「頭方位」行がありません。判定できません。")
+        print("  この行は head_mount.enabled = true でビルドした版でしか記録されません。")
+        print("  実験のビルドで歩いたログを取り込んでから、もう一度実行してください。")
+    }
+} else {
+    let reconstructed = headSamples.filter(\.reconstructed).count
+    print("  頭方位 行: \(headSamples.count) 件"
+          + (reconstructed > 0 ? "(うち \(reconstructed) 件は旧形式から生値を復元)" : ""))
+    print("  設定: \(configPath)")
+    let hm = params.headMount
+    print(String(format: "    学習 証拠 %.0fs・半減期 %.0fs・R≥%.2f・門 %.0f°・"
+                 + "間隔上限 %.0fs・鮮度 %.1fs",
+                 hm.offsetMinSec, hm.offsetHalfLifeSec, hm.offsetMinConcentration,
+                 hm.offsetGateDeg, hm.evidenceMaxGapSec, hm.staleSec))
+    print(String(format: "    検疫 窓 %.0fs・退避 門外%.0f%%/%.0fs・復帰 門内%.0f%%/%.0fs",
+                 hm.quarantineWindowSec,
+                 hm.quarantineDistrustRatio * 100, hm.quarantineDistrustSec,
+                 hm.quarantineRegainRatio * 100, hm.quarantineRegainSec))
+
+    if headLinesMissingHeading > 0 {
+        print("  ※ raw= も heading= も無い「頭方位」行を \(headLinesMissingHeading) 件"
+              + "読み飛ばしました(この分は判定に入っていません)")
+    }
+
+    // **course は fix 行から作り直す。** ログの `頭方位 course=` は、
+    // 2026-09-08 以前は「止まる直前の保持値」が混ざった値なので正解にしてはいけない
+    let sortedFixes = all.sorted { $0.time < $1.time }
+    // 製品と同じ規則で course を出すには、fix 行に速度と course が要る。
+    // **欠けたまま「成立せず・0%」と出すと、実装の問題と読み違える**(→ E6)
+    /// 判定を出してよいか。必要な列が丸ごと無ければ false にして、数字を出さない
+    var headMountJudged = true
+    let noSpeed = sortedFixes.filter { $0.speedMps == nil }.count
+    let noCourse = sortedFixes.filter { $0.courseDeg == nil }.count
+    if noSpeed == sortedFixes.count || noCourse == sortedFixes.count {
+        // **全件欠けていれば計算しない。** 「0%・成立せず」を結果として出すと、
+        // 実装の問題と読み違える(2026-09-09 の検証で指摘)
+        var missing: [String] = []
+        if noSpeed == sortedFixes.count { missing.append("速度=") }
+        if noCourse == sortedFixes.count { missing.append("course=") }
+        print("  判定不能: fix 行に \(missing.joined(separator: " と ")) がありません"
+              + "(\(sortedFixes.count) 件すべて)。")
+        print("  生の course を復元できないので、学習も検疫も評価できません。")
+        print("  これらの列を持つ版でログを取り直してください。")
+        print("  **使用可能率も学習の成立時刻も出しません**(0% ではなく、判定できない)。")
+        headMountJudged = false
+    } else if noSpeed > 0 || noCourse > 0 {
+        // 部分的な欠落は「不完全な入力」として明示する。数字は出すが、鵜呑みにさせない
+        var missing: [String] = []
+        if noSpeed > 0 { missing.append("速度= が \(noSpeed) 件") }
+        if noCourse > 0 { missing.append("course= が \(noCourse) 件") }
+        print("  ※ 不完全な入力: fix \(sortedFixes.count) 件のうち "
+              + "\(missing.joined(separator: " / ")) 欠けています。")
+        print("     その区間は course なしとして扱われ、**学習も検疫も進みません**。")
+        print("     下の数字は実機と食い違います。**高く出ることも低く出ることもあります** —")
+        print("     欠けたのが「合っていた区間」なら低く、「ずれていた区間」なら"
+              + "退避を再現できず高く出ます")
+    }
+    // **fix の識別に使う時刻(CLLocation.timestamp)がログにあるか**(受け入れ条件 F4)。
+    // 2026-09-10 より前のログには無く、行を書いた時刻で代用するしかない。行の時刻は fix 固有の
+    // 時刻ではなく、同じ内容の fix 行が 1 ms 差で 2 本並ぶこともある(= 同じ fix か決められない)。
+    // **その場合は使用可能率を出さない**(推定の率を結果として読ませない。2 回目の検証で指摘)
+    let rowsWithFixTime = sortedFixes.filter { $0.fixTime != nil }.count
+    let exactFixTime = !sortedFixes.isEmpty && rowsWithFixTime == sortedFixes.count
+    if !exactFixTime {
+        // 同じ内容の fix 行が続けて並ぶ箇所を数える(識別できない実例の数)
+        var sameContentPairs = 0
+        for (a, b) in zip(sortedFixes, sortedFixes.dropFirst())
+            where a.courseDeg == b.courseDeg && a.speedMps == b.speedMps
+                && a.courseAccuracyDeg == b.courseAccuracyDeg && a.ageSec == b.ageSec
+                && a.accuracyM == b.accuracyM
+                && a.point.latitude == b.point.latitude
+                && a.point.longitude == b.point.longitude {
+            sameContentPairs += 1
+        }
+        print("  ※ 不足している列: fix時刻=(CLLocation.timestamp)。"
+              + "fix 行 \(sortedFixes.count) 件のうち \(rowsWithFixTime) 件にしかありません。")
+        print("     近似: fix の時刻の代わりに**行を書いた時刻**を使います。"
+              + "行の時刻は fix 固有の時刻ではなく、")
+        print("     同じ内容の fix 行が続けて並ぶ箇所が \(sameContentPairs) 組あります"
+              + "(同じ fix かどうか決められない)。")
+        print("     **使用可能率は出しません。** 学習の成立時刻と遷移は近似として読んでください。")
+        print("     fix時刻= を記録する版(2026-09-10 以降)のログなら、fix の識別(重複の排除)は"
+              + "正確になります(頭方位 1 行の間に来た中間の fix が見えない近似は残る)。")
+    }
+    /// t の時点で見えていた fix の観測(生 course と fix の時刻)。
+    ///
+    /// **fix の時刻は course が無効でも返す**(製品と同じ・2026-09-10 の検証で指摘)。
+    /// 旧ログでも fix 行そのものが fix の識別子になる
+    func courseObservation(at t: Date) -> CourseObservation {
+        // t 以下で最も新しい fix を二分探索で拾う
+        var lo = 0, hi = sortedFixes.count - 1, found = -1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            if sortedFixes[mid].time <= t { found = mid; lo = mid + 1 } else { hi = mid - 1 }
+        }
+        guard found >= 0 else { return CourseObservation(courseDeg: nil, fixTime: nil) }
+        let f = sortedFixes[found]
+        // fix 行に書かれた古さは「書いた時点」のもの。そこからの経過を足す
+        let age = (f.ageSec ?? 0) + t.timeIntervalSince(f.time)
+        let motion = MotionFix(courseDeg: f.courseDeg, courseAccuracyDeg: f.courseAccuracyDeg,
+                               speedMps: f.speedMps, compassHeadingDeg: nil,
+                               ageSec: age, horizontalAccuracyM: f.accuracyM,
+                               fixTime: (f.fixTime ?? f.time).timeIntervalSinceReferenceDate)
+        // **製品と同じ規則**。保持値もコンパスも渡さない(→ WalkSessionController)
+        return TravelDirection.courseObservation(motion, params: params.location)
+    }
+
+    // **標本を複製しない**(2026-09-10)。証拠は「異なる fix の間の経過時間」で数えるので、
+    // 頭方位を何 Hz で流しても結果は同じ。間引いたログをそのまま流して正確に再現できる
+    var fusion = HeadMountFusion()
+    let fp = params.headMount.fusion
+    let t0 = headSamples[0].time
+    var counts: [String: Int] = [:]
+    var transitions: [(Double, String)] = []
+    var lastLabel: String?
+    var firstLearnedAt: Double?
+    var firstUsableAt: Double?
+    var usableSamples = 0
+    var offsetAgreementSum = 0.0
+    var offsetAgreementCount = 0
+
+    for s in headSamples {
+        let fix = courseObservation(at: s.time)
+        let use = fusion.ingest(headingDeg: s.rawDeg, rawCourseDeg: fix.courseDeg,
+                                fixTime: fix.fixTime,
+                                at: s.time.timeIntervalSinceReferenceDate, p: fp)
+        let elapsed = s.time.timeIntervalSince(t0)
+        if firstLearnedAt == nil, fusion.learnedOffsetDeg != nil { firstLearnedAt = elapsed }
+        if firstUsableAt == nil, use.isUsable { firstUsableAt = elapsed }
+        if use.isUsable { usableSamples += 1 }
+        counts[use.label, default: 0] += 1
+        if lastLabel != use.label {
+            transitions.append((elapsed, use.label))
+            lastLabel = use.label
+        }
+        // 再生で得た学習値が、ログに残っていた値と合っているか(配線の照合)
+        if let logged = s.loggedOffsetDeg, let replayed = fusion.learnedOffsetDeg {
+            offsetAgreementSum += abs(Geo.angularDiffDeg(logged, replayed))
+            offsetAgreementCount += 1
+        }
+    }
+
+    /// 設定を 1 つ与えて通したときの成績。**歩き直さずに閾値を決めるための口**
+    func sweep(_ p: HeadMountFusion.Params) -> (usable: Int, firstUsable: Double?,
+                                                learned: Double?, distrusts: Int) {
+        var f = HeadMountFusion()
+        var usable = 0
+        var firstUsable: Double?
+        var learned: Double?
+        var distrusts = 0
+        var wasDistrusted = false
+        for s in headSamples {
+            let fix = courseObservation(at: s.time)
+            let use = f.ingest(headingDeg: s.rawDeg, rawCourseDeg: fix.courseDeg,
+                               fixTime: fix.fixTime,
+                               at: s.time.timeIntervalSinceReferenceDate, p: p)
+            if learned == nil, f.learnedOffsetDeg != nil {
+                learned = s.time.timeIntervalSince(t0)
+            }
+            let distrusted = f.quarantineState == .distrusted
+            if distrusted, !wasDistrusted { distrusts += 1 }
+            wasDistrusted = distrusted
+            if use.isUsable {
+                usable += 1
+                if firstUsable == nil { firstUsable = s.time.timeIntervalSince(t0) }
+            }
+        }
+        return (usable, firstUsable, learned, distrusts)
+    }
+
+    /// 行を 1 本出す。**fix の時刻が無いログでは率を出さない**(F4)
+    func sweepRow(_ label: String, _ p: HeadMountFusion.Params) {
+        let s = sweep(p)
+        let first = s.firstUsable.map { String(format: "%.0f 秒", $0) } ?? "成立せず"
+        let learn = s.learned.map { String(format: "%.0f 秒", $0) } ?? "成立せず"
+        if exactFixTime {
+            let pct = 100 * Double(s.usable) / Double(headSamples.count)
+            print(String(format: "    %-12@ %5d 件(%3.0f%%) %10@ %10@  %d 回",
+                         label as NSString, s.usable, pct,
+                         learn as NSString, first as NSString, s.distrusts))
+        } else {
+            print(String(format: "    %-12@ %10@ %10@  %d 回",
+                         label as NSString, learn as NSString, first as NSString, s.distrusts))
+        }
+    }
+    let sweepHeader = exactFixTime
+        ? "    設定          使用可能        学習成立   最初に使えた  退避"
+        : "    設定          学習成立   最初に使えた  退避"
+
+    print("\n  門(学習した値から外れたと分類する角度)を振る:")
+    print(sweepHeader)
+    for gate in [0.0, 30, 45, 60, 90] {
+        var p = fp
+        p.offset.gateDeg = gate
+        sweepRow(String(format: "門 %.0f°", gate), p)
+    }
+    print("    ※ 0° = 門なし(すべて門内と分類される = 退避しない)")
+
+    print("\n  検疫の割合と窓を振る:")
+    print(sweepHeader)
+    for ratio in [0.5, 0.6, 0.75, 0.9] {
+        var p = fp
+        p.quarantine.distrustRatio = ratio
+        sweepRow(String(format: "退避 %.0f%%", ratio * 100), p)
+    }
+    for window in [20.0, 40, 80] {
+        var p = fp
+        p.quarantine.windowSec = window
+        sweepRow(String(format: "窓 %.0fs", window), p)
+    }
+
+    func secs(_ v: Double?) -> String { v.map { String(format: "%.0f 秒", $0) } ?? "成立せず" }
+    guard headMountJudged else {
+        // 必要な列が無い。**数字を出さずに終える**(判定不能と失敗を混ぜない)
+        print("  ※ 上記のとおり判定できないため、使用可能率・成立時刻・遷移は出しません。")
+        exit(0)
+    }
+    print("  最初に学習が成立: \(secs(firstLearnedAt))")
+    print("  最初に使用可能: \(secs(firstUsableAt))")
+    if exactFixTime {
+        print(String(format: "  使用可能だった割合: %.0f%%(%d / %d 件)",
+                     100 * Double(usableSamples) / Double(headSamples.count),
+                     usableSamples, headSamples.count))
+        print("  内訳:")
+        for (label, n) in counts.sorted(by: { $0.value > $1.value }) {
+            print(String(format: "    %-10@ %5d 件(%.0f%%)", label as NSString, n,
+                         100 * Double(n) / Double(headSamples.count)))
+        }
+    } else {
+        // **率は出さない**(F4)。件数の内訳も率と同じことなので出さない
+        print("  ※ 率は出しません(fix時刻= が無いログ。上の注記を参照)")
+    }
+    if let learned = fusion.learnedOffsetDeg {
+        print(String(format: "  最終的な学習値: %+.1f°(R=%.2f)", learned, fusion.concentration))
+    } else {
+        print(String(format: "  最終的な学習値: 成立せず(R=%.2f)", fusion.concentration))
+    }
+    if offsetAgreementCount > 0 {
+        // **これは「配線の照合」ではない。** ログを取った版と現在の版で学習の数え方が
+        // 違えば、当然ずれる(2026-09-10 に数え方を標本数から fix 間の時間へ変えた)。
+        // 大きくずれていたら「実装が壊れた」ではなく「別物を比べている」を先に疑う
+        print(String(format: "  ログに残っていた学習値との差(平均): %.1f°(%d 件で照合)",
+                     offsetAgreementSum / Double(offsetAgreementCount), offsetAgreementCount))
+        print("    ※ ログを取った版の学習と比べた値です。版が違えばずれます"
+              + "(付け直しがあった散歩では大きくずれるのが正しい)")
+    }
+    print(String(format: "  検疫の証拠(最終): 門内 %.1fs / 門外 %.1fs",
+                 fusion.insideEvidenceSec, fusion.outsideEvidenceSec))
+    print("  遷移(先頭 12 件):")
+    for (t, label) in transitions.prefix(12) {
+        print(String(format: "    %6.0f 秒  → %@", t, label as NSString))
+    }
+    if transitions.count > 12 { print("    …ほか \(transitions.count - 12) 回") }
+
+    print("")
+    // **何が正確で何が近似かを分けて書く。** 混ぜると数字の読み方を誤る
+    print("  ※ 学習と検疫の証拠は fix の時刻で数えるので、頭方位の間引きそのものには"
+          + "影響されません。")
+    print(exactFixTime
+          ? "     fix の時刻は fix 行の fix時刻=(CLLocation.timestamp)を使っています。"
+          : "     **このログには fix時刻= が無いので、行を書いた時刻で代用しています**(上の注記)。")
+    print("     近似になるのは次の 2 点です:")
+    print("     - 頭方位が \(params.headMount.logIntervalSec) 秒間隔なので、実機が "
+          + "\(params.headMount.updateHz) Hz で見ていた「fix が変わった瞬間の方位」より")
+    print("       最大 \(params.headMount.logIntervalSec) 秒遅れた方位が使われる")
+    print("     - 頭方位 1 行の間に fix が 2 つ以上来た場合、間の fix は見えない"
+          + "(実機は全部見る。間の fix が course 無効なら、実機より長い区間を証拠に数える)")
+    print("     1 秒未満の磁気の乱れも復元できません。")
+    print("  ※ 閾値を振り直すには、設定 JSON を書き換えて "
+          + "scripts/replay_log.sh <ログ> <設定JSON> を実行してください。")
 }

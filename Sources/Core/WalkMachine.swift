@@ -7,6 +7,12 @@ public enum Earcon: String, CaseIterable, Equatable {
     case returnAck      // 帰路開始に同意したことの確認音(同意後しばらく繰り返す)
     case homeBeacon     // 帰路の方向ビーコン(間欠。近いほど間隔が短い)
     case arrival        // 到着
+    /// **実験装置(頭部固定)を着けた時だけ鳴る有効性パルス**(→ docs/13)。
+    /// 「いま頭部方位が定位に使われている」= 試してよい、を返すためだけの音。
+    /// 常に相対角 0°(頭部固定の中央)で鳴らし、**方向の手がかりを持たない**
+    /// — 試験対象が「方向が聴き取れるか」なので、混ぜない(2026-09-08 合議)。
+    /// `head_mount.enabled == false` の配布版では一度も鳴らない
+    case validityPulse
 }
 
 public enum WalkState: Equatable {

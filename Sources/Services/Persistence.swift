@@ -23,6 +23,40 @@ enum ConfigLoader {
     }
 }
 
+/// 音楽スポットで鳴らす音源(→ Core の MusicSpot・docs/08)。
+///
+/// **リポジトリにもアプリにも同梱しない。** 地図と同じく Documents
+/// (Finder の「iPhone > ファイル」)に置いたものを読む。理由は 2 つ:
+///
+/// - **権利の話をリポジトリに持ち込まない**(→ docs/15)。実験用の BGM は
+///   その場で差し替わるもので、コミットして配るものではない
+/// - 曲を変えるのにビルドが要らない
+///
+/// 名前は問わない(地図の `MapFiles` と同じ考え方)。**並びを名前順に固定する**ので、
+/// 同じ端末なら毎回同じ曲が選ばれる
+enum MusicStore {
+    /// 読める拡張子。m4a を主に想定するが、AVAudioFile が開けるものは通す
+    static let extensions = ["m4a", "mp3", "wav", "aif", "aiff", "caf"]
+
+    static func documentsURL() -> URL? {
+        try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                     appropriateFor: nil, create: false)
+    }
+
+    /// Documents にある音源のうち、名前順で最初のもの。無ければ nil
+    static func firstFile() -> URL? {
+        guard let dir = documentsURL(),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return nil
+        }
+        return names
+            .filter { extensions.contains(($0 as NSString).pathExtension.lowercased()) }
+            .sorted()
+            .first
+            .map { dir.appendingPathComponent($0) }
+    }
+}
+
 /// 通過履歴グリッドの永続化。端末内(Application Support)にのみ保存し、送信しない。
 enum GridStore {
     static func fileURL() throws -> URL {
@@ -69,6 +103,36 @@ enum SummaryStore {
 
     static func save(_ s: WalkSummary) {
         guard let url = try? fileURL(), let data = try? JSONEncoder().encode(s) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
+/// 直近の散歩で見つけたものの永続化。`WalkSummary` と同じライフサイクルで 1 件だけ残す。
+enum DiscoverySummaryStore {
+    static func fileURL() throws -> URL {
+        let dir = try FileManager.default.url(for: .applicationSupportDirectory,
+                                              in: .userDomainMask,
+                                              appropriateFor: nil, create: true)
+        return dir.appendingPathComponent("walk_discovery_summary.json")
+    }
+
+    static func load() -> WalkDiscoverySummary? {
+        guard let url = try? fileURL() else { return nil }
+        return load(from: url)
+    }
+
+    static func load(from url: URL) -> WalkDiscoverySummary? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(WalkDiscoverySummary.self, from: data)
+    }
+
+    static func save(_ s: WalkDiscoverySummary) {
+        guard let url = try? fileURL() else { return }
+        save(s, to: url)
+    }
+
+    static func save(_ s: WalkDiscoverySummary, to url: URL) {
+        guard let data = try? JSONEncoder().encode(s) else { return }
         try? data.write(to: url, options: .atomic)
     }
 }
@@ -181,6 +245,35 @@ enum SpeedStore {
         if let data = try? JSONEncoder().encode(e) {
             UserDefaults.standard.set(data, forKey: key)
         }
+    }
+}
+
+/// 画面で選ぶ設定の永続化(端末内・UserDefaults)。
+///
+/// 散歩ごとに選び直させないためのもの。**外へ何かを送る設定は、既定を「送らない」側に置く**
+enum SettingStore {
+    /// 通りかかった店を調べるか。**既定は false**(現在地を外へ送らない側・2026-09-17 利用者判断)
+    private static let shopSearchKey = "shop_search_enabled"
+    /// 案内音に倍音を足すか。**未設定(nil)ならビルドの既定に従う**
+    private static let guidanceToneKey = "guidance_tone_experimental"
+
+    /// 保存先を差し替えられるようにしてあるのは、テストが**本物の設定を汚さない**ため
+    static func loadShopSearchEnabled(from defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: shopSearchKey)   // 未設定は false
+    }
+
+    static func saveShopSearchEnabled(_ on: Bool, to defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: shopSearchKey)
+    }
+
+    /// nil = まだ選んでいない(実験ビルドなら倍音、配布ビルドなら元の音)
+    static func loadGuidanceToneExperimental(from defaults: UserDefaults = .standard) -> Bool? {
+        guard defaults.object(forKey: guidanceToneKey) != nil else { return nil }
+        return defaults.bool(forKey: guidanceToneKey)
+    }
+
+    static func saveGuidanceToneExperimental(_ on: Bool, to defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: guidanceToneKey)
     }
 }
 

@@ -49,11 +49,53 @@ struct ContentView: View {
                             step: 5) {
                         Text("散歩時間: \(Int(controller.durationMin)) 分")
                     }
+                    // **出発前にしか選べない**(歩き出したら画面は見えない)。
+                    // 音源が置かれていない端末には出さない
+                    if controller.musicFileAvailable {
+                        Toggle("音楽スポットを 1 つ作る(実験)", isOn: $controller.musicSpotWanted)
+                        if controller.musicSpotWanted {
+                            Text("出発したら散歩時間に応じた距離に 1 つだけ音楽の鳴る場所を作り、"
+                                 + "そこから聞こえるように鳴らします。"
+                                 + "連続音で方向が伝わるかを試すための実験です")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            // **どちらのビルドを持っているかを、出発前に見えるようにする。**
+                            // 2026-09-10、実験ビルドのつもりで配布ビルドを歩き、
+                            // 「固定する前に鳴り始めた」= 待ちが効いていないことに
+                            // 現地まで気づけなかった。挙動が根本から変わるので明示する
+                            if controller.params.headMount.enabled {
+                                Text("頭部固定: 有効。頭の向きが定まってから鳴り始めます")
+                                    .font(.caption.bold())
+                            } else {
+                                Text("頭部固定: 無効(配布と同じ設定)。"
+                                     + "音楽は待たずにすぐ鳴り始めます")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
                     Toggle("通勤路の学習モード", isOn: $controller.commuteLearning)
                     if controller.commuteLearning {
                         Text("ON の間の移動経路は「日常の道」として記録され、以後の提案から除外されます")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                    // **既定は OFF。** ON の間だけ現在地が外へ出るので、それを明記する
+                    // (2026-09-17 利用者判断)
+                    Toggle("通りかかったお店を記録する", isOn: $controller.shopSearchWanted)
+                    if controller.shopSearchWanted {
+                        Text("ON の間は、周りのお店を調べるために現在地(緯度・経度)を"
+                             + "ホットペッパーグルメのサーバへ送ります。"
+                             + "歩いた経路・自宅・ログは送りません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("OFF の間は、お店を調べません。現在地が外へ送られることもありません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    NavigationLink("案内音") {
+                        GuidanceSoundView(controller: controller)
                     }
                 }
 
@@ -77,59 +119,64 @@ struct ContentView: View {
                     }
                 }
 
-                // 歩いている最中は書き留められないので、帰ってから振り返るための画面。
-                // 見せる範囲は開発中の判断(一般の利用者向けは未決・docs/06)
+                // 歩いている最中は見ない体験なので、帰ってから 1 回分を振り返る。
                 if let s = controller.lastSummary {
-                    Section("前回の散歩(開発用)") {
-                        LabeledContent("距離", value: String(format: "%.0f m", s.pathLengthM))
-                        LabeledContent("時間", value: String(format: "%.0f 分", s.durationSec / 60))
-                        LabeledContent("イベント", value: "\(s.guidanceEvents.count) 件")
-                        NavigationLink("経路図とイベントを見る") {
-                            WalkSummaryView(summary: s,
-                                            marginM: controller.params.summary.mapMarginM,
-                                            minSpanM: controller.params.summary.mapMinSpanM,
-                                            roadsProvider: { controller.roadSegments(in: $0) })
+                    if let receipt = WalkReceiptContent(
+                        summary: s,
+                        discoverySummary: controller.lastDiscoverySummary,
+                        shopHistoryRecords: controller.shopHistoryRecords) {
+                        WalkReceiptView(content: receipt,
+                                        shopSearchOn: controller.shopSearchWanted,
+                                        marginM: controller.params.summary.mapMarginM,
+                                        minSpanM: controller.params.summary.mapMinSpanM,
+                                        roadsProvider: { controller.roadSegments(in: $0) })
+                    } else {
+                        Section("前回の散歩(開発用)") {
+                            LabeledContent("距離", value: String(format: "%.0f m", s.pathLengthM))
+                            LabeledContent("時間", value: String(format: "%.0f 分", s.durationSec / 60))
+                            LabeledContent("イベント", value: "\(s.guidanceEvents.count) 件")
+                            NavigationLink("経路図とイベントを見る") {
+                                WalkSummaryView(summary: s,
+                                                marginM: controller.params.summary.mapMarginM,
+                                                minSpanM: controller.params.summary.mapMinSpanM,
+                                                roadsProvider: { controller.roadSegments(in: $0) })
+                            }
                         }
                     }
                 }
 
-                // 歩かずに符号と手応えを決めるための机上テスト。
-                // 姿勢(yaw)の系統は散歩 1 回を丸ごと潰した前科があるので、
-                // 角速度の系統は先にここで確かめる(docs/08)
-                Section("頭の追従の確認(机上・AirPods 装着)") {
-                    if controller.headCheckActive {
-                        Text(controller.headCheckLine)
-                            .font(.caption.monospaced())
-                        Text("正面を向いた時の方向に音が置かれています。"
-                             + "首を右に向けると音は左へ動くのが正しい動作です")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("確認を終了", role: .destructive) { controller.stopHeadCheck() }
-                    } else {
-                        Button("頭の追従を確認する") { controller.startHeadCheck() }
-                        Text("歩かずに確認できます。動かない・逆に動く場合は "
-                             + "head_rate_sign を反転させてください")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                Section("街の発見MAP") {
+                    LabeledContent("通った店", value: "\(controller.shopHistoryRecords.count) 軒")
+                    NavigationLink("通った店をMAPで見る") {
+                        ShopMapView(records: controller.shopHistoryRecords)
                     }
                 }
 
-                Section("デバッグ(シミュレータ・モーション非対応時の代替)") {
-                    Button("時間到来を発火") { controller.debugTimeUp() }
-                    // 帰る / 延長はデバッグ専用ではなくなったので、上の「時間になりました」に移した
-                }
+                // 「頭の追従の確認(机上)」と「時間到来の発火」は削除した
+                // (2026-09-17 利用者判断: もう要らない)。earcon の試聴は
+                // 「案内音」の画面へ移した(上の「設定」から開く)
 
-                Section("earcon の試聴") {
-                    Button("提案音(左 90°)") { controller.debugPlay(.suggestion, relativeBearingDeg: -90) }
-                    Button("提案音(右 90°)") { controller.debugPlay(.suggestion, relativeBearingDeg: 90) }
-                    // 「真後ろ」の試聴ボタンは置かない(2026-08-31 利用者判断)。
-                    // 定位は前半球のみで、後ろから鳴ることは無い(docs/03「前後からの撤退」)。
-                    // 鳴らない音を試聴に並べると「後ろから鳴ることがある」という誤解を教えてしまう。
-                    // かつては前後の聴き比べ実験用の対だったが、その実験は決着済み(2026-08-18)
-                    Button("ビーコン(正面)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: 0) }
-                    Button("時間到来") { controller.debugPlay(.timeUpPrompt) }
-                    Button("帰路の確認音") { controller.debugPlay(.returnAck) }
-                    Button("到着音") { controller.debugPlay(.arrival) }
+                // **散歩に出てよいかの判定**(→ docs/05 の前提条件)。実験ビルドだけに出す。
+                // build-demo/ab-*.wav でも同じ並びを聴けるが、あちらは等パワーのパンによる
+                // 近似で、実機の HRTF とは経路が違う。**判定は判定したい経路で行う**
+                if controller.params.headMount.enabled {
+                    Section("左右の聴き比べ(実験・AirPods 装着)") {
+                        Button("ビーコンで聴き比べる") {
+                            controller.debugPlayABComparison(.homeBeacon)
+                        }
+                        Button("提案音で聴き比べる") {
+                            controller.debugPlayABComparison(.suggestion)
+                        }
+                        // Text の markdown はリテラルにしか効かない。連結した文字列では
+                        // 記号がそのまま出るので、強調は行を分けて font で付ける
+                        Text("後半で左右がはっきり分かれないなら、散歩に出ないでください。")
+                            .font(.caption.bold())
+                        Text("前半 4 音が配布版(純音)、後半 4 音が実験値(倍音とアタック)。"
+                             + "各 左・右・左・右。方向が聴き取れない音のままでは、"
+                             + "頭部固定の良否と音素材の良否を分けられません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 // 経路データを配信先から入れる。**手で入れる道は残す**
@@ -153,7 +200,7 @@ struct ContentView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        Text("送るのは取得する区画(約 5 km 角)の番号だけです。"
+                        Text("地図取得で送るのは取得する区画(約 5 km 角)の番号だけです。"
                              + "正確な位置・歩いた経路・自宅は送りません")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -179,12 +226,15 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                // 直近のイベントの生表示も開発用(テスターはログの書き出しで送る)
+                #if DEBUG
                 Section("イベントログ") {
                     ForEach(Array(controller.eventLog.suffix(12).reversed().enumerated()),
                             id: \.offset) { _, line in
                         Text(line).font(.caption.monospaced())
                     }
                 }
+                #endif
 
                 // 経路データは OpenStreetMap 由来。**ODbL は出典表示を求める**ので、
                 // 地図を読み込んでいるかによらず常に出す(docs/04「OSM データの持ち方」)
@@ -226,4 +276,5 @@ struct ContentView: View {
         case .arrived: "到着"
         }
     }
+
 }

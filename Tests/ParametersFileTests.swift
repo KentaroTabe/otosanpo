@@ -55,14 +55,104 @@ final class ParametersFileTests: XCTestCase {
     func testHeadMountValuesArrive() throws {
         let p = try ConfigLoader.load(from: repositoryParametersURL())
         XCTAssertGreaterThan(p.headMount.updateHz, 0)
-        XCTAssertGreaterThan(p.headMount.distrustDeg, 0)
-        XCTAssertGreaterThan(p.headMount.distrustSec, 0)
-        XCTAssertGreaterThan(p.headMount.regainSec, 0)
         XCTAssertGreaterThan(p.headMount.logIntervalSec, 0)
+        XCTAssertGreaterThan(p.headMount.staleSec, 0)
         // ずれの学習(MountOffset)。0 で届くと学習が意味を失う
-        XCTAssertGreaterThan(p.headMount.offsetMinSamples, 0)
+        XCTAssertGreaterThan(p.headMount.offsetMinSec, 0)
         XCTAssertGreaterThan(p.headMount.offsetHalfLifeSec, 0)
         XCTAssertGreaterThan(p.headMount.offsetMinConcentration, 0)
         XCTAssertLessThanOrEqual(p.headMount.offsetMinConcentration, 1)
+        XCTAssertGreaterThan(p.headMount.offsetGateDeg, 0)
+        XCTAssertGreaterThan(p.headMount.evidenceMaxGapSec, 0)
+        // 検疫(HeadingQuarantine)。割合が 0 だと即座に退避し、1 を超えると永久に退避しない
+        XCTAssertGreaterThan(p.headMount.quarantineWindowSec, 0)
+        XCTAssertGreaterThan(p.headMount.quarantineDistrustRatio, 0)
+        XCTAssertLessThanOrEqual(p.headMount.quarantineDistrustRatio, 1)
+        XCTAssertGreaterThan(p.headMount.quarantineDistrustSec, 0)
+        XCTAssertGreaterThan(p.headMount.quarantineRegainRatio, 0)
+        XCTAssertLessThanOrEqual(p.headMount.quarantineRegainRatio, 1)
+        XCTAssertGreaterThan(p.headMount.quarantineRegainSec, 0)
+        // 証拠窓より長い遷移条件を置くと、条件が永久に満たされない
+        XCTAssertLessThanOrEqual(p.headMount.quarantineDistrustSec,
+                                 p.headMount.quarantineWindowSec)
+        XCTAssertLessThanOrEqual(p.headMount.quarantineRegainSec,
+                                 p.headMount.quarantineWindowSec)
+    }
+
+    /// 音楽スポットの音量の値が届いていること(→ MusicSpot.Params.gain)。
+    /// **下限が 0 以下だと dB にできず、幅の最小の長さが 0 だと 0 で割る**(2026-09-11)
+    func testMusicSpotGainValuesArrive() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        let e = p.experiment
+        XCTAssertGreaterThan(e.musicSpotMinGain, 0)
+        XCTAssertGreaterThan(e.musicSpotMaxGain, e.musicSpotMinGain)
+        XCTAssertLessThanOrEqual(e.musicSpotMaxGain, 1)
+        XCTAssertGreaterThan(e.musicSpotReferenceDistanceM, 0)
+        XCTAssertGreaterThan(e.musicSpotGainMinSpanM, 0)
+    }
+
+    /// ピンポイントの値が届いていること(→ MusicSpot.Params.pinpointWeight / facingDb・2026-09-15)
+    func testMusicSpotPinpointValuesArrive() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        let e = p.experiment
+        XCTAssertGreaterThan(e.musicSpotPinpointFullM, 0)
+        XCTAssertGreaterThan(e.musicSpotPinpointStartM, e.musicSpotPinpointFullM,
+                             "始まりが最大より遠くないと、少しずつ効かせられない")
+        XCTAssertGreaterThan(e.musicSpotPinpointBeamDeg, 0)
+        XCTAssertGreaterThan(e.musicSpotPinpointDepthDb, 0)
+        // **音量はピンポイントの範囲に入るまで上がり続ける**(2026-09-14 の散歩で、
+        // 15 m より内側は 24 秒間音量が変わらず「最終的にどこにあるか分からない」と言われた)
+        XCTAssertLessThanOrEqual(e.musicSpotReferenceDistanceM, e.musicSpotPinpointFullM)
+    }
+
+    /// **設定から Core への受け渡し**で、音楽スポットの値が取り違えられていないこと
+    /// (2026-09-15 の検証で挙がった系列)。
+    ///
+    /// **今の設定値(5 m・60°・12 dB など)を期待値に書き写さない。** 実機の結果で値を
+    /// 調整するたびにテストを書き換えることになり、「期待値を合わせる」癖がつく。
+    /// かといって設定値どうしを比べるだけだと、2 つの項目が偶然同じ値の時に取り違えを
+    /// 見逃す。そこで**全項目に互いに異なる値を差し込んで**から受け渡しを確かめる
+    /// (検査したいのは配線であって、値の良し悪しではない)
+    func testMusicSpotParamsCarryEachConfigValueToItsOwnField() throws {
+        var e = try ConfigLoader.load(from: repositoryParametersURL()).experiment
+        // 互いに重ならない値(テストの入力)
+        e.musicSpotMinDistancePerMin = 1.1
+        e.musicSpotMaxDistancePerMin = 2.3
+        e.musicSpotDistanceSteps = 7
+        e.musicSpotReachedM = 13.1
+        e.musicSpotBearingStepDeg = 17.3
+        e.musicSpotSameDistanceToleranceM = 0.0019
+        e.musicSpotReferenceDistanceM = 3.7
+        e.musicSpotGainMinSpanM = 29.3
+        e.musicSpotMaxGain = 0.83
+        e.musicSpotMinGain = 0.071
+        e.musicSpotRouteBlend = 0.37
+        e.musicSpotPinpointStartM = 19.1
+        e.musicSpotPinpointFullM = 4.3
+        e.musicSpotPinpointBeamDeg = 53.9
+        e.musicSpotPinpointDepthDb = 11.3
+        let sp = e.musicSpot(durationMin: 20)
+        XCTAssertEqual(sp.minDistanceM, 1.1 * 20, accuracy: 1e-9)
+        XCTAssertEqual(sp.maxDistanceM, 2.3 * 20, accuracy: 1e-9)
+        XCTAssertEqual(sp.distanceStepCount, 7)
+        XCTAssertEqual(sp.reachedM, 13.1)
+        XCTAssertEqual(sp.bearingStepDeg, 17.3)
+        XCTAssertEqual(sp.sameDistanceToleranceM, 0.0019)
+        XCTAssertEqual(sp.referenceDistanceM, 3.7)
+        XCTAssertEqual(sp.gainMinSpanM, 29.3)
+        XCTAssertEqual(sp.maxGain, 0.83)
+        XCTAssertEqual(sp.minGain, 0.071)
+        XCTAssertEqual(sp.routeBlend, 0.37)
+        XCTAssertEqual(sp.pinpointStartM, 19.1)
+        XCTAssertEqual(sp.pinpointFullM, 4.3)
+        XCTAssertEqual(sp.pinpointBeamDeg, 53.9)
+        XCTAssertEqual(sp.pinpointDepthDb, 11.3)
+    }
+
+    func testShopHistoryValuesArrive() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        XCTAssertEqual(p.shopHistory.passageRadiusM, 30, accuracy: 0.001)
+        XCTAssertEqual(p.shopHistory.searchRadiusM, 300, accuracy: 0.001)
+        XCTAssertEqual(p.shopHistory.maxHorizontalAccuracyM, 50, accuracy: 0.001)
     }
 }

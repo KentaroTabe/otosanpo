@@ -154,24 +154,32 @@ print("語彙 \(vocabulary.count) 種を書き出しました")
 //
 // **イヤホンで聴くこと。** ここでの定位は等パワーのパンによる近似で、
 // 実機の HRTF とは別物だが、**素材が左右の手がかりを持つかどうか**は判定できる。
+//
+// 比べるのは「**配布版の値**(audio.tones)」と「**実験用の値**
+// (experiment を載せたもの)」。2026-09-02 に配布値を純音へ戻した時、
+// この関数は「純音に固定した複製」と「audio.tones」を比べていたため、
+// **前半と後半が同じ音になり、聴き比べとして機能しなくなっていた**(2026-09-08 に発見)。
+// 実験値を明示的に参照することで、配布値を動かしても壊れない
 func abTrack(_ tone: AppParameters.ToneSpec, label: String) throws {
-    var legacy = tone           // 従来: 純音・左右対称の窓
-    legacy.harmonics = 1
-    legacy.attackRatio = 0.5
+    let shipped = tone                          // 配布版(いまは純音・左右対称の窓)
+    let experimental = params.experiment.applied(to: tone)   // 実験ビルドに載る値
 
     var t = Timeline(sampleRate: sr)
     var at = 0.5
-    // 左 → 右 → 左 → 右 を、旧 → 新 の順で
-    for spec in [legacy, tone] {
+    // 左 → 右 → 左 → 右 を、配布版 → 実験値 の順で
+    for spec in [shipped, experimental] {
         for deg in [-70.0, 70.0, -70.0, 70.0] {
             t.place(spec, atSec: at, relDeg: deg, gain: 1.0, behind: audio)
             at += 0.7
         }
-        at += 1.0   // 旧と新の間に間を置く
+        at += 1.0   // 配布版と実験値の間に間を置く
     }
     try writeWAV(t.stereo, sampleRate: Int(sr),
                  to: outDir.appendingPathComponent("ab-\(label).wav"))
-    print("左右の聴き比べ(\(label)): 前半 4 音 = 従来の純音 / 後半 4 音 = いまの設定"
+    print("左右の聴き比べ(\(label)): 前半 4 音 = 配布版"
+          + "(倍音 \(shipped.harmonics)・アタック \(shipped.attackRatio))"
+          + " / 後半 4 音 = 実験値"
+          + "(倍音 \(experimental.harmonics)・アタック \(experimental.attackRatio))"
           + "(各 左右左右・±70°)")
 }
 try abTrack(audio.tones.homeBeacon, label: "beacon")

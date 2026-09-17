@@ -27,7 +27,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: XcodeGen を入れる
         run: brew install xcodegen
@@ -52,7 +52,7 @@ jobs:
       # 失敗した時に原因が分かるように。スクリプトは要点だけを出す作りなので
       - name: 失敗したらログを残す
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ios-test-log
           path: logs/test.log
@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Android のコードがあるか
         id: has_android
@@ -96,7 +96,7 @@ jobs:
 
       - name: 失敗したらレポートを残す
         if: failure() && steps.has_android.outputs.yes == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: android-test-report
           path: android/core/build/reports/tests/

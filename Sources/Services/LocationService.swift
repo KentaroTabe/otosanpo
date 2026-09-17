@@ -26,7 +26,8 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
                   speedMps: speedMps,
                   compassHeadingDeg: headingDeg,
                   ageSec: lastFixDate.map { now.timeIntervalSince($0) },
-                  horizontalAccuracyM: horizontalAccuracyM)
+                  horizontalAccuracyM: horizontalAccuracyM,
+                  fixTime: lastFixDate?.timeIntervalSinceReferenceDate)
     }
 
     override init() {

@@ -10,12 +10,28 @@ struct WalkSummaryView: View {
     let summary: WalkSummary
     let marginM: Double
     let minSpanM: Double
+    let discoveredShops: [WalkReceiptShopItem]
+    let showsDiscoveredShops: Bool
     /// 下地の道を取り出す。地図の走査は重いので、図を開いた時に 1 回だけ呼ぶ
     let roadsProvider: (MapFrame) -> [RoadSegment]
 
     @State private var roads: [RoadSegment] = []
 
     private var frame: MapFrame? { summary.frame(marginM: marginM, minSpanM: minSpanM) }
+
+    init(summary: WalkSummary,
+         marginM: Double,
+         minSpanM: Double,
+         discoveredShops: [WalkReceiptShopItem] = [],
+         showsDiscoveredShops: Bool = false,
+         roadsProvider: @escaping (MapFrame) -> [RoadSegment]) {
+        self.summary = summary
+        self.marginM = marginM
+        self.minSpanM = minSpanM
+        self.discoveredShops = discoveredShops
+        self.showsDiscoveredShops = showsDiscoveredShops
+        self.roadsProvider = roadsProvider
+    }
 
     var body: some View {
         List {
@@ -32,16 +48,34 @@ struct WalkSummaryView: View {
 
             Section("経路図") {
                 if let frame {
-                    figure(frame)
+                    WalkRouteFigureView(summary: summary, frame: frame, roads: roads,
+                                        showsHome: true, showsEvents: true)
                         .listRowInsets(EdgeInsets())
-                    Text(String(format: "北が上・図の幅 約 %.0f m・道は端末内の経路データ",
-                                frame.widthM))
+                    Text(caption(frame))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
                     Text("経路が記録されていません")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+            }
+
+            if showsDiscoveredShops {
+                if !discoveredShops.isEmpty {
+                    Section("見つけた店") {
+                        ForEach(discoveredShops) { shop in
+                            shopRow(shop)
+                        }
+                        // 店名を出す所には提供元を添える(規約の求め・→ ShopCreditLabel)
+                        ShopCreditLabel()
+                    }
+                } else {
+                    Section("見つけた店") {
+                        Text("今日は新しい店との出会いはありませんでした")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -63,75 +97,13 @@ struct WalkSummaryView: View {
         }
     }
 
-    // MARK: - 経路図
-
-    private func figure(_ frame: MapFrame) -> some View {
-        Canvas { ctx, size in
-            guard frame.widthM > 0, frame.heightM > 0 else { return }
-            let scale = size.width / frame.widthM
-            func at(_ g: GeoPoint) -> CGPoint {
-                let m = frame.point(g)
-                return CGPoint(x: m.x * scale, y: m.y * scale)
-            }
-
-            for r in roads {
-                var path = Path()
-                path.move(to: at(r.a))
-                path.addLine(to: at(r.b))
-                ctx.stroke(path, with: .color(.secondary.opacity(0.35)),
-                           lineWidth: r.cls == .arterial ? 3 : 1.5)
-            }
-
-            if summary.track.count >= 2 {
-                var path = Path()
-                path.addLines(summary.track.map(at))
-                ctx.stroke(path, with: .color(.accentColor),
-                           style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-            }
-
-            if let h = summary.home {
-                badge(ctx, at: at(h), text: "家", color: .primary, filled: true)
-            }
-            for e in summary.events {
-                mark(ctx, event: e, at: at(e.at))
-            }
+    /// 図の下の説明。**音楽スポットがあった散歩だけ**印の意味を添える
+    private func caption(_ frame: MapFrame) -> String {
+        var text = String(format: "北が上・図の幅 約 %.0f m・道は端末内の経路データ", frame.widthM)
+        if summary.musicSpot != nil {
+            text += "・♪ = 音楽スポット"
         }
-        .aspectRatio(CGFloat(max(frame.widthM, 1) / max(frame.heightM, 1)), contentMode: .fit)
-        .padding(8)
-    }
-
-    /// 1 つの印。誘導は番号と、指した向きの矢印を添える
-    private func mark(_ ctx: GraphicsContext, event e: WalkSummary.Event, at p: CGPoint) {
-        if let bearing = e.bearingDeg {
-            let t = bearing * .pi / 180
-            var arrow = Path()
-            arrow.move(to: p)
-            arrow.addLine(to: CGPoint(x: p.x + sin(t) * 20, y: p.y - cos(t) * 20))
-            ctx.stroke(arrow, with: .color(.orange),
-                       style: StrokeStyle(lineWidth: 2, lineCap: .round))
-        }
-        switch e.mark {
-        case .guidance:
-            // 塗り = 曲がり終えた(従った)/ 白抜き = それ以外。色に頼らず形で分ける
-            badge(ctx, at: p, text: e.number.map(String.init) ?? "?", color: .orange,
-                  filled: e.ending == TurnGuidance.Ending.turned.rawValue)
-        case .returnStart:
-            badge(ctx, at: p, text: "帰", color: .green, filled: true)
-        case .extended:
-            badge(ctx, at: p, text: "延", color: .purple, filled: true)
-        case .arrival:
-            badge(ctx, at: p, text: "着", color: .red, filled: true)
-        }
-    }
-
-    private func badge(_ ctx: GraphicsContext, at p: CGPoint, text: String,
-                       color: Color, filled: Bool) {
-        let r: CGFloat = 9
-        let circle = Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2))
-        ctx.fill(circle, with: .color(filled ? color : Color(white: 1, opacity: 0.9)))
-        ctx.stroke(circle, with: .color(color), lineWidth: 2)
-        ctx.draw(Text(text).font(.system(size: 10, weight: .bold))
-            .foregroundStyle(filled ? Color.white : color), at: p)
+        return text
     }
 
     // MARK: - イベントの一覧
@@ -146,6 +118,24 @@ struct WalkSummaryView: View {
                     .foregroundStyle(.secondary)
             }
             Text(detail(e)).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func shopRow(_ shop: WalkReceiptShopItem) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(shop.name)
+                    .font(.subheadline)
+                if let category = shop.category, !category.isEmpty {
+                    Text(category)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Text(shop.passageLabel)
+                .font(.caption.bold())
+                .foregroundStyle(shop.isNew ? Color.accentColor : Color.secondary)
         }
     }
 
