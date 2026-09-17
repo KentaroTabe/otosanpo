@@ -56,6 +56,19 @@ else
   report_plist "ビルド済みアプリ($CONF)" "$APP/Info.plist"
 fi
 
+# 実機向けの開発ビルド(scripts/build_device.sh の生成物)
+DEVICE_APP=build/Build/Products/Debug-iphoneos/OtoSanpo.app
+if [ -f "$DEVICE_APP/Info.plist" ]; then
+  report_plist "実機の開発ビルド" "$DEVICE_APP/Info.plist"
+  if [ -f "$DEVICE_APP/parameters.json" ]; then
+    if grep -qE '"enabled"[[:space:]]*:[[:space:]]*true' "$DEVICE_APP/parameters.json"; then
+      echo "実機の開発ビルド: 頭部固定 **有効**(実験ビルド)"
+    else
+      echo "実機の開発ビルド: 頭部固定 無効(配布と同じ設定)"
+    fi
+  fi
+fi
+
 # **配るのはこれ。** アーカイブの中身を直接見る(配布物に入っていなければ意味がない)
 ARCHIVE_PLIST=build/OtoSanpo.xcarchive/Products/Applications/OtoSanpo.app/Info.plist
 if [ -f "$ARCHIVE_PLIST" ]; then
