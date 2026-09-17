@@ -722,14 +722,12 @@ score(分岐) = 新鮮さ
 
 ## プライバシー
 
-- 位置履歴(VisitGrid)と自宅座標は**端末内にのみ保存**(Application Support / UserDefaults)。送信コードは存在しない
+- 位置履歴(VisitGrid)と自宅座標は**端末内に保存**(Application Support / UserDefaults)
 - フィールドログ(`Documents/otosanpo-field-log.tsv`)は時刻・状態・座標・メッセージを追記する開発用の記録。端末内にのみ保存し、書き出すかどうかは利用者の操作(共有シート / Finder)に委ねる。ContentView から消去できる
+- Hot Pepper API キーが設定されている場合、周辺店舗候補を取得するために現在地の緯度・経度を Hot Pepper グルメサーチ API へ送る。API キー未設定時は店舗候補取得を行わない
 - 起動中は前面にいる間だけ位置を取得する(`startForeground`)。自宅設定やステータス表示に使う fix を先に用意するためで、**バックグラウンド更新は散歩セッション中のみ**有効にする
 - バックグラウンド位置利用中はステータスバーに明示(`showsBackgroundLocationIndicator = true`)
-- 権限文言にも「端末内にのみ保存」を明記(project.yml の Info properties)
-- **位置情報を送信するコードは今後も持たない。** P2 で地図データを扱うが、通信は
-  「地域の抽出データを取ってくる」方向のみで、現在地・自宅・移動履歴を送る経路は作らない
-  (上記「OSM データの持ち方」)
+- 権限文言では、散歩履歴の端末内保存と、店舗候補取得時の現在地送信を分けて説明する(project.yml の Info properties)
 
 ## 安全
 

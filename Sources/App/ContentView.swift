@@ -102,19 +102,67 @@ struct ContentView: View {
                     }
                 }
 
-                // 歩いている最中は書き留められないので、帰ってから振り返るための画面。
-                // 見せる範囲は開発中の判断(一般の利用者向けは未決・docs/06)
+                // 歩いている最中は見ない体験なので、帰ってから 1 回分を振り返る。
                 if let s = controller.lastSummary {
-                    Section("前回の散歩(開発用)") {
-                        LabeledContent("距離", value: String(format: "%.0f m", s.pathLengthM))
-                        LabeledContent("時間", value: String(format: "%.0f 分", s.durationSec / 60))
-                        LabeledContent("イベント", value: "\(s.guidanceEvents.count) 件")
-                        NavigationLink("経路図とイベントを見る") {
-                            WalkSummaryView(summary: s,
-                                            marginM: controller.params.summary.mapMarginM,
-                                            minSpanM: controller.params.summary.mapMinSpanM,
-                                            roadsProvider: { controller.roadSegments(in: $0) })
+                    if let receipt = WalkReceiptContent(
+                        summary: s,
+                        discoverySummary: controller.lastDiscoverySummary,
+                        shopHistoryRecords: controller.shopHistoryRecords) {
+                        Section("今日の音さんぽ") {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(walkDateLine(s))
+                                    .font(.subheadline.bold())
+                                Text(walkTimeRangeLine(s))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            LabeledContent("歩いた時間", value: String(format: "%.0f 分", s.durationSec / 60))
+                            LabeledContent("距離", value: String(format: "%.1f km", s.pathLengthM / 1_000))
+                            discoveryMetric(title: "NEW", value: "\(receipt.newShopCount) 軒")
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("今日見つけた店")
+                                    .font(.subheadline.bold())
+                                if receipt.shopItems.isEmpty {
+                                    Text("今日は新しい店との出会いはありませんでした")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    ForEach(receipt.shopItems) { item in
+                                        receiptShopRow(item)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
+
+                            NavigationLink("経路図と店を見る") {
+                                WalkSummaryView(summary: s,
+                                                marginM: controller.params.summary.mapMarginM,
+                                                minSpanM: controller.params.summary.mapMinSpanM,
+                                                discoveredShops: receipt.shopItems,
+                                                showsDiscoveredShops: true,
+                                                roadsProvider: { controller.roadSegments(in: $0) })
+                            }
                         }
+                    } else {
+                        Section("前回の散歩(開発用)") {
+                            LabeledContent("距離", value: String(format: "%.0f m", s.pathLengthM))
+                            LabeledContent("時間", value: String(format: "%.0f 分", s.durationSec / 60))
+                            LabeledContent("イベント", value: "\(s.guidanceEvents.count) 件")
+                            NavigationLink("経路図とイベントを見る") {
+                                WalkSummaryView(summary: s,
+                                                marginM: controller.params.summary.mapMarginM,
+                                                minSpanM: controller.params.summary.mapMinSpanM,
+                                                roadsProvider: { controller.roadSegments(in: $0) })
+                            }
+                        }
+                    }
+                }
+
+                Section("街の発見MAP") {
+                    LabeledContent("通った店", value: "\(controller.shopHistoryRecords.count) 軒")
+                    NavigationLink("通った店をMAPで見る") {
+                        ShopMapView(records: controller.shopHistoryRecords)
                     }
                 }
 
@@ -203,7 +251,7 @@ struct ContentView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        Text("送るのは取得する区画(約 5 km 角)の番号だけです。"
+                        Text("地図取得で送るのは取得する区画(約 5 km 角)の番号だけです。"
                              + "正確な位置・歩いた経路・自宅は送りません")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -275,5 +323,49 @@ struct ContentView: View {
         case .returning: "帰路(ビーコン案内中)"
         case .arrived: "到着"
         }
+    }
+
+    private func discoveryMetric(title: String, value: String) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("街の発見")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(.subheadline.bold())
+            }
+            Spacer()
+            Text(value)
+                .font(.headline.monospacedDigit())
+        }
+    }
+
+    private func receiptShopRow(_ shop: WalkReceiptShopItem) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(shop.name)
+                    .font(.subheadline)
+                if let category = shop.category, !category.isEmpty {
+                    Text(category)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Text(shop.passageLabel)
+                .font(.caption.bold())
+                .foregroundStyle(shop.isNew ? Color.accentColor : Color.secondary)
+        }
+    }
+
+    private func walkDateLine(_ summary: WalkSummary) -> String {
+        summary.startedAt.formatted(.dateTime.month().day())
+    }
+
+    private func walkTimeRangeLine(_ summary: WalkSummary) -> String {
+        let start = summary.startedAt.formatted(.dateTime.hour().minute())
+        guard let endedAt = summary.endedAt else { return start }
+        let end = endedAt.formatted(.dateTime.hour().minute())
+        return "\(start)–\(end)"
     }
 }

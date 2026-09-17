@@ -200,4 +200,25 @@ final class WalkSummaryTests: XCTestCase {
         XCTAssertNil(decoded.musicSpot)
         XCTAssertEqual(decoded, s)
     }
+
+    func testDecodesOlderSummaryWithoutWalkID() throws {
+        let json = """
+        {
+          "startedAt": 1000000,
+          "endedAt": 1000600,
+          "home": { "latitude": 35.0, "longitude": 139.0 },
+          "track": [],
+          "events": [],
+          "pathLengthM": 800,
+          "thinScale": 1,
+          "guidanceCount": 0
+        }
+        """
+        let data = Data(json.utf8)
+
+        let decoded = try JSONDecoder().decode(WalkSummary.self, from: data)
+
+        XCTAssertEqual(decoded.startedAt, Date(timeIntervalSinceReferenceDate: 1_000_000))
+        XCTAssertEqual(decoded.pathLengthM, 800)
+    }
 }
