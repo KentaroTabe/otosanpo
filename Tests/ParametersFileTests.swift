@@ -137,6 +137,38 @@ final class ParametersFileTests: XCTestCase {
                           + "向きが距離を食いつぶす")
     }
 
+    /// **スポットの向きの遊び**(2026-09-18)。揺れを落とすが、凍結はさせない
+    func testMusicSpotBearingHoldValuesArrive() throws {
+        let e = try ConfigLoader.load(from: repositoryParametersURL()).experiment
+        let hold = e.musicSpotBearingHold
+        XCTAssertGreaterThan(hold.minDeadbandDeg, 0, "0 だと揺れが素通りする")
+        XCTAssertGreaterThan(hold.maxDeadbandDeg, hold.minDeadbandDeg)
+        XCTAssertLessThanOrEqual(hold.maxDeadbandDeg, 20,
+                                 "上限が大きいと、通り過ぎても向きが前のままになる")
+        XCTAssertGreaterThan(hold.timeConstantSec, 0, "0 だと追従が止まる")
+        XCTAssertLessThan(hold.timeConstantSec, 1,
+                          "1 秒を超えると、通り過ぎる場面に間に合わない")
+    }
+
+    /// **スポットを移す提案**(2026-09-18 利用者依頼)
+    func testMusicSpotMoveValuesArrive() throws {
+        let e = try ConfigLoader.load(from: repositoryParametersURL()).experiment
+        let m = e.musicSpotMove
+        XCTAssertGreaterThan(m.baseIntervalSec, 0)
+        XCTAssertGreaterThan(m.responseWindowSec, 0, "0 だと返事を受け取れない")
+        XCTAssertGreaterThanOrEqual(m.responseDelaySec, 0)
+        XCTAssertGreaterThan(e.musicSpotMoveMinSeparationM, 0,
+                             "0 だと同じ所が選ばれうる(固まらないための距離)")
+        XCTAssertGreaterThan(e.musicSpotMoveFadeSec, 0, "0 だと移る時に音が飛ぶ")
+    }
+
+    /// **移す提案の音は、時間到来と別の音**(どちらへの返事か分からなくなるため)
+    func testSpotMoveToneDiffersFromTheReturnPrompt() throws {
+        let a = try ConfigLoader.load(from: repositoryParametersURL()).audio
+        XCTAssertNotEqual(a.tones.spotMove, a.tones.timeUpPrompt)
+        XCTAssertGreaterThan(a.tones.spotMove.durationSec, 0)
+    }
+
     /// 音楽スポットでは検疫の判断を無視する(2026-09-18 利用者判断)。
     /// **基準が切り替わること自体が、連続音では壊れた体験になる**
     func testMusicIgnoresQuarantineIsOn() throws {

@@ -192,6 +192,14 @@ final class WalkSessionController: ObservableObject {
     /// スポットの中心は動かないのに「小刻みに移動して聞こえる」原因は位置の推定の揺れ。
     /// 位置から決まる向きにだけ遊びを持たせる(頭の向きには掛けない)
     private var musicBearingHold = BearingHold()
+    /// **スポットを移す提案の日程**(→ SpotMoveSchedule・2026-09-18 利用者依頼)
+    private var spotMove = SpotMoveSchedule()
+    /// 移す提案への応答だけを読む検出器。**窓が開く時に空にする**(影の履歴を流用しない)
+    private var spotMoveDetector: HeadGestureDetector
+    /// この散歩で**実際に置いた**所。次に移す時、ここから離して選ぶ
+    private var placedSpots: [GeoPoint] = []
+    /// 移すと決めてから音を絞り切るまでの間。絞り切ったら中心を入れ替える
+    private var spotMoveFadeOutStartedAt: Date?
     /// 遊びへ取り込んだ最後の fix の時刻。**同じ位置を 50 Hz で取り込まない**ため
     private var lastMusicFixTime: TimeInterval?
     /// 鳴らす向きを進めた時刻。追従は**経過時間**で決める(更新頻度に依らせない)
@@ -263,6 +271,7 @@ final class WalkSessionController: ObservableObject {
                               halfLifeM: params.route.visitHalfLifeM)
         detector = HeadGestureDetector(params: params.gesture)
         shadowDetector = HeadGestureDetector(params: params.gesture)
+        spotMoveDetector = HeadGestureDetector(params: params.gesture)
         shopHistory = injectedShopHistory
             ?? ShopHistoryService(provider: HotPepperShopCandidateProvider.configuredOrEmpty(),
                                   store: LocalShopHistoryStore(),
@@ -1584,6 +1593,11 @@ final class WalkSessionController: ObservableObject {
         musicBearingHold.reset()
         lastMusicFixTime = nil
         lastMusicUpdateAt = nil
+        // **移す提案は、音が実際に鳴り始めた時から数える**(待った時間は含めない → 合議 E1)
+        placedSpots = [spot.center]
+        spotMove.start(at: Date().timeIntervalSinceReferenceDate,
+                       p: params.experiment.musicSpotMove)
+        spotMoveFadeOutStartedAt = nil
         pendingMusicURL = nil
         musicWaitStartedAt = nil
         musicStartedAt = Date()
@@ -1611,6 +1625,10 @@ final class WalkSessionController: ObservableObject {
     /// 止めていた頃は、着いてから帰宅までの 80 秒が無音になった(実測)。
     /// 通り過ぎれば背後に回って自然に遠ざかるので、止める必要が無い
     private func updateMusicSpot(at p: GeoPoint) {
+        // **移す提案の時刻の勘定は、スポットの更新と同じ所で回す**(別のタイマーを増やさない)
+        let tickNow = Date()
+        tickSpotMove(now: tickNow)
+        swapSpotIfFadedOut(now: tickNow, at: p)
         guard let spot = musicSpot else { return }
         let sp = params.experiment.musicSpot(durationMin: durationMin)
         if !musicSpotReached, spot.isReached(from: p, p: sp) {
@@ -1654,8 +1672,10 @@ final class WalkSessionController: ObservableObject {
                                     p: sp)
         // **鳴り始めはじんわり。** 距離から決めた音量に、立ち上がりの係数を掛ける。
         // 頭方位の受信ごとに呼ばれるので、別のタイマーを持たずに滑らかに上がる
+        // 移す時は**絞り切ってから入れ替える**ので、その係数もここで掛ける
         synth?.setMusicPlacement(relativeBearingDeg: reference == nil ? 0 : placed.relDeg,
-                                 gain: placed.gain * musicFadeFactor(),
+                                 gain: placed.gain * musicFadeFactor()
+                                     * musicFadeOutFactor(now: tickNow),
                                  rearShelfDb: appliedRearShelfDb(placed))
         // **音は毎回付け直すが、ログは間引く。** 受信ごとに書くとログが音楽で埋まる
         guard lastMusicLogAt == nil
@@ -1687,6 +1707,104 @@ final class WalkSessionController: ObservableObject {
 
     /// 鳴り始めの立ち上がり [0..1]。待った末に不意に鳴り出すと驚くので、
     /// `music_fade_in_sec` かけて 0 から 1 へ上げる(2026-09-10 利用者依頼)
+    // MARK: - スポットを移す提案(2026-09-18 利用者依頼)
+
+    /// 提案を出す時刻か / 応答の窓が閉じたかを見る。**音楽を鳴らしている間だけ**動く。
+    ///
+    /// 「ある程度時間が経ったらイベントが発生し、うなずくとスポットが移動する。
+    /// 断ったら間隔が倍々に増え、合意して移動したら間隔はそのまま」(利用者依頼)
+    private func tickSpotMove(now: Date) {
+        guard musicSpot != nil, state == .wandering else { return }
+        let t = now.timeIntervalSinceReferenceDate
+        let p = params.experiment.musicSpotMove
+        // 窓が閉じた = 返事が無かった → **断り**(→ 合議 E5)
+        if spotMove.windowExpired(at: t) {
+            spotMove.refused(at: t)
+            log(String(format: "スポットの移動: 返事なし(次は %.0f 秒後)", spotMove.intervalSec))
+            return
+        }
+        guard spotMove.isDue(at: t) else { return }
+        // **先に候補を確かめる。** 移せない所で提案しても断らせるだけ(→ 合議 E2・M5)
+        guard nextSpotCandidate() != nil else {
+            spotMove.postpone(at: t)
+            logToFile("スポットの移動: 移せる場所が無いので見送りました(断りには数えません)")
+            return
+        }
+        synth?.play(.spotMove)
+        spotMove.prompted(promptEndsAt: t + params.audio.tones.spotMove.durationSec, p: p)
+        spotMoveDetector = HeadGestureDetector(params: params.gesture)   // 窓は空から(E3)
+        log("スポットの移動: うなずけば別の場所へ移ります(首振り・無反応でそのまま)")
+    }
+
+    /// 移す先の候補。**これまでに置いた所から離し、帯の中から選ぶ**(→ MusicSpot.chooseSpread)
+    private func nextSpotCandidate() -> MusicSpot? {
+        guard let here = location.position else { return nil }
+        let p = params.experiment.musicSpot(durationMin: durationMin)
+        let raw = MusicSpot.candidates(around: here, p: p)
+        let snapped: [GeoPoint]
+        if let graph, graph.map.covers(here) {
+            snapped = raw.compactMap {
+                graph.snap($0, maxDistanceM: params.route.snapMaxDistanceM)?.point
+            }
+        } else {
+            snapped = raw
+        }
+        return MusicSpot.chooseSpread(
+            from: snapped.isEmpty ? raw : snapped, start: here,
+            avoiding: placedSpots,
+            minSeparationM: params.experiment.musicSpotMoveMinSeparationM,
+            p: p, pick: { Int.random(in: 0..<$0) })
+    }
+
+    /// 合意された。**音を絞り切ってから**中心を入れ替える(→ 合議 M7)
+    private func acceptSpotMove(now: Date) {
+        spotMove.accepted(at: now.timeIntervalSinceReferenceDate)
+        spotMoveFadeOutStartedAt = now
+        log("スポットの移動: うなずきを検出(音を絞ってから移します)")
+    }
+
+    /// 断られた
+    private func refuseSpotMove(now: Date, reason: String) {
+        spotMove.refused(at: now.timeIntervalSinceReferenceDate)
+        log(String(format: "スポットの移動: %@(次は %.0f 秒後)", reason, spotMove.intervalSec))
+    }
+
+    /// 絞り切ったら中心を入れ替える。**曲の再生位置は戻さない**(→ 合議 M8)
+    private func swapSpotIfFadedOut(now: Date, at here: GeoPoint) {
+        guard let started = spotMoveFadeOutStartedAt else { return }
+        let fade = max(0.01, params.experiment.musicSpotMoveFadeSec)
+        guard now.timeIntervalSince(started) >= fade else { return }
+        spotMoveFadeOutStartedAt = nil
+        // **移す直前にもう一度選び直す**(歩いている間に予算や距離が変わる → 合議 M6)
+        guard let next = nextSpotCandidate() else {
+            log("スポットの移動: 直前に移せる場所が無くなったので取りやめました")
+            musicStartedAt = Date()          // 絞った音を戻す
+            return
+        }
+        musicSpot = next
+        placedSpots.append(next.center)
+        musicSpotReached = false
+        musicGainFromM = Geo.distanceM(here, next.center)
+        musicBearingHold.reset()
+        lastMusicFixTime = nil
+        lastMusicUpdateAt = nil
+        musicSpotField = nil
+        musicSpotTrace = nil
+        musicStartedAt = Date()              // ここから立ち上げ直す
+        summary?.setMusicSpot(next.center)
+        buildMusicSpotField(to: next.center)
+        log(String(format: "スポットの移動: %.0fm 先 方位 %.0f° へ移しました(%d 回目)",
+                   musicGainFromM ?? 0, Geo.bearingDeg(from: here, to: next.center),
+                   placedSpots.count))
+    }
+
+    /// 絞っている最中の音量の係数。**移す時の飛びを隠す**
+    private func musicFadeOutFactor(now: Date) -> Double {
+        guard let started = spotMoveFadeOutStartedAt else { return 1 }
+        let fade = max(0.01, params.experiment.musicSpotMoveFadeSec)
+        return max(0, 1 - now.timeIntervalSince(started) / fade)
+    }
+
     private func musicFadeFactor(now: Date = Date()) -> Double {
         guard let started = musicStartedAt else { return 1 }
         let fade = params.experiment.musicFadeInSec
@@ -1709,6 +1827,10 @@ final class WalkSessionController: ObservableObject {
         musicBearingHold.reset()
         lastMusicFixTime = nil
         lastMusicUpdateAt = nil
+        // 移す提案の予約と応答待ちも捨てる(→ 合議 E11)
+        spotMove.stop()
+        spotMoveFadeOutStartedAt = nil
+        placedSpots = []
         if wasPlaying {
             synth?.stopMusic()
             log("音楽スポット: 終了(\(reason))")
@@ -1837,6 +1959,24 @@ final class WalkSessionController: ObservableObject {
                 break
             }
             return
+        }
+
+        // **スポットを移す提案への返事**(2026-09-18)。窓が開いている間だけ読む。
+        // 散策中に常時ジェスチャを開けると誤検出が増えるので、窓を限る(合議 3-1)。
+        //
+        // **時計を混ぜない。** `s.time` は端末起動からの時刻(CMDeviceMotion.timestamp)で、
+        // 日程は壁時計で持っている。窓の判定には壁時計を使う
+        // (検出器の中では `s.time` のまま扱われる)
+        let wall = Date()
+        if spotMove.acceptsResponse(at: wall.timeIntervalSinceReferenceDate) {
+            switch spotMoveDetector.ingest(s) {
+            case .nod:
+                acceptSpotMove(now: wall)
+            case .shake:
+                refuseSpotMove(now: wall, reason: "首振りを検出")
+            case nil:
+                break
+            }
         }
 
         // 応答待ち以外でも同じ判定を回し、記録だけする。

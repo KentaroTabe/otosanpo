@@ -579,4 +579,102 @@ final class MusicSpotTests: XCTestCase {
         let close = Geo.destination(from: origin, bearingDeg: 0, distanceM: 70)
         XCTAssertTrue(spot.isReached(from: close, p: p))
     }
+
+    // MARK: - 置き直す時の選び方(2026-09-18 利用者依頼「特定の箇所に固まらないように」)
+
+    /// **これまでに置いた所の近くは選ばない**(→ 合議 M2)
+    func testSpreadChoiceAvoidsPreviousSpots() {
+        let p = params(min: 60, max: 100, steps: 1)
+        let north = Geo.destination(from: origin, bearingDeg: 0, distanceM: 80)
+        let candidates = MusicSpot.candidates(around: origin, p: p)
+        // 北を避けると、北の候補は 1 つも選ばれない
+        for i in 0..<12 {
+            let spot = MusicSpot.chooseSpread(from: candidates, start: origin,
+                                              avoiding: [north], minSeparationM: 20,
+                                              p: p, pick: { _ in i })
+            XCTAssertNotNil(spot)
+            XCTAssertGreaterThanOrEqual(Geo.distanceM(spot!.center, north), 20)
+        }
+    }
+
+    /// ちょうどの距離は許す(→ 合議 M2)。
+    ///
+    /// **期待値は測った距離から作る。** `destination` で 20 m 先を作っても、
+    /// `distanceM` で測り返すと 20 m ちょうどにはならない(平面近似と haversine の往復)
+    func testExactlyTheSeparationIsAllowed() {
+        let p = params(min: 60, max: 100, steps: 1)
+        let spotPoint = Geo.destination(from: origin, bearingDeg: 0, distanceM: 80)
+        let away = Geo.destination(from: spotPoint, bearingDeg: 90, distanceM: 20)
+        let measured = Geo.distanceM(spotPoint, away)
+        XCTAssertEqual(measured, 20, accuracy: 0.05, "前提: ほぼ 20 m(実測 \(measured))")
+        XCTAssertNotNil(MusicSpot.chooseSpread(from: [away], start: origin,
+                                               avoiding: [spotPoint],
+                                               minSeparationM: measured,
+                                               p: p, pick: { _ in 0 }),
+                        "ちょうどの距離は残ること")
+        XCTAssertNil(MusicSpot.chooseSpread(from: [away], start: origin,
+                                            avoiding: [spotPoint],
+                                            minSeparationM: measured + 0.01,
+                                            p: p, pick: { _ in 0 }),
+                     "それより近ければ外れること")
+    }
+
+    /// **北や先頭に固定的に寄らない**(→ 合議 M4)
+    func testSpreadChoiceCanPickAnyEligibleCandidate() {
+        let p = params(min: 60, max: 100, steps: 1)
+        let candidates = MusicSpot.candidates(around: origin, p: p)
+        var seen = Set<String>()
+        for i in 0..<12 {
+            guard let s = MusicSpot.chooseSpread(from: candidates, start: origin,
+                                                 avoiding: [], minSeparationM: 20,
+                                                 p: p, pick: { _ in i }) else { continue }
+            seen.insert(String(format: "%.4f,%.4f", s.center.latitude, s.center.longitude))
+        }
+        XCTAssertGreaterThan(seen.count, 4, "選び先が散らばること(得た数 \(seen.count))")
+    }
+
+    /// 同じ地点に重なった候補は 1 票にまとめる(道へ寄せると重なる → 合議 M3)
+    func testDuplicatePointsCountOnce() {
+        let p = params(min: 60, max: 100, steps: 1)
+        let a = Geo.destination(from: origin, bearingDeg: 0, distanceM: 80)
+        let chosen = MusicSpot.chooseSpread(from: [a, a, a], start: origin,
+                                            avoiding: [], minSeparationM: 20,
+                                            p: p, pick: { count in
+                                                XCTAssertEqual(count, 1, "3 つ渡しても 1 票")
+                                                return 0
+                                            })
+        XCTAssertNotNil(chosen)
+    }
+
+    /// **選べなければ nil。条件を黙って緩めない**(→ 合議 M5)
+    func testNoEligibleCandidateReturnsNil() {
+        let p = params(min: 60, max: 100, steps: 1)
+        let candidates = MusicSpot.candidates(around: origin, p: p)
+        // 出発点から 1 km を避ける指定なら全部残るが、**全候補を避ければ**何も残らない
+        XCTAssertNil(MusicSpot.chooseSpread(from: candidates, start: origin,
+                                            avoiding: candidates, minSeparationM: 20,
+                                            p: p, pick: { _ in 0 }))
+    }
+
+    /// 帯の外は選ばない(既存の `choose` と同じ条件 → 合議 M1)
+    func testSpreadChoiceKeepsTheDistanceBand() {
+        let p = params(min: 60, max: 100, steps: 1)
+        let tooNear = Geo.destination(from: origin, bearingDeg: 0, distanceM: 30)
+        let tooFar = Geo.destination(from: origin, bearingDeg: 180, distanceM: 300)
+        XCTAssertNil(MusicSpot.chooseSpread(from: [tooNear, tooFar], start: origin,
+                                            avoiding: [], minSeparationM: 20,
+                                            p: p, pick: { _ in 0 }))
+    }
+
+    /// 範囲外の番号を返されても落ちない(挟み込む)
+    func testPickIsClamped() {
+        let p = params(min: 60, max: 100, steps: 1)
+        let candidates = MusicSpot.candidates(around: origin, p: p)
+        XCTAssertNotNil(MusicSpot.chooseSpread(from: candidates, start: origin,
+                                               avoiding: [], minSeparationM: 20,
+                                               p: p, pick: { _ in 9999 }))
+        XCTAssertNotNil(MusicSpot.chooseSpread(from: candidates, start: origin,
+                                               avoiding: [], minSeparationM: 20,
+                                               p: p, pick: { _ in -5 }))
+    }
 }

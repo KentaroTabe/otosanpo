@@ -467,6 +467,26 @@ public struct AppParameters: Codable, Equatable {
         /// 2〜3 秒では通り過ぎる場面に間に合わない
         public var musicSpotBearingFollowSec: Double
 
+        /// **スポットを移す提案の間隔** [sec]。断るたびに 2 倍になる(→ SpotMoveSchedule)
+        public var musicSpotMoveIntervalSec: Double
+        /// 提案が鳴り終わってから、応答を受け付け始めるまでの待ち [sec]。
+        /// 鳴っている最中のうなずきを拾わないため
+        public var musicSpotMoveResponseDelaySec: Double
+        /// 応答を受け付ける長さ [sec]。**散策中に常時ジェスチャを開けない**ための窓
+        public var musicSpotMoveResponseWindowSec: Double
+        /// 移す時、**これまでに置いた所から空ける距離** [m]。
+        /// 「特定の箇所に固まらないように」(2026-09-18 利用者依頼)
+        public var musicSpotMoveMinSeparationM: Double
+        /// 移す時に音を絞る / 戻す長さ [sec]。**向きと音量が飛ぶのを隠す**
+        public var musicSpotMoveFadeSec: Double
+
+        /// SpotMoveSchedule に渡す設定値
+        public var musicSpotMove: SpotMoveSchedule.Params {
+            SpotMoveSchedule.Params(baseIntervalSec: musicSpotMoveIntervalSec,
+                                    responseDelaySec: musicSpotMoveResponseDelaySec,
+                                    responseWindowSec: musicSpotMoveResponseWindowSec)
+        }
+
         /// BearingHold に渡す設定値
         public var musicSpotBearingHold: BearingHold.Params {
             BearingHold.Params(minDeadbandDeg: musicSpotBearingDeadbandMinDeg,
@@ -622,6 +642,8 @@ public struct AppParameters: Codable, Equatable {
             public var returnAck: ToneSpec
             public var homeBeacon: ToneSpec
             public var arrival: ToneSpec
+            /// スポットを移す提案(2026-09-18)。**時間到来とは別の音**
+            public var spotMove: ToneSpec
         }
     }
 
@@ -656,5 +678,15 @@ public struct AppParameters: Codable, Equatable {
         /// 周期的で曖昧だが、「どちらの耳に先に届いたか」は一意に決まるため。
         /// 打楽器的になるので音色としても不自然ではない
         public var attackRatio: Double
+
+        /// **この音が鳴り終わるまでの長さ** [sec]。
+        /// 応答の窓を「鳴り終わってから」開くために要る(→ SpotMoveSchedule・2026-09-18)。
+        /// 音は「blip を freqs の数だけ、間に gap を挟んで」並べる(→ ToneRenderer)
+        public var durationSec: Double {
+            let n = Swift.max(0, freqsHz.count)
+            guard n > 0 else { return 0 }
+            return Double(n) * Swift.max(0, blipSec)
+                + Double(n - 1) * Swift.max(0, gapSec)
+        }
     }
 }

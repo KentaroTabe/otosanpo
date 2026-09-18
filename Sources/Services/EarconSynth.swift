@@ -129,6 +129,9 @@ final class EarconSynth {
         buffers[.returnAck] = Self.render(tones.returnAck, format: format, gain: gain, leadSilenceSec: lead)
         buffers[.homeBeacon] = Self.render(tones.homeBeacon, format: format, gain: gain, leadSilenceSec: lead)
         buffers[.arrival] = Self.render(tones.arrival, format: format, gain: gain, leadSilenceSec: lead)
+        // スポットを移す提案。**方向を持たない音**なので実験の音色は載せない
+        buffers[.spotMove] = Self.render(audio.tones.spotMove, format: format,
+                                         gain: gain, leadSilenceSec: lead)
         let beaconTone = tones.homeBeacon
         // 有効性パルスは**実験のときだけ作る**。作らなければ play が黙って何もしないので、
         // 配布版で鳴る経路が存在しないことがここで担保される

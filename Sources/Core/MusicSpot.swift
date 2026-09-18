@@ -298,6 +298,40 @@ public struct MusicSpot: Equatable {
 
     /// 候補から 1 つ選ぶ。**上限の内側で、狙う距離にいちばん近いもの。**
     /// 同点は候補の並び順(= 方位の小さい方)で決める — 再現できるようにするため
+    /// **置き直す時の選び方**(2026-09-18 利用者依頼「特定の箇所に固まらないように」)。
+    ///
+    /// 最初の 1 つは `choose`(目標距離にいちばん近いもの)で選ぶ。
+    /// 置き直しでそれを使うと、**同じ所が何度でも選ばれる**ので、こちらを使う:
+    ///
+    /// 1. 帯の中(`minDistanceM`〜`maxDistanceM`)の候補だけを残す
+    /// 2. **これまでに置いた所から `minSeparationM` 未満のものを外す**
+    ///    (ちょうどの距離は許す)
+    /// 3. 同じ地点に寄った候補をまとめる(道へ寄せると重なるため。票が偏らないように)
+    /// 4. 残りから 1 つ選ぶ
+    ///
+    /// - Parameters:
+    ///   - avoiding: これまでに置いた所(今回の散歩ぶん)
+    ///   - minSeparationM: そこから空ける距離 [m]
+    ///   - pick: 0..<件数 から 1 つ選ぶ。**外から渡す**ので、テストでは決め打ちにできる
+    /// - Returns: 選べなければ nil。**条件を黙って緩めない**(呼ぶ側が見送る)
+    public static func chooseSpread(from candidates: [GeoPoint], start: GeoPoint,
+                                    avoiding: [GeoPoint], minSeparationM: Double,
+                                    p: Params, pick: (Int) -> Int) -> MusicSpot? {
+        var eligible: [GeoPoint] = []
+        for c in candidates {
+            let d = Geo.distanceM(start, c)
+            guard d >= p.minDistanceM, d <= p.maxDistanceM else { continue }
+            // **これまでに置いた所の近くは外す**
+            if avoiding.contains(where: { Geo.distanceM($0, c) < minSeparationM }) { continue }
+            // 道へ寄せると別々の候補が同じ地点に重なる。**票を 1 つにまとめる**
+            if eligible.contains(where: { Geo.distanceM($0, c) < 1 }) { continue }
+            eligible.append(c)
+        }
+        guard !eligible.isEmpty else { return nil }
+        let i = Swift.max(0, Swift.min(eligible.count - 1, pick(eligible.count)))
+        return MusicSpot(center: eligible[i])
+    }
+
     public static func choose(from candidates: [GeoPoint], start: GeoPoint,
                               p: Params) -> MusicSpot? {
         var best: (point: GeoPoint, error: Double)?
