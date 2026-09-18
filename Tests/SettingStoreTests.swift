@@ -72,41 +72,42 @@ final class SettingStoreTests: XCTestCase {
         XCTAssertEqual(SettingStore.loadGuidanceToneExperimental(from: defaults), true)
     }
 
-    // MARK: - 左右の音量差(2026-09-18)
+    // MARK: - 真横に聞こえる角度(2026-09-18)
 
-    /// **未校正は nil。** その時は従来の HRTF の経路で鳴らす(→ 合議 C9)
-    func testEarBalanceIsNilUntilCalibrated() {
-        XCTAssertNil(SettingStore.loadEarBalance(from: defaults))
+    /// **未校正は nil。** その時は置きたい角度をそのまま置く
+    func testEarAngleMapIsNilUntilCalibrated() {
+        XCTAssertNil(SettingStore.loadEarAngleMap(from: defaults))
     }
 
-    /// 合わせた値が残る(→ 合議 C2)
-    func testEarBalanceSurvives() {
-        XCTAssertTrue(SettingStore.saveEarBalance(EarBalance(rightDb: 7, leftDb: 11),
-                                                  to: defaults))
-        XCTAssertEqual(SettingStore.loadEarBalance(from: defaults),
-                       EarBalance(rightDb: 7, leftDb: 11))
+    /// 合わせた角度が残る
+    func testEarAngleMapSurvives() {
+        XCTAssertTrue(SettingStore.saveEarAngleMap(
+            EarAngleMap(rightAnchorDeg: 115, leftAnchorDeg: 75), to: defaults))
+        XCTAssertEqual(SettingStore.loadEarAngleMap(from: defaults),
+                       EarAngleMap(rightAnchorDeg: 115, leftAnchorDeg: 75))
     }
 
-    /// **範囲外は保存しない**(端に張り付いた値を成功として残さない → 合議 C8)
+    /// **範囲外は保存しない**(端に張り付いた値を成功として残さない)
     func testOutOfRangeCalibrationIsNotSaved() {
-        XCTAssertFalse(SettingStore.saveEarBalance(EarBalance(rightDb: 99, leftDb: 6),
-                                                   to: defaults))
-        XCTAssertNil(SettingStore.loadEarBalance(from: defaults))
-        XCTAssertFalse(SettingStore.saveEarBalance(EarBalance(rightDb: .nan, leftDb: 6),
-                                                   to: defaults))
-        XCTAssertNil(SettingStore.loadEarBalance(from: defaults))
+        XCTAssertFalse(SettingStore.saveEarAngleMap(
+            EarAngleMap(rightAnchorDeg: 175, leftAnchorDeg: 90), to: defaults))
+        XCTAssertNil(SettingStore.loadEarAngleMap(from: defaults))
+        XCTAssertFalse(SettingStore.saveEarAngleMap(
+            EarAngleMap(rightAnchorDeg: .nan, leftAnchorDeg: 90), to: defaults))
+        XCTAssertNil(SettingStore.loadEarAngleMap(from: defaults))
     }
 
     /// 壊れた中身が入っていても、校正済みとして扱わない
     func testBrokenStoredCalibrationIsIgnored() {
-        defaults.set(Data("これは JSON ではない".utf8), forKey: "ear_balance")
-        XCTAssertNil(SettingStore.loadEarBalance(from: defaults))
+        defaults.set(Data("これは JSON ではない".utf8), forKey: "ear_angle_map")
+        XCTAssertNil(SettingStore.loadEarAngleMap(from: defaults))
     }
 
-    /// 消したら未校正へ戻る(汎用の聞こえ方へ)
+    /// 消したら未校正へ戻る
     func testClearingReturnsToUncalibrated() {
-        SettingStore.saveEarBalance(EarBalance(rightDb: 6, leftDb: 6), to: defaults)
-        SettingStore.clearEarBalance(from: defaults)
-        XCTAssertNil(SettingStore.loadEarBalance(from: defaults))
+        SettingStore.saveEarAngleMap(EarAngleMap(rightAnchorDeg: 100, leftAnchorDeg: 100),
+                                     to: defaults)
+        SettingStore.clearEarAngleMap(from: defaults)
+        XCTAssertNil(SettingStore.loadEarAngleMap(from: defaults))
     }
 }

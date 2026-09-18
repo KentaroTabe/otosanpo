@@ -49,10 +49,10 @@ final class WalkSessionController: ObservableObject {
             synth?.setDirectionalTones(experimental: guidanceToneExperimental)
         }
     }
-    /// **左右の音量差の初期設定**(→ Core の EarBalance・2026-09-18 利用者依頼)。
-    /// nil なら未校正で、従来どおり HRTF の経路で鳴らす。
-    /// **散歩の途中で変えても、その散歩の音には効かない**(音声経路を作る時に決まる)
-    @Published private(set) var earBalance: EarBalance?
+    /// **真横に聞こえる角度の初期設定**(→ Core の EarAngleMap・2026-09-18 利用者依頼)。
+    /// nil なら未校正で、置きたい角度をそのまま置く。
+    /// 音の通り道は変わらないので、**散歩の途中で変えてもすぐ効く**
+    @Published private(set) var earAngleMap: EarAngleMap?
     @Published private(set) var home: GeoPoint?
     @Published private(set) var statusLine = "位置情報待ち"
     /// ヘッドフォンモーションの受信状況。検出できない原因の切り分けに使う
@@ -264,7 +264,7 @@ final class WalkSessionController: ObservableObject {
         // 一度選んだら次からはその選択(→ SettingStore)
         orientationMode = SettingStore.loadOrientationMode()
         rearDarkening = SettingStore.loadRearDarkening()
-        earBalance = SettingStore.loadEarBalance()
+        earAngleMap = SettingStore.loadEarAngleMap()
         guidanceToneExperimental = SettingStore.loadGuidanceToneExperimental()
             ?? params.headMount.enabled
         grid = GridStore.load(cellSizeM: params.route.cellSizeM,
@@ -477,11 +477,8 @@ final class WalkSessionController: ObservableObject {
     private func ensureSynth() {
         guard synth == nil else { return }
         // 実験のスイッチは head_mount.enabled ただ 1 つ(→ AppParameters.Experiment)
-        // **左右比の校正は、音声エンジンを作る時に決める**(→ EarBalance・2026-09-18)。
-        // 校正済みなら音楽は環境ノードを通さない経路になるので、途中では変えられない
         let s = try? EarconSynth(audio: params.audio, experiment: params.experiment,
-                                 experimentActive: params.headMount.enabled,
-                                 earBalance: earBalance)
+                                 experimentActive: params.headMount.enabled)
         s?.onEvent = { [weak self] message in
             Task { @MainActor in self?.log(message) }
         }
@@ -504,37 +501,38 @@ final class WalkSessionController: ObservableObject {
             + "・エンジン\(synth.isRunning ? "稼働" : "停止"))")
     }
 
-    // MARK: - 左右の音量差の初期設定(2026-09-18 利用者依頼)
+    // MARK: - 真横に聞こえる角度の初期設定(2026-09-18 利用者依頼)
 
-    /// 校正の音を 1 つ鳴らす。**左右差だけが動く**(距離・向き・音色は動かさない)
-    func playBalanceTone(differenceDb: Double) {
+    /// つまみで動かした角度に、校正の音を 1 つ置いて鳴らす。
+    /// **前半球へ畳まない**(左後ろ〜右後ろまで動かせることが前提)
+    func playCalibrationTone(relativeBearingDeg deg: Double) {
         ensureSynth()
         guard let synth else {
             log("音声エンジンの初期化に失敗しました")
             return
         }
-        synth.playBalanceTone(differenceDb: differenceDb)
+        synth.playCalibrationTone(relativeBearingDeg: deg)
     }
 
     /// 校正を確定する。**範囲外なら保存しない**(端に張り付いた値を成功として残さない)
     @discardableResult
-    func saveEarBalance(rightDb: Double, leftDb: Double) -> Bool {
-        let cal = EarBalance(rightDb: rightDb, leftDb: leftDb)
-        guard SettingStore.saveEarBalance(cal) else {
-            log("左右の音量差: 保存できません(範囲外)")
+    func saveEarAngleMap(rightAnchorDeg: Double, leftAnchorDeg: Double) -> Bool {
+        let cal = EarAngleMap(rightAnchorDeg: rightAnchorDeg, leftAnchorDeg: leftAnchorDeg)
+        guard SettingStore.saveEarAngleMap(cal) else {
+            log("真横に聞こえる角度: 保存できません(範囲外)")
             return false
         }
-        earBalance = cal
-        log(String(format: "左右の音量差: 右 90° = %.1f dB / 左 90° = %.1f dB",
-                   rightDb, leftDb))
+        earAngleMap = cal
+        log(String(format: "真横に聞こえる角度: 右 %.0f° / 左 %.0f°",
+                   rightAnchorDeg, leftAnchorDeg))
         return true
     }
 
-    /// 校正を捨てて、汎用 HRTF の聞こえ方へ戻す
-    func clearEarBalance() {
-        SettingStore.clearEarBalance()
-        earBalance = nil
-        log("左右の音量差: 初期設定を消しました(汎用の聞こえ方へ戻します)")
+    /// 校正を捨てて、置きたい角度をそのまま置く形へ戻す
+    func clearEarAngleMap() {
+        SettingStore.clearEarAngleMap()
+        earAngleMap = nil
+        log("真横に聞こえる角度: 初期設定を消しました(そのままの角度で置きます)")
     }
 
     // MARK: - 左右の聴き比べ(実験ビルドのみ)
@@ -1606,8 +1604,7 @@ final class WalkSessionController: ObservableObject {
         buildMusicSpotField(to: spot.center)
         log(String(format: "音楽スポット: %.0fm 先 方位 %.0f°(鳴り始める地点から置いた・%@)",
                    gainFrom, Geo.bearingDeg(from: p, to: spot.center), url.lastPathComponent))
-        // **仰角と広がりは 3D の経路でしか載らない**(2026-09-18)。
-        // 左右の音量差を校正した人はパンの経路になるので、その旨を残す
+        // **仰角と広がりは 3D の経路でしか載らない**(2026-09-18)
         if synth.musicIsSpatial {
             log(String(format: "音楽スポット: 近づくと下から・一点から鳴ります"
                        + "(耳の高さ %.1fm・広がり %.0f〜%.0fm)",
@@ -1615,7 +1612,11 @@ final class WalkSessionController: ObservableObject {
                        params.experiment.musicSpotSpreadNearM,
                        params.experiment.musicSpotSpreadFarM))
         } else {
-            log("音楽スポット: 左右の音量差の設定を使うため、仰角と広がりは載りません")
+            log("音楽スポット: 3D 音響が切ってあるため、仰角と広がりは載りません")
+        }
+        if let cal = earAngleMap {
+            log(String(format: "音楽スポット: 真横に聞こえる角度の設定を使います(右 %.0f°/左 %.0f°)",
+                       cal.rightAnchorDeg, cal.leftAnchorDeg))
         }
         log(String(format: "音楽スポット: 鳴らし始めます(%.0fm 先 音量 %.2f 基準 %@・"
                    + "10m あたり %.1f dB・%.0f 秒かけて)",
@@ -1684,9 +1685,13 @@ final class WalkSessionController: ObservableObject {
         // **鳴り始めはじんわり。** 距離から決めた音量に、立ち上がりの係数を掛ける。
         // 頭方位の受信ごとに呼ばれるので、別のタイマーを持たずに滑らかに上がる
         // 移す時は**絞り切ってから入れ替える**ので、その係数もここで掛ける
+        // **その人にとって真横に聞こえる角度へ写す**(→ EarAngleMap・2026-09-18 利用者依頼)。
+        // 未校正なら何もしない。音の通り道は変えないので、仰角と広がりはそのまま載る
+        let intended = reference == nil ? 0 : placed.relDeg
+        let placedDeg = earAngleMap?.rendered(intendedDeg: intended) ?? intended
         // **近づくほど下から・一点から鳴る**(2026-09-18 利用者依頼)。
         // どちらも水平距離だけで決まるので、GPS が数 m ずれても壊れない
-        synth?.setMusicPlacement(relativeBearingDeg: reference == nil ? 0 : placed.relDeg,
+        synth?.setMusicPlacement(relativeBearingDeg: placedDeg,
                                  gain: placed.gain * musicFadeFactor()
                                      * musicFadeOutFactor(now: tickNow),
                                  rearShelfDb: appliedRearShelfDb(placed),
