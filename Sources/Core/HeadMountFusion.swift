@@ -32,24 +32,30 @@ public struct HeadMountFusion: Equatable {
         public var quarantine: HeadingQuarantine.Params
         /// 最終受信からこれを超えたら「古い」として使わない [sec]
         public var staleSec: Double
-        /// **退避がこれだけ続いたら、取り付けのずれを学習し直す** [sec](0 で学習し直さない)。
+        /// **見直しの滑り窓に保つ証拠時間** [sec](0 で見直さない = 従来の一度きり)。
         /// 実効の証拠時間で数える(壁時計ではない)。→ `updateRelearning`
-        public var relearnAfterDistrustSec: Double
+        public var relearnWindowEvidenceSec: Double
+        /// 見直しの窓が出した値が、いま使っている値から**これを超えて食い違ったら乗り換える** [deg]。
+        ///
+        /// **門とは役割が違う**(門は個々の標本の分類・これは成立した 2 つの値の比較)ので、
+        /// 設定は別項目にする。ちょうど同値では乗り換えない
+        public var relearnMinDisagreeDeg: Double
 
-        /// 学習し直す時の設定。**門を掛けない** — 信用できる中心がもう無いので、
-        /// 門を掛けると誤った値の周りだけで学び直してしまう(自作自演)
-        public var relearnOffset: MountOffset.Params {
-            var p = offset
-            p.gateDeg = 0
-            return p
+        /// 見直しの窓に渡す設定。**門は無い**(窓は個々の標本を分類しない)。
+        /// R の門は学習と同じ値を使う — 「差が定数である証拠」を要求する基準は同じでよい
+        public var relearnWindow: OffsetWindow.Params {
+            OffsetWindow.Params(evidenceSec: relearnWindowEvidenceSec,
+                                minConcentration: offset.minConcentration)
         }
 
         public init(offset: MountOffset.Params, quarantine: HeadingQuarantine.Params,
-                    staleSec: Double, relearnAfterDistrustSec: Double = 0) {
+                    staleSec: Double, relearnWindowEvidenceSec: Double = 0,
+                    relearnMinDisagreeDeg: Double = 0) {
             self.offset = offset
             self.quarantine = quarantine
             self.staleSec = staleSec
-            self.relearnAfterDistrustSec = relearnAfterDistrustSec
+            self.relearnWindowEvidenceSec = relearnWindowEvidenceSec
+            self.relearnMinDisagreeDeg = relearnMinDisagreeDeg
         }
     }
 
@@ -93,15 +99,18 @@ public struct HeadMountFusion: Equatable {
     private var lastNewFix: MountOffset.Sample?
     /// 直前の標本の種類(ログの「今回」用)
     private var lastSampleKind: MountOffset.Sample.Kind?
-    /// 学習し直している最中の推定(→ `updateRelearning`)。
-    /// **成立するまでは古い値で鳴らし続ける** — 途中で基準が消えると音が飛ぶため
-    private var relearning: MountOffset?
-    /// 退避が続いた実効証拠時間 [sec]
-    private var distrustedEvidenceSec: Double = 0
-    /// 学習し直した回数(ログ用)。**0 でないなら、最初の学習が外れていた**
+    /// いま使っている値を見直す滑り窓(→ `updateRelearning`)。
+    /// **窓が成立するまでは今の値で鳴らし続ける** — 途中で基準が消えると音が飛ぶため
+    private var window = OffsetWindow()
+    /// 乗り換えた回数(ログ用)。**0 でないなら、途中でずれが変わったと判断した**
+    /// (原因は装着・付け直し・長い横向き・磁気の変化のどれもあり得る。断定はできない)
     public private(set) var relearnCount = 0
-    /// いま学習し直している最中か(ログ用)
-    public var isRelearning: Bool { relearning != nil }
+    /// 見直しの窓がいま出している値 [deg](ログ用。成立していなければ nil)
+    public func windowOffsetDeg(p: Params) -> Double? { window.estimateDeg(p: p.relearnWindow) }
+    /// 見直しの窓に積まれた実効証拠時間 [sec](ログ用)
+    public var windowEvidenceSec: Double { window.evidence }
+    /// 見直しの窓の R(ログ用)
+    public var windowConcentration: Double { window.concentration }
 
     public init() {}
 
@@ -173,57 +182,81 @@ public struct HeadMountFusion: Equatable {
         // 成立させた標本は `.learning` なので検疫は数えない — 窓は白紙のまま始まる(D1)
         quarantine.assess(sample, p: p.quarantine)
         updateRelearning(headingDeg: headingDeg, rawCourseDeg: rawCourseDeg,
-                         fixTime: fixTime, at: t, sample: sample, p: p)
+                         sample: sample, p: p)
         return use(at: t, p: p)
     }
 
-    /// **退避が続いたら、取り付けのずれを学習し直す**(2026-09-18)。
+    /// **凍結した値を、白紙の窓で作り直し続けて見直す**(2026-09-18)。
     ///
     /// ## なぜ要るか
     ///
     /// 学習は**一度きりで凍結**する設計だった。ところが 2026-09-18 の散歩で、
-    /// 開始 21 秒で学習した値(344°)が、その後の実測(生の方位 − course の円平均 90°)と
-    /// **106° 食い違った**まま 10 分間直らなかった。
-    /// スマホを頭に載せる前の 21 秒で学習した、というのが最もありそうな筋書き。
+    /// 学習した値(344.0°)が、その後の実測と **106° 食い違った**まま 10 分間直らなかった。
     ///
-    /// 一度ずれると**門(gateDeg)がその後の標本をほぼ全部「門外」として除外する**ので、
-    /// 誤った値が自分で自分を守る(実測の門外割合 0.92〜1.00)。
-    /// 検疫は正しく退避を出していたが、音楽はそれを無視して鳴る作りにしたため、
-    /// **正面へ進むべき所で横から聞こえる**という形で表に出た。
+    /// 原因は構造的なものだった。**スマホは頭の後ろに固定するので、装着は必ず
+    /// 「散歩を開始」の後になる**(利用者の明言。固定してから開始する運用は取れない)。
+    /// 実測(`scripts/head_offset_window.awk`)では:
+    ///
+    /// - 0:00〜1:35 のずれ ≈ 347°(**手に持っている間**)。ここで 1:02 に学習が成立
+    /// - 1:40 に 93° へ跳ぶ(**装着した瞬間**)。以降 8 分間 ≈ 95° で安定
+    ///
+    /// 凍結値は**分類にしか使われず更新されない**ので、正しい値へ戻る道が無かった
+    /// (門はその上で、食い違う標本を「門外」と分類し続けた)。
     ///
     /// ## どう直すか
     ///
-    /// 退避が続いた実効証拠時間が `relearnAfterDistrustSec` を超えたら、
-    /// **門を掛けない別の推定を並行して回す**。新しい値が成立したら乗り換える。
+    /// **直近の証拠だけを見る滑り窓(`OffsetWindow`)を、常に並行して回す。**
+    /// 窓が満ちて R が門を越えたら、いま使っている値と比べ、
+    /// `relearnMinDisagreeDeg` を超えて食い違うなら**乗り換える**。
     ///
-    /// **古い値は、新しい値が成立するまで使い続ける。** 学習をその場で捨てると
-    /// 基準が消えて音が飛ぶ(2026-09-18 に「離散的」と言われた現象がそれ)
+    /// 窓は `MountOffset` が credited した証拠だけを受け取る(fix の識別・course の
+    /// 有無・間隔の上限はすでにそこで解かれている)。**門は掛からない** —
+    /// いま使っている値が正しい保証が無いので、その周りに門を置くと自作自演になる。
+    ///
+    /// ## なぜ検疫を起点にしないか(2026-09-18・当初の実装を差し替えた)
+    ///
+    /// 最初は「退避が実効 30 秒続いたら学び直す」とした。しかし再生
+    /// (`scripts/replay_log.sh`)で測ると乗り換えは 3:16 で、**起点を早めても
+    /// 律速は「学習に要る 20 秒ぶんの証拠」(このログでは壁時計 53 秒)**だった。
+    /// 検疫を起点にすると、さらに
+    ///
+    /// - 門より小さいずれは退避に至らないので、**永久に直らない**
+    /// - 退避の累計を待つぶん、乗り換えが 80 秒ほど遅れる
+    ///
+    /// という穴が残る。検疫から切り離し、**ずれの大きさに依らず見直す**形にした。
+    ///
+    /// ## なぜ食い違いの閾値を大きく取るか
+    ///
+    /// 実測のずれは窓ごとに数十度散らばる(頭の動きと course の雑音)。
+    /// 閾値を小さくすると、**取り付けが変わっていないのに窓ごとに乗り換えが起き、
+    /// 音の基準が跳ぶ**(利用者が「離散的」と呼んだ現象を作り直すことになる)。
+    /// ただしこれは乗り換えを**抑える**幅であって、誤った乗り換えを防ぐ保証ではない
+    /// (長く横を向いて歩けば、その姿勢のずれが成立して乗り換わりうる)。
+    ///
+    /// **いま使っている値は、新しい値が成立するまで使い続ける。** その場で捨てると
+    /// 基準が消えて音が飛ぶ(同じ理由)
     private mutating func updateRelearning(headingDeg: Double, rawCourseDeg: Double?,
-                                           fixTime: TimeInterval?, at t: TimeInterval,
                                            sample: MountOffset.Sample, p: Params) {
-        guard p.relearnAfterDistrustSec > 0, learnedDeg != nil else { return }
-        if relearning == nil {
-            guard quarantine.state == .distrusted else {
-                distrustedEvidenceSec = 0
-                return
-            }
-            distrustedEvidenceSec += sample.evidenceSec
-            guard distrustedEvidenceSec >= p.relearnAfterDistrustSec else { return }
-            // **門を掛けずに**学び直す。信用できる中心がもう無いので、門は自作自演になる
-            relearning = MountOffset()
+        guard p.relearnWindowEvidenceSec > 0 else { return }
+        // **窓は学習の成立を待たずに回す。** 装着前に成立した値を持っている場合、
+        // 窓がすでに回っていれば装着後の証拠で最短で追い越せる
+        if let course = rawCourseDeg, sample.evidenceSec > 0 {
+            window.add(diffDeg: Geo.normalizeDeg(headingDeg - course),
+                       evidenceSec: sample.evidenceSec, p: p.relearnWindow)
         }
-        guard relearning != nil else { return }
-        _ = relearning!.ingest(headingDeg: headingDeg, courseDeg: rawCourseDeg,
-                               fixTime: fixTime, observedAt: t, p: p.relearnOffset)
-        guard let fresh = relearning!.offsetDeg else { return }
-        offset = relearning!
+        guard let frozen = learnedDeg,
+              let fresh = window.estimateDeg(p: p.relearnWindow),
+              abs(Geo.angularDiffDeg(fresh, frozen)) > p.relearnMinDisagreeDeg else { return }
+        // 前の取り付けの証拠を持ち込まずに差し替える(**fix の履歴は保つ** — 捨てると
+        // 差し替え直後の証拠が更新頻度に依存する。→ MountOffset.replaceFrozen)
+        offset.replaceFrozen(deg: fresh, concentration: window.concentration)
         learnedDeg = fresh
-        relearning = nil
-        distrustedEvidenceSec = 0
         relearnCount += 1
-        // 新しい値に乗り換えた瞬間、方位が学習値ぶん飛ぶので、それ以前の証拠は捨てる
+        // 乗り換えた瞬間、方位が差のぶん飛ぶので、それ以前の証拠は捨てる
         quarantine = HeadingQuarantine()
         quarantine.markLearned()
+        // **同じ証拠で 2 回乗り換えない**(→ OffsetWindow の「保証しないこと」)
+        window.clear()
     }
 
     /// 使ってよいか。**呼ぶたびに鮮度を評価する**ので、更新が止まれば自動的に `stale` へ落ちる。

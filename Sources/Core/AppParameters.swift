@@ -322,14 +322,25 @@ public struct AppParameters: Codable, Equatable {
         /// 鮮度と取り付けのずれの学習は守り、検疫の判断だけ捨てる
         /// (→ HeadMountFusion.facingDegIgnoringQuarantine)
         public var musicIgnoresQuarantine: Bool
-        /// **退避がこれだけ続いたら、取り付けのずれを学習し直す** [sec]。0 で学習し直さない。
+        /// **いま使っている値を見直す滑り窓に保つ証拠時間** [sec]。0 で見直さない(従来の一度きり)。
         ///
         /// 学習は一度きりで凍結する設計だったが、2026-09-18 の散歩で
-        /// **開始 21 秒に学習した値が、その後の実測と 106° 食い違ったまま 10 分続いた**
-        /// (スマホを頭に載せる前に学習したとみられる)。
-        /// 一度ずれると門がその後の標本を除外するので、誤った値が自分で自分を守る。
-        /// → HeadMountFusion.updateRelearning
-        public var relearnAfterDistrustSec: Double
+        /// **学習した 344.0° が、その後の実測と 106° 食い違ったまま 10 分続いた**。
+        /// **スマホは頭の後ろに固定するので、装着は必ず「開始」の後になる**ため、
+        /// 手に持っている間のずれ(実測 347°)を学習してしまった。
+        /// 凍結値は分類にしか使われず更新されないので、正しい値へ戻る道が無かった。
+        ///
+        /// 直近の証拠だけを見る滑り窓を並行して回し、窓が成立したら突き合わせる
+        /// (減衰つきの平均では、装着前の証拠を数分ぶん引きずってしまう)。
+        /// → HeadMountFusion.updateRelearning / OffsetWindow
+        public var relearnWindowEvidenceSec: Double
+        /// 見直しの窓の値が、いま使っている値から**これを超えて食い違ったら乗り換える** [deg]。
+        ///
+        /// 実測のずれは窓ごとに数十度散らばるので、小さくすると
+        /// **取り付けが変わっていないのに乗り換えが起き、音の基準が跳ぶ**。
+        /// **門(`offset_gate_deg`)とは役割が違う**(門は個々の標本の分類・
+        /// これは成立した 2 つの値の比較)ので、値が同じでも別項目にする
+        public var relearnMinDisagreeDeg: Double
 
         /// HeadingQuarantine に渡す設定値
         public var quarantine: HeadingQuarantine.Params {
@@ -354,7 +365,8 @@ public struct AppParameters: Codable, Equatable {
             HeadMountFusion.Params(offset: offsetEstimator,
                                    quarantine: quarantine,
                                    staleSec: staleSec,
-                                   relearnAfterDistrustSec: relearnAfterDistrustSec)
+                                   relearnWindowEvidenceSec: relearnWindowEvidenceSec,
+                                   relearnMinDisagreeDeg: relearnMinDisagreeDeg)
         }
     }
 

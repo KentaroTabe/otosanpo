@@ -1330,11 +1330,19 @@ final class WalkSessionController: ObservableObject {
             } ?? "-"
             // 分類は「最後に来た新しい fix がどう扱われたか」。直前の標本を出すと、
             // 50 Hz のうち 49 回は同じ fix の読み直しなので、ほぼ常に「同fix」になる
-            // **学習し直しの回数と最中かどうかも残す**(2026-09-18)。
-            // 最初の学習が外れていたかは、後からこれでしか分からない
-            let relearnLabel = headMountFusion.isRelearning
-                ? "学習し直し中"
-                : (headMountFusion.relearnCount > 0 ? "\(headMountFusion.relearnCount)回目" : "初回")
+            // **見直しの滑り窓の中身も残す**(2026-09-18)。
+            // 「何度目の値か / 窓がいま出している値 / 窓の証拠と R」。
+            // 途中でずれが変わったか、見直しがそもそも回っているかは、後からこれでしか分からない
+            let fusionParams = params.headMount.fusion
+            let windowLabel = headMountFusion.windowOffsetDeg(p: fusionParams)
+                .map { String(format: "%.1f", $0) } ?? "未成立"
+            let relearnLabel = String(format: "%@ 窓=%@/%.1fs/R%.2f",
+                                      headMountFusion.relearnCount > 0
+                                          ? "\(headMountFusion.relearnCount + 1)回目"
+                                          : "初回",
+                                      windowLabel,
+                                      headMountFusion.windowEvidenceSec,
+                                      headMountFusion.windowConcentration)
             logToFile(String(format: "頭方位 raw=%.1f° heading=%.1f° course=%@° 差=%@°"
                              + " 状態=%@ 補正=%@(%@) R=%.2f 証拠=%.1fs 分類=%@"
                              + " 門内=%.1fs 門外=%.1fs 門外割合=%.2f fix=%@ 今回=%@ 使用=%@",
@@ -1348,7 +1356,7 @@ final class WalkSessionController: ObservableObject {
                              headMountFusion.outsideRatio,
                              fixLabel,
                              headMountFusion.currentObservationLabel,
-                             headMountFusion.use(at: now, p: params.headMount.fusion).label))
+                             headMountFusion.use(at: now, p: fusionParams).label))
             logToFile(headMotionLine())
             motionDigest.rollOver()
         }

@@ -37,7 +37,8 @@ final class HeadMountFusionTests: XCTestCase {
                            halfLifeSec: Double = 60,
                            minConcentration: Double = 0.8,
                            gateDeg: Double = 45,
-                           relearnAfterDistrustSec: Double = 0) -> HeadMountFusion.Params {
+                           relearnWindowEvidenceSec: Double = 0,
+                           relearnMinDisagreeDeg: Double = 45) -> HeadMountFusion.Params {
         HeadMountFusion.Params(
             offset: MountOffset.Params(minEvidenceSec: minEvidenceSec,
                                        halfLifeSec: halfLifeSec,
@@ -47,7 +48,8 @@ final class HeadMountFusionTests: XCTestCase {
                                                  distrustSec: 12, regainRatio: 0.7,
                                                  regainSec: 8),
             staleSec: staleSec,
-            relearnAfterDistrustSec: relearnAfterDistrustSec)
+            relearnWindowEvidenceSec: relearnWindowEvidenceSec,
+            relearnMinDisagreeDeg: relearnMinDisagreeDeg)
     }
 
     /// `fixes` 個の fix を 1 秒間隔で流す。1 fix あたり `perFix` 回 `ingest` する
@@ -314,15 +316,26 @@ final class HeadMountFusionTests: XCTestCase {
         XCTAssertEqual(f.facingDegIgnoringQuarantine(at: t, p: p), f.correctedHeadingDeg)
     }
 
-    // MARK: - 取り付けのずれを学習し直す(2026-09-18 の散歩)
+    // MARK: - 取り付けのずれを見直す(2026-09-18 の散歩)
     //
-    // 開始 21 秒で学習した値(344°)が、その後の実測(90°)と **106° 食い違ったまま**
-    // 10 分続いた(スマホを頭に載せる前に学習したとみられる)。
-    // 一度ずれると門がその後の標本を除外するので、誤った値が自分で自分を守る。
+    // 学習した値(344.0°)が、その後の実測(生の方位 − course の円平均 90°)と
+    // **106° 食い違ったまま** 10 分続いた。
+    //
+    // 原因は構造的なもの。**スマホは頭の後ろに固定するので、装着は必ず「開始」の後**に
+    // なる(利用者の明言)。実測では 0:00〜1:35 のずれが ≈ 347°(手に持っている間)で、
+    // そこで 1:02 に学習が成立・凍結し、1:40 に 93°(装着)へ跳んだ。
+    // 凍結値は分類にしか使われず更新されないので、正しい値へ戻る道が無かった。
+    //
+    // → 直近の証拠だけを見る滑り窓(`OffsetWindow`)を並行して回し、食い違ったら乗り換える。
 
-    /// **退避が続いたら学習し直し、正しい値へ乗り換える**
-    func testRelearnsTheOffsetAfterSustainedDistrust() {
-        let p = learnable(staleSec: 30, relearnAfterDistrustSec: 20)
+    /// **直近の窓が食い違ったら、新しいずれへ乗り換える**
+    ///
+    /// 期待値を「ちょうど +100°」にしないのは、**取り付けが変わる瞬間をまたいだ窓でも
+    /// R が門を越えうる**ため(混ざり方によって成立し、値は 2 つのずれの中間になる。
+    /// → `OffsetWindow` の「保証しないこと」)。乗り換え後の残差は窓の混ざり方で決まる。
+    /// 中間の値で乗り換えた後、差が閾値以下に収まれば、それ以上は動かない
+    func testRelearnsTheOffsetWhenTheRecentWindowDisagrees() {
+        let p = learnable(staleSec: 30, relearnWindowEvidenceSec: 10)
         var f = HeadMountFusion()
         // 最初の 10 秒だけ「ずれ 0」で学習する(= 頭に載せる前の状態)
         var t = feed(&f, fixes: 10, from: 100, p: p,
@@ -335,32 +348,38 @@ final class HeadMountFusionTests: XCTestCase {
                  heading: { i in Double((190 + i * 7) % 360) },
                  course: { i in Double((90 + i * 7) % 360) })
 
-        XCTAssertGreaterThan(f.relearnCount, 0, "学習し直していないと、ずれたまま鳴り続ける")
-        XCTAssertEqual(f.learnedOffsetDeg ?? -1, 100, accuracy: 5, "新しいずれを学習していること")
+        XCTAssertGreaterThan(f.relearnCount, 0, "見直していないと、ずれたまま鳴り続ける")
+        let learned = f.learnedOffsetDeg ?? .nan
+        XCTAssertLessThanOrEqual(abs(Geo.angularDiffDeg(learned, 100)), 10,
+                                 "新しいずれの近く(残差 10° 以内)へ乗り換えていること")
+        XCTAssertGreaterThan(abs(Geo.angularDiffDeg(learned, 0)), 45,
+                             "装着前の値を捨てていること")
         XCTAssertEqual(f.use(at: t, p: p), .use, "乗り換えた後は採用へ戻ること")
     }
 
     /// **乗り換えるまでの間も、音の基準を失わない。**
     /// 学習をその場で捨てると基準が消え、音が飛ぶ(2026-09-18 に「離散的」と言われた現象)
     func testKeepsTheOldOffsetWhileRelearning() {
-        let p = learnable(staleSec: 30, relearnAfterDistrustSec: 20)
+        let p = learnable(staleSec: 30, relearnWindowEvidenceSec: 10)
         var f = HeadMountFusion()
         var t = feed(&f, fixes: 10, from: 100, p: p,
                      heading: { _ in 90 }, course: { _ in 90 })
         let before = f.learnedOffsetDeg
         XCTAssertNotNil(before)
 
-        // 退避が始まってから、学習し直しが成立するまでの間
-        t = feed(&f, fixes: 12, from: t + 0.1, p: p,
+        // ずれが変わってから、窓が成立するまでの間
+        t = feed(&f, fixes: 5, from: t + 0.1, p: p,
                  heading: { i in Double((190 + i * 7) % 360) },
                  course: { i in Double((90 + i * 7) % 360) })
+        XCTAssertNil(f.windowOffsetDeg(p: p), "前提: まだ窓は成立していない")
+        XCTAssertEqual(f.learnedOffsetDeg, before, "成立するまでは前の値を使い続けること")
         XCTAssertNotNil(f.facingDegIgnoringQuarantine(at: t, p: p),
-                        "学習し直しの最中も、音楽の基準は消えないこと")
+                        "見直しの最中も、音楽の基準は消えないこと")
     }
 
-    /// **短い食い違いでは学習し直さない**(一時的に横を向いただけで学習を捨てない)
+    /// **短い食い違いでは乗り換えない**(一時的に横を向いただけで学習を捨てない)
     func testBriefDisagreementDoesNotRelearn() {
-        let p = learnable(staleSec: 30, relearnAfterDistrustSec: 20)
+        let p = learnable(staleSec: 30, relearnWindowEvidenceSec: 10)
         var f = HeadMountFusion()
         var t = feed(&f, fixes: 20, from: 100, p: p,
                      heading: { _ in 184 }, course: { _ in 90 })
@@ -371,9 +390,9 @@ final class HeadMountFusionTests: XCTestCase {
         XCTAssertEqual(f.learnedOffsetDeg, learned)
     }
 
-    /// 設定が 0 なら学習し直さない(従来どおり一度きり)
+    /// 設定が 0 なら見直さない(従来どおり一度きり)
     func testRelearnCanBeTurnedOff() {
-        let p = learnable(staleSec: 30, relearnAfterDistrustSec: 0)
+        let p = learnable(staleSec: 30, relearnWindowEvidenceSec: 0)
         var f = HeadMountFusion()
         var t = feed(&f, fixes: 10, from: 100, p: p,
                      heading: { _ in 90 }, course: { _ in 90 })
@@ -382,6 +401,81 @@ final class HeadMountFusionTests: XCTestCase {
                  course: { i in Double((90 + i * 7) % 360) })
         XCTAssertEqual(f.relearnCount, 0)
         XCTAssertEqual(f.learnedOffsetDeg ?? -1, 0, accuracy: 1, "最初の値のまま")
+        XCTAssertNil(f.windowOffsetDeg(p: p), "窓そのものが値を出さないこと")
+    }
+
+    /// **北をまたぐ食い違いを、遠回りで測らない。** 350° と 10° の差は 20°
+    func testDisagreementIsMeasuredAcrossNorth() {
+        let p = learnable(staleSec: 30, relearnWindowEvidenceSec: 10)
+        var f = HeadMountFusion()
+        // ずれ 350°(= −10°)で学習する
+        var t = feed(&f, fixes: 10, from: 100, p: p,
+                     heading: { _ in 80 }, course: { _ in 90 })
+        XCTAssertEqual(f.learnedOffsetDeg ?? -1, 350, accuracy: 1)
+        // 以降はずれ +10°。差は 20° なので乗り換えない
+        t = feed(&f, fixes: 30, from: t + 0.1, p: p,
+                 heading: { _ in 100 }, course: { _ in 90 })
+        XCTAssertEqual(f.windowOffsetDeg(p: p) ?? .nan, 10, accuracy: 1, "前提: 窓は +10° を出す")
+        XCTAssertEqual(f.relearnCount, 0, "20° の差で乗り換えてはいけない(遠回りなら 340°)")
+        XCTAssertEqual(f.learnedOffsetDeg ?? -1, 350, accuracy: 1)
+    }
+
+    /// **閾値ちょうどでは乗り換えず、超えたときだけ乗り換える**
+    func testSwapsOnlyWhenTheDisagreementExceedsTheThreshold() {
+        func relearnCount(newOffset: Double) -> Int {
+            let p = learnable(staleSec: 30, relearnWindowEvidenceSec: 10,
+                              relearnMinDisagreeDeg: 45)
+            var f = HeadMountFusion()
+            var t = feed(&f, fixes: 8, from: 100, p: p,
+                         heading: { _ in 90 }, course: { _ in 90 })
+            t = feed(&f, fixes: 30, from: t + 0.1, p: p,
+                     heading: { _ in 90 + newOffset }, course: { _ in 90 })
+            XCTAssertEqual(f.windowOffsetDeg(p: p) ?? .nan, newOffset, accuracy: 0.5,
+                           "前提: 窓は新しいずれを出している")
+            return f.relearnCount
+        }
+        XCTAssertEqual(relearnCount(newOffset: 45), 0, "ちょうど 45° では乗り換えない")
+        XCTAssertEqual(relearnCount(newOffset: 46), 1, "45° を超えたら乗り換える")
+    }
+
+    /// **同じ証拠で 2 回乗り換えない。** 乗り換えた時点で窓を空にする
+    /// (= 乗り換えは「窓 1 つぶんの新しい証拠」に 1 回まで)
+    func testDoesNotSwapTwiceOnTheSameEvidence() {
+        let p = learnable(staleSec: 30, relearnWindowEvidenceSec: 10)
+        var f = HeadMountFusion()
+        var t = feed(&f, fixes: 8, from: 100, p: p,
+                     heading: { _ in 90 }, course: { _ in 90 })
+        // 1 fix ずつ進め、**乗り換えたその瞬間**の窓を見る
+        var evidenceAtSwap: Double?
+        for _ in 0..<14 {
+            t = feed(&f, fixes: 1, from: t + 0.1, p: p,
+                     heading: { _ in 190 }, course: { _ in 90 })
+            if f.relearnCount == 1, evidenceAtSwap == nil { evidenceAtSwap = f.windowEvidenceSec }
+        }
+        XCTAssertEqual(f.relearnCount, 1, "1 回だけ乗り換えること")
+        XCTAssertEqual(evidenceAtSwap ?? .nan, 0, accuracy: 1e-9,
+                       "乗り換えた瞬間に窓が空になっていること")
+    }
+
+    /// **同じ fix を何度読み直しても、見直しは早まらない**(証拠は fix の時刻で数える)。
+    ///
+    /// **fix の時刻は両者で同じ列にする**(`from:` を前の標本時刻から作ると、
+    /// 更新頻度で fix の時刻そのものが変わってしまい、検査になっていない)
+    func testRereadingTheSameFixDoesNotSpeedUpRelearning() {
+        func run(perFix: Int) -> (count: Int, learned: Double?, evidence: Double) {
+            let p = learnable(staleSec: 30, relearnWindowEvidenceSec: 10)
+            var f = HeadMountFusion()
+            feed(&f, fixes: 8, from: 100, p: p, perFix: perFix,
+                 heading: { _ in 90 }, course: { _ in 90 })
+            feed(&f, fixes: 14, from: 108, p: p, perFix: perFix,
+                 heading: { _ in 190 }, course: { _ in 90 })
+            return (f.relearnCount, f.learnedOffsetDeg, f.windowEvidenceSec)
+        }
+        let sparse = run(perFix: 1)
+        let dense = run(perFix: 50)
+        XCTAssertEqual(sparse.count, dense.count)
+        XCTAssertEqual(sparse.learned ?? .nan, dense.learned ?? .nan, accuracy: 1e-9)
+        XCTAssertEqual(sparse.evidence, dense.evidence, accuracy: 1e-9)
     }
 
     /// **鮮度と学習は捨てない。** 検疫だけを無視する(2026-09-18)
