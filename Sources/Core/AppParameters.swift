@@ -467,6 +467,19 @@ public struct AppParameters: Codable, Equatable {
         /// 2〜3 秒では通り過ぎる場面に間に合わない
         public var musicSpotBearingFollowSec: Double
 
+        /// **耳の高さ** [m](スポットは地表にある)。0 で仰角を付けない。
+        ///
+        /// 近づくほど音が下から来る(5 m で −17°・2 m で −37°)。
+        /// **この角度は水平距離だけで決まる**ので、方位と違って位置の誤差に強い
+        /// (2026-09-18 利用者依頼)
+        public var musicSpotListenerHeightM: Double
+        /// 音の広がりが最大になる距離 [m]。これより遠いと一番広い
+        public var musicSpotSpreadFarM: Double
+        /// 音の広がりが消える距離 [m]。これより近いと一点に締まる
+        public var musicSpotSpreadNearM: Double
+        /// 広がりの最大値 [0..1]。直接音に対する残響の割合の上限。
+        /// **混ぜすぎると屋外の散歩で不自然になる**
+        public var musicSpotSpreadMax: Double
         /// **スポットを移す提案の間隔** [sec]。断るたびに 2 倍になる(→ SpotMoveSchedule)
         public var musicSpotMoveIntervalSec: Double
         /// 提案が鳴り終わってから、応答を受け付け始めるまでの待ち [sec]。
@@ -513,7 +526,10 @@ public struct AppParameters: Codable, Equatable {
                 pinpointDepthDb: musicSpotPinpointDepthDb,
                 directivityDepthDb: musicSpotDirectivityDepthDb,
                 rearShelfStartDeg: musicSpotRearShelfStartDeg,
-                rearShelfDepthDb: musicSpotRearShelfDepthDb)
+                rearShelfDepthDb: musicSpotRearShelfDepthDb,
+                listenerHeightM: musicSpotListenerHeightM,
+                spreadFarM: musicSpotSpreadFarM,
+                spreadNearM: musicSpotSpreadNearM)
         }
 
         /// 実験ビルドで実際に鳴らす音色を決める。

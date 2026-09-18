@@ -1606,6 +1606,17 @@ final class WalkSessionController: ObservableObject {
         buildMusicSpotField(to: spot.center)
         log(String(format: "音楽スポット: %.0fm 先 方位 %.0f°(鳴り始める地点から置いた・%@)",
                    gainFrom, Geo.bearingDeg(from: p, to: spot.center), url.lastPathComponent))
+        // **仰角と広がりは 3D の経路でしか載らない**(2026-09-18)。
+        // 左右の音量差を校正した人はパンの経路になるので、その旨を残す
+        if synth.musicIsSpatial {
+            log(String(format: "音楽スポット: 近づくと下から・一点から鳴ります"
+                       + "(耳の高さ %.1fm・広がり %.0f〜%.0fm)",
+                       params.experiment.musicSpotListenerHeightM,
+                       params.experiment.musicSpotSpreadNearM,
+                       params.experiment.musicSpotSpreadFarM))
+        } else {
+            log("音楽スポット: 左右の音量差の設定を使うため、仰角と広がりは載りません")
+        }
         log(String(format: "音楽スポット: 鳴らし始めます(%.0fm 先 音量 %.2f 基準 %@・"
                    + "10m あたり %.1f dB・%.0f 秒かけて)",
                    placed.distanceM, placed.gain, reference?.source ?? "中央",
@@ -1673,10 +1684,14 @@ final class WalkSessionController: ObservableObject {
         // **鳴り始めはじんわり。** 距離から決めた音量に、立ち上がりの係数を掛ける。
         // 頭方位の受信ごとに呼ばれるので、別のタイマーを持たずに滑らかに上がる
         // 移す時は**絞り切ってから入れ替える**ので、その係数もここで掛ける
+        // **近づくほど下から・一点から鳴る**(2026-09-18 利用者依頼)。
+        // どちらも水平距離だけで決まるので、GPS が数 m ずれても壊れない
         synth?.setMusicPlacement(relativeBearingDeg: reference == nil ? 0 : placed.relDeg,
                                  gain: placed.gain * musicFadeFactor()
                                      * musicFadeOutFactor(now: tickNow),
-                                 rearShelfDb: appliedRearShelfDb(placed))
+                                 rearShelfDb: appliedRearShelfDb(placed),
+                                 elevationDeg: placed.elevationDeg,
+                                 spread: placed.spread)
         // **音は毎回付け直すが、ログは間引く。** 受信ごとに書くとログが音楽で埋まる
         guard lastMusicLogAt == nil
             || now.timeIntervalSince(lastMusicLogAt!) >= params.experiment.musicLogIntervalSec
@@ -1687,7 +1702,7 @@ final class WalkSessionController: ObservableObject {
         // **生の向きと遊びの幅も残す**(2026-09-18)。揺れがどれだけ落ちたかは、
         // 鳴らした向き(音源方位)と生の向きの差でしか後から測れない
         logToFile(String(format: "音楽 距離=%.0fm 向き=%@ 音量=%.2f 基準=%@ 音源方位=%.0f°%@"
-                         + " 生方位=%.0f° 遊び=%.0f°"
+                         + " 生方位=%.0f° 遊び=%.0f° 仰角=%.0f° 広がり=%.2f"
                          + " 近さ=%.2f 正面=%.1fdB 指向性=%.1fdB 後方=%.1fdB",
                          placed.distanceM,
                          reference == nil ? "中央" : String(format: "%+.0f°", placed.relDeg),
@@ -1696,6 +1711,7 @@ final class WalkSessionController: ObservableObject {
                          Geo.bearingDeg(from: p, to: spot.center),
                          BearingHold.deadbandDeg(uncertaintyDeg: uncertainty,
                                                  p: params.experiment.musicSpotBearingHold),
+                         placed.elevationDeg, placed.spread,
                          placed.pinpointWeight, placed.facingDb, placed.directivityDb,
                          appliedRearShelfDb(placed)))
     }

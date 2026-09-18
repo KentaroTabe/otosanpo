@@ -28,6 +28,12 @@ final class EarconSynth {
     /// 「player → EQ → musicMixer → environment」の順に繋ぐ
     private let musicEQ = AVAudioUnitEQ(numberOfBands: 1)
     private let musicMixer = AVAudioMixerNode()
+    /// 広がりの最大値 [0..1]。**残響を混ぜすぎると屋外の散歩で不自然になる**ので蓋をする
+    private let spreadMax: Double
+    /// **音楽が 3D の経路(環境ノード)を通っているか。**
+    /// 左右の音量差を校正した人はパンの経路になるので、**仰角と広がりは載らない**。
+    /// 呼ぶ側がその旨を記録できるように公開する
+    var musicIsSpatial: Bool { useSpatialAudio && earBalance == nil }
     /// **利用者が合わせた左右の音量差**(→ Core の EarBalance・2026-09-18)。
     /// nil なら従来どおり環境ノード(HRTF)で鳴らす。
     /// **散歩の途中では変えない** — 経路の繋ぎ替えが要るので、作る時に決める
@@ -80,6 +86,7 @@ final class EarconSynth {
     init(audio: AppParameters.Audio, experiment: AppParameters.Experiment,
          experimentActive: Bool, earBalance: EarBalance? = nil) throws {
         self.earBalance = earBalance
+        spreadMax = experiment.musicSpotSpreadMax
         // 3D 音響(HRTF)は **モノラル入力にしか効かない**。ステレオのままでは
         // AVAudioEnvironmentNode が定位を付けず、黙って素通りする
         guard let mono = AVAudioFormat(standardFormatWithSampleRate: audio.sampleRate, channels: 1),
@@ -168,6 +175,16 @@ final class EarconSynth {
             environment.listenerPosition = AVAudio3DPoint(x: 0, y: 0, z: 0)
             player.renderingAlgorithm = .HRTF
             player.position = AVAudio3DPoint(x: 0, y: 0, z: -1)
+            // **音の広がりを距離で変えるための残響**(2026-09-18 利用者依頼)。
+            // 「広い範囲から聞こえる = 遠い / 狭い範囲から聞こえる = 近い」を、
+            // 直接音と残響の比で作る(距離の手がかりとして古くから使われている量)。
+            // **点の earcon には掛からない** — 各入力の `reverbBlend` は既定 0 で、
+            // 音楽にだけ距離から決めた値を入れる(→ setMusicPlacement)
+            if experimentParams.musicSpotSpreadFarM > experimentParams.musicSpotSpreadNearM {
+                environment.reverbParameters.enable = true
+                environment.reverbParameters.level = 0
+                environment.reverbParameters.loadFactoryReverbPreset(.mediumRoom)
+            }
         } else {
             engine.connect(player, to: engine.mainMixerNode, format: monoFormat)
         }
@@ -281,10 +298,17 @@ final class EarconSynth {
     /// 上流の `musicPlayer` に設定しても定位には効かない
     /// - Parameter rearShelfDb: 後ろの時に高域を落とす量 [dB](0 以下)。
     ///   **音量ではなく音色**を変える(→ MusicSpot.Params.rearShelfDb)
+    /// - Parameter elevationDeg: 見下ろす角度 [deg](負が下)。
+    ///   **地面にあるスポットへ近づくと下から鳴る**(→ MusicSpot.Params.elevationDeg)
+    /// - Parameter spread: 音の広がり [0..1]。1 = 遠くて広い・0 = 近くて一点。
+    ///   直接音と残響の比で作る
     func setMusicPlacement(relativeBearingDeg deg: Double, gain: Double,
-                           rearShelfDb: Double = 0) {
+                           rearShelfDb: Double = 0,
+                           elevationDeg: Double = 0, spread: Double = 0) {
         musicMixer.volume = Float(max(0, min(1, gain)))
         musicEQ.bands.first?.gain = Float(max(-24, min(0, rearShelfDb)))
+        // **広がりは音楽だけ。** 他の入力の reverbBlend は 0 のまま
+        musicMixer.reverbBlend = Float(max(0, min(1, spread * spreadMax)))
         // **校正済みなら、利用者が合わせた左右比で鳴らす**(環境ノードは通っていない)。
         // 距離・正面強調・指向性は `gain` として左右へ共通に掛かるので、比は変わらない
         if let cal = earBalance {
@@ -292,7 +316,8 @@ final class EarconSynth {
             return
         }
         if isSpatial {
-            let p = SoundPlacement.position(relativeBearingDeg: deg)
+            let p = SoundPlacement.position(relativeBearingDeg: deg,
+                                            elevationDeg: elevationDeg)
             musicMixer.position = AVAudio3DPoint(x: Float(p.x), y: Float(p.y), z: Float(p.z))
         } else {
             musicMixer.pan = Float(max(-1, min(1, SoundPlacement.pan(relativeBearingDeg: deg))))

@@ -17,7 +17,9 @@ final class MusicSpotTests: XCTestCase {
                         pinpointStart: Double = 15, pinpointFull: Double = 5,
                         beam: Double = 60, depth: Double = 12,
                         directivity: Double = 0,
-                        rearStart: Double = 90, rearDepth: Double = 0) -> MusicSpot.Params {
+                        rearStart: Double = 90, rearDepth: Double = 0,
+                        height: Double = 0,
+                        spreadFar: Double = 0, spreadNear: Double = 0) -> MusicSpot.Params {
         MusicSpot.Params(
             minDistanceM: min, maxDistanceM: max, distanceStepCount: steps,
             reachedM: reached,
@@ -27,7 +29,9 @@ final class MusicSpotTests: XCTestCase {
             pinpointStartM: pinpointStart, pinpointFullM: pinpointFull,
             pinpointBeamDeg: beam, pinpointDepthDb: depth,
             directivityDepthDb: directivity,
-            rearShelfStartDeg: rearStart, rearShelfDepthDb: rearDepth)
+            rearShelfStartDeg: rearStart, rearShelfDepthDb: rearDepth,
+            listenerHeightM: height,
+            spreadFarM: spreadFar, spreadNearM: spreadNear)
     }
 
     /// 音楽を待たせる時だけ、出発の一言に一文を足す(2026-09-10 利用者依頼)。
@@ -578,6 +582,85 @@ final class MusicSpotTests: XCTestCase {
         XCTAssertFalse(spot.isReached(from: origin, p: p))
         let close = Geo.destination(from: origin, bearingDeg: 0, distanceM: 70)
         XCTAssertTrue(spot.isReached(from: close, p: p))
+    }
+
+    // MARK: - 下から鳴る / 広がり(2026-09-18 利用者依頼)
+
+    /// **地面のスポットへ近づくと、音が下から来る**。
+    /// 耳の高さ 1.5 m に対し、水平距離から `−atan(h/d)`
+    func testElevationDeepensAsYouApproach() {
+        let p = params(height: 1.5)
+        XCTAssertEqual(p.elevationDeg(horizontalDistanceM: 50), -1.72, accuracy: 0.05)
+        XCTAssertEqual(p.elevationDeg(horizontalDistanceM: 10), -8.53, accuracy: 0.05)
+        XCTAssertEqual(p.elevationDeg(horizontalDistanceM: 5), -16.70, accuracy: 0.05)
+        XCTAssertEqual(p.elevationDeg(horizontalDistanceM: 1.5), -45.0, accuracy: 0.05)
+        XCTAssertEqual(p.elevationDeg(horizontalDistanceM: 0), -90.0, accuracy: 0.05,
+                       "真上に立ったら真下から鳴る")
+    }
+
+    /// **仰角は水平距離だけで決まるので、位置の誤差に強い。**
+    /// 同じ 3 m のずれでも、遠い所では方位の方がはるかに大きく振れる
+    func testElevationIsRobustToPositionErrorComparedWithBearing() {
+        let p = params(height: 1.5)
+        // 20 m 先で 3 m ずれた時、仰角は 1° 以内しか動かない
+        let near = p.elevationDeg(horizontalDistanceM: 17)
+        let far = p.elevationDeg(horizontalDistanceM: 23)
+        XCTAssertLessThan(abs(near - far), 1.5, "仰角の振れは 1.5° 未満")
+        // 同じ条件の方位は ±8.5° 振れる(atan(3/20))
+        let bearingSwing = atan(3.0 / 20.0) * 180 / .pi
+        XCTAssertGreaterThan(bearingSwing, 8, "方位はこれだけ振れる(比較)")
+    }
+
+    /// 耳の高さ 0 なら仰角を付けない(設定で切れる)
+    func testZeroHeightMeansNoElevation() {
+        let p = params(height: 0)
+        XCTAssertEqual(p.elevationDeg(horizontalDistanceM: 5), 0)
+    }
+
+    /// **遠いと広く、近いと一点**。境目で折れない
+    func testSpreadNarrowsAsYouApproach() {
+        let p = params(spreadFar: 60, spreadNear: 5)
+        XCTAssertEqual(p.spread(atDistanceM: 100), 1, accuracy: 1e-9, "遠くでは一番広い")
+        XCTAssertEqual(p.spread(atDistanceM: 60), 1, accuracy: 1e-9)
+        XCTAssertEqual(p.spread(atDistanceM: 32.5), 0.5, accuracy: 0.01, "中間でちょうど半分")
+        XCTAssertEqual(p.spread(atDistanceM: 5), 0, accuracy: 1e-9, "近くでは一点")
+        XCTAssertEqual(p.spread(atDistanceM: 1), 0, accuracy: 1e-9)
+        // 単調に減ること
+        var previous = 1.1
+        for d in stride(from: 60.0, through: 5.0, by: -2.5) {
+            let s = p.spread(atDistanceM: d)
+            XCTAssertLessThanOrEqual(s, previous)
+            previous = s
+        }
+    }
+
+    /// 設定が噛み合っていなければ広がりを使わない(0 のまま)
+    func testSpreadIsOffWhenTheRangeIsNotSet() {
+        XCTAssertEqual(params(spreadFar: 0, spreadNear: 0).spread(atDistanceM: 30), 0)
+        XCTAssertEqual(params(spreadFar: 5, spreadNear: 60).spread(atDistanceM: 30), 0,
+                       "遠近が逆なら効かせない")
+    }
+
+    /// 置いた結果にも両方が載る
+    func testPlacementCarriesElevationAndSpread() {
+        let p = params(height: 1.5, spreadFar: 60, spreadNear: 5)
+        let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: 10))
+        let placed = spot.placement(from: origin, referenceBearingDeg: 0,
+                                    gainFromDistanceM: 90, p: p)
+        XCTAssertEqual(placed.elevationDeg, -8.53, accuracy: 0.1)
+        XCTAssertEqual(placed.spread, p.spread(atDistanceM: placed.distanceM), accuracy: 1e-9)
+    }
+
+    /// **3D の位置に仰角が載り、距離(= 音量)は変わらない**
+    func testPositionCarriesElevationWithoutChangingTheRadius() {
+        let flat = SoundPlacement.position(relativeBearingDeg: 90)
+        let down = SoundPlacement.position(relativeBearingDeg: 90, elevationDeg: -45)
+        XCTAssertEqual((flat.x * flat.x + flat.y * flat.y + flat.z * flat.z).squareRoot(), 1,
+                       accuracy: 1e-9)
+        XCTAssertEqual((down.x * down.x + down.y * down.y + down.z * down.z).squareRoot(), 1,
+                       accuracy: 1e-9, "仰角を付けても半径は 1 のまま(音量が変わらない)")
+        XCTAssertLessThan(down.y, 0, "下に置かれること")
+        XCTAssertGreaterThan(down.x, 0, "右のまま")
     }
 
     // MARK: - 置き直す時の選び方(2026-09-18 利用者依頼「特定の箇所に固まらないように」)

@@ -92,6 +92,10 @@ struct EarBalanceView: View {
                 Text("合わせられるのは左右だけです。前後の聞き分けはこの設定では直りません。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text("この設定を使う間は、近づいた時に音が下から鳴る効果と、"
+                     + "遠いほど広がって聞こえる効果は載りません(音の通り道が変わるため)。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Text("散歩の途中で変えても、その散歩の音には効きません(音声の経路を"
                      + "用意する時に決まるため)。")
                     .font(.caption)

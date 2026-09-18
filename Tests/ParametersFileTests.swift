@@ -150,6 +150,21 @@ final class ParametersFileTests: XCTestCase {
                           "1 秒を超えると、通り過ぎる場面に間に合わない")
     }
 
+    /// **近づくと下から・一点から鳴る**(2026-09-18 利用者依頼)
+    func testMusicSpotElevationAndSpreadValuesArrive() throws {
+        let e = try ConfigLoader.load(from: repositoryParametersURL()).experiment
+        XCTAssertGreaterThan(e.musicSpotListenerHeightM, 0, "0 だと仰角が付かない")
+        XCTAssertLessThan(e.musicSpotListenerHeightM, 3, "耳の高さとして現実的な範囲")
+        XCTAssertGreaterThan(e.musicSpotSpreadFarM, e.musicSpotSpreadNearM,
+                             "遠近が逆だと広がりが効かない")
+        XCTAssertGreaterThan(e.musicSpotSpreadMax, 0)
+        XCTAssertLessThanOrEqual(e.musicSpotSpreadMax, 1)
+        // 一点に締まる距離は、ピンポイントで首を振って探す範囲と噛み合っていること
+        let spot = e.musicSpot(durationMin: 30)
+        XCTAssertLessThanOrEqual(spot.spreadNearM, spot.pinpointStartM,
+                                 "首を振って探し始める距離までには、音が締まっていること")
+    }
+
     /// **スポットを移す提案**(2026-09-18 利用者依頼)
     func testMusicSpotMoveValuesArrive() throws {
         let e = try ConfigLoader.load(from: repositoryParametersURL()).experiment

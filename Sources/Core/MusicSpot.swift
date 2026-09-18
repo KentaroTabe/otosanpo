@@ -91,6 +91,12 @@ public struct MusicSpot: Equatable {
         public var rearShelfStartDeg: Double
         /// 真後ろで高域を落とす量 [dB](正の値で置く)。0 なら何もしない
         public var rearShelfDepthDb: Double
+        /// **耳の高さ** [m](スポットは地表にある)。0 で仰角を付けない
+        public var listenerHeightM: Double
+        /// 広がりが最大になる距離 [m](これより遠いと一番広い)
+        public var spreadFarM: Double
+        /// 広がりが消える距離 [m](これより近いと一点に締まる)
+        public var spreadNearM: Double
 
         /// 距離 `d` [m] での音量。**鳴り始めた地点の距離 `start` で最小、
         /// スポットの手前 `referenceDistanceM` で最大とし、その間を dB で均等につなぐ**
@@ -192,6 +198,47 @@ public struct MusicSpot: Equatable {
             return -rearShelfDepthDb * (1 - cos(.pi * t)) / 2
         }
 
+        /// **見下ろす角度** [deg]。負が下(2026-09-18 利用者依頼)。
+        ///
+        /// > 「スポットが地表にありイヤホンが 150cm 高い位置にあるとすると、
+        /// > スポットに近づくと下側から聞こえてくるようになるはず」
+        ///
+        /// 水平距離 `d` と耳の高さ `h` から `−atan(h / d)`。
+        ///
+        /// **この角度は水平距離だけで決まる。** 方位と違って位置の誤差に強い:
+        ///
+        /// | 水平距離 | 仰角(h = 1.5 m) | 3 m ずれた時の振れ幅 |
+        /// |---|---|---|
+        /// | 50 m | −1.7° | ±0.1° |
+        /// | 20 m | −4.3° | ±0.6° |
+        /// | 10 m | −8.5° | ±2.6° |
+        /// | 5 m | −16.7° | ±10° |
+        /// | 2 m | −36.9° | (方位はもう意味を持たない) |
+        ///
+        /// 方位は同じ 3 m のずれで 5 m 先なら ±31° 振れる。
+        /// **近づくほど方位は当てにならなくなるが、仰角は急に深くなる** —
+        /// 「足元に在る」という手がかりを、GPS の誤差に強い量で作れる
+        public func elevationDeg(horizontalDistanceM d: Double) -> Double {
+            guard listenerHeightM > 0, d.isFinite else { return 0 }
+            return -atan2(listenerHeightM, Swift.max(0, d)) * 180 / .pi
+        }
+
+        /// **音の広がり** [0..1]。1 = 広い(遠い)・0 = 狭い(近い)。
+        ///
+        /// > 「音が広い範囲から聞こえるのは遠いところで、狭い範囲から聞こえるのは近いところ」
+        ///
+        /// 遠いうちは輪郭のぼやけた音、近づくほど一点に締まる。
+        /// これも**距離だけで決まる**ので、方位の誤差に影響されない。
+        /// `spreadFarM` 以遠で 1、`spreadNearM` 以内で 0、間はなめらかに繋ぐ
+        public func spread(atDistanceM d: Double) -> Double {
+            guard spreadFarM > spreadNearM, d.isFinite else { return 0 }
+            if d >= spreadFarM { return 1 }
+            if d <= spreadNearM { return 0 }
+            let t = (d - spreadNearM) / (spreadFarM - spreadNearM)
+            // 端で傾きが 0 になる繋ぎ方(直線だと境目で変化が折れる)
+            return (1 - cos(.pi * t)) / 2
+        }
+
         public init(minDistanceM: Double, maxDistanceM: Double, distanceStepCount: Int,
                     reachedM: Double,
                     bearingStepDeg: Double, sameDistanceToleranceM: Double,
@@ -200,7 +247,12 @@ public struct MusicSpot: Equatable {
                     pinpointStartM: Double, pinpointFullM: Double,
                     pinpointBeamDeg: Double, pinpointDepthDb: Double,
                     directivityDepthDb: Double = 0,
-                    rearShelfStartDeg: Double = 90, rearShelfDepthDb: Double = 0) {
+                    rearShelfStartDeg: Double = 90, rearShelfDepthDb: Double = 0,
+                    listenerHeightM: Double = 0,
+                    spreadFarM: Double = 0, spreadNearM: Double = 0) {
+            self.listenerHeightM = listenerHeightM
+            self.spreadFarM = spreadFarM
+            self.spreadNearM = spreadNearM
             self.minDistanceM = minDistanceM
             self.maxDistanceM = maxDistanceM
             self.distanceStepCount = distanceStepCount
@@ -238,6 +290,11 @@ public struct MusicSpot: Equatable {
         public var rearShelfDb: Double
         /// スポットの近さ [0..1](→ `Params.pinpointWeight`)
         public var pinpointWeight: Double
+        /// **見下ろす角度** [deg](負が下。→ `Params.elevationDeg`)。
+        /// 近づくほど深くなる。方位と違って位置の誤差に強い
+        public var elevationDeg: Double
+        /// **音の広がり** [0..1](1 = 遠くて広い・0 = 近くて一点。→ `Params.spread`)
+        public var spread: Double
         public var distanceM: Double
         /// 鳴らす向き(真北基準)。直線と道の向きを混ぜた結果
         public var worldBearingDeg: Double
@@ -245,7 +302,11 @@ public struct MusicSpot: Equatable {
         public init(relDeg: Double, gain: Double, distanceGain: Double, facingDb: Double,
                     directivityDb: Double = 0,
                     rearShelfDb: Double = 0,
-                    pinpointWeight: Double, distanceM: Double, worldBearingDeg: Double) {
+                    pinpointWeight: Double,
+                    elevationDeg: Double = 0, spread: Double = 0,
+                    distanceM: Double, worldBearingDeg: Double) {
+            self.elevationDeg = elevationDeg
+            self.spread = spread
             self.relDeg = relDeg
             self.gain = gain
             self.distanceGain = distanceGain
@@ -393,6 +454,10 @@ public struct MusicSpot: Equatable {
                          // 基準が取れていない時は相対方位が 0 になるので、ここも自然に 0 になる
                          rearShelfDb: p.rearShelfDb(relativeBearingDeg: rel),
                          pinpointWeight: weight,
+                         // **近づくほど下から・一点から鳴る**(2026-09-18 利用者依頼)。
+                         // どちらも水平距離だけで決まるので、方位と違って位置の誤差に強い
+                         elevationDeg: p.elevationDeg(horizontalDistanceM: distance),
+                         spread: p.spread(atDistanceM: distance),
                          distanceM: distance,
                          worldBearingDeg: world)
     }
