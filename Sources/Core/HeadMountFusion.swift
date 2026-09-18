@@ -32,12 +32,24 @@ public struct HeadMountFusion: Equatable {
         public var quarantine: HeadingQuarantine.Params
         /// 最終受信からこれを超えたら「古い」として使わない [sec]
         public var staleSec: Double
+        /// **退避がこれだけ続いたら、取り付けのずれを学習し直す** [sec](0 で学習し直さない)。
+        /// 実効の証拠時間で数える(壁時計ではない)。→ `updateRelearning`
+        public var relearnAfterDistrustSec: Double
+
+        /// 学習し直す時の設定。**門を掛けない** — 信用できる中心がもう無いので、
+        /// 門を掛けると誤った値の周りだけで学び直してしまう(自作自演)
+        public var relearnOffset: MountOffset.Params {
+            var p = offset
+            p.gateDeg = 0
+            return p
+        }
 
         public init(offset: MountOffset.Params, quarantine: HeadingQuarantine.Params,
-                    staleSec: Double) {
+                    staleSec: Double, relearnAfterDistrustSec: Double = 0) {
             self.offset = offset
             self.quarantine = quarantine
             self.staleSec = staleSec
+            self.relearnAfterDistrustSec = relearnAfterDistrustSec
         }
     }
 
@@ -81,6 +93,15 @@ public struct HeadMountFusion: Equatable {
     private var lastNewFix: MountOffset.Sample?
     /// 直前の標本の種類(ログの「今回」用)
     private var lastSampleKind: MountOffset.Sample.Kind?
+    /// 学習し直している最中の推定(→ `updateRelearning`)。
+    /// **成立するまでは古い値で鳴らし続ける** — 途中で基準が消えると音が飛ぶため
+    private var relearning: MountOffset?
+    /// 退避が続いた実効証拠時間 [sec]
+    private var distrustedEvidenceSec: Double = 0
+    /// 学習し直した回数(ログ用)。**0 でないなら、最初の学習が外れていた**
+    public private(set) var relearnCount = 0
+    /// いま学習し直している最中か(ログ用)
+    public var isRelearning: Bool { relearning != nil }
 
     public init() {}
 
@@ -151,7 +172,58 @@ public struct HeadMountFusion: Equatable {
         }
         // 成立させた標本は `.learning` なので検疫は数えない — 窓は白紙のまま始まる(D1)
         quarantine.assess(sample, p: p.quarantine)
+        updateRelearning(headingDeg: headingDeg, rawCourseDeg: rawCourseDeg,
+                         fixTime: fixTime, at: t, sample: sample, p: p)
         return use(at: t, p: p)
+    }
+
+    /// **退避が続いたら、取り付けのずれを学習し直す**(2026-09-18)。
+    ///
+    /// ## なぜ要るか
+    ///
+    /// 学習は**一度きりで凍結**する設計だった。ところが 2026-09-18 の散歩で、
+    /// 開始 21 秒で学習した値(344°)が、その後の実測(生の方位 − course の円平均 90°)と
+    /// **106° 食い違った**まま 10 分間直らなかった。
+    /// スマホを頭に載せる前の 21 秒で学習した、というのが最もありそうな筋書き。
+    ///
+    /// 一度ずれると**門(gateDeg)がその後の標本をほぼ全部「門外」として除外する**ので、
+    /// 誤った値が自分で自分を守る(実測の門外割合 0.92〜1.00)。
+    /// 検疫は正しく退避を出していたが、音楽はそれを無視して鳴る作りにしたため、
+    /// **正面へ進むべき所で横から聞こえる**という形で表に出た。
+    ///
+    /// ## どう直すか
+    ///
+    /// 退避が続いた実効証拠時間が `relearnAfterDistrustSec` を超えたら、
+    /// **門を掛けない別の推定を並行して回す**。新しい値が成立したら乗り換える。
+    ///
+    /// **古い値は、新しい値が成立するまで使い続ける。** 学習をその場で捨てると
+    /// 基準が消えて音が飛ぶ(2026-09-18 に「離散的」と言われた現象がそれ)
+    private mutating func updateRelearning(headingDeg: Double, rawCourseDeg: Double?,
+                                           fixTime: TimeInterval?, at t: TimeInterval,
+                                           sample: MountOffset.Sample, p: Params) {
+        guard p.relearnAfterDistrustSec > 0, learnedDeg != nil else { return }
+        if relearning == nil {
+            guard quarantine.state == .distrusted else {
+                distrustedEvidenceSec = 0
+                return
+            }
+            distrustedEvidenceSec += sample.evidenceSec
+            guard distrustedEvidenceSec >= p.relearnAfterDistrustSec else { return }
+            // **門を掛けずに**学び直す。信用できる中心がもう無いので、門は自作自演になる
+            relearning = MountOffset()
+        }
+        guard relearning != nil else { return }
+        _ = relearning!.ingest(headingDeg: headingDeg, courseDeg: rawCourseDeg,
+                               fixTime: fixTime, observedAt: t, p: p.relearnOffset)
+        guard let fresh = relearning!.offsetDeg else { return }
+        offset = relearning!
+        learnedDeg = fresh
+        relearning = nil
+        distrustedEvidenceSec = 0
+        relearnCount += 1
+        // 新しい値に乗り換えた瞬間、方位が学習値ぶん飛ぶので、それ以前の証拠は捨てる
+        quarantine = HeadingQuarantine()
+        quarantine.markLearned()
     }
 
     /// 使ってよいか。**呼ぶたびに鮮度を評価する**ので、更新が止まれば自動的に `stale` へ落ちる。

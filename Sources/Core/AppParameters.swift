@@ -322,6 +322,14 @@ public struct AppParameters: Codable, Equatable {
         /// 鮮度と取り付けのずれの学習は守り、検疫の判断だけ捨てる
         /// (→ HeadMountFusion.facingDegIgnoringQuarantine)
         public var musicIgnoresQuarantine: Bool
+        /// **退避がこれだけ続いたら、取り付けのずれを学習し直す** [sec]。0 で学習し直さない。
+        ///
+        /// 学習は一度きりで凍結する設計だったが、2026-09-18 の散歩で
+        /// **開始 21 秒に学習した値が、その後の実測と 106° 食い違ったまま 10 分続いた**
+        /// (スマホを頭に載せる前に学習したとみられる)。
+        /// 一度ずれると門がその後の標本を除外するので、誤った値が自分で自分を守る。
+        /// → HeadMountFusion.updateRelearning
+        public var relearnAfterDistrustSec: Double
 
         /// HeadingQuarantine に渡す設定値
         public var quarantine: HeadingQuarantine.Params {
@@ -345,7 +353,8 @@ public struct AppParameters: Codable, Equatable {
         public var fusion: HeadMountFusion.Params {
             HeadMountFusion.Params(offset: offsetEstimator,
                                    quarantine: quarantine,
-                                   staleSec: staleSec)
+                                   staleSec: staleSec,
+                                   relearnAfterDistrustSec: relearnAfterDistrustSec)
         }
     }
 

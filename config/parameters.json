@@ -124,7 +124,8 @@
     "quarantine_regain_sec": 8,
     "log_interval_sec": 1,
     "stale_sec": 1.0,
-    "music_ignores_quarantine": true
+    "music_ignores_quarantine": true,
+    "relearn_after_distrust_sec": 30
   },
   "experiment": {
     "validity_pulse_sec": 30,

@@ -36,7 +36,8 @@ final class HeadMountFusionTests: XCTestCase {
                            minEvidenceSec: Double = 5,
                            halfLifeSec: Double = 60,
                            minConcentration: Double = 0.8,
-                           gateDeg: Double = 45) -> HeadMountFusion.Params {
+                           gateDeg: Double = 45,
+                           relearnAfterDistrustSec: Double = 0) -> HeadMountFusion.Params {
         HeadMountFusion.Params(
             offset: MountOffset.Params(minEvidenceSec: minEvidenceSec,
                                        halfLifeSec: halfLifeSec,
@@ -45,7 +46,8 @@ final class HeadMountFusionTests: XCTestCase {
             quarantine: HeadingQuarantine.Params(windowSec: 40, distrustRatio: 0.75,
                                                  distrustSec: 12, regainRatio: 0.7,
                                                  regainSec: 8),
-            staleSec: staleSec)
+            staleSec: staleSec,
+            relearnAfterDistrustSec: relearnAfterDistrustSec)
     }
 
     /// `fixes` 個の fix を 1 秒間隔で流す。1 fix あたり `perFix` 回 `ingest` する
@@ -310,6 +312,76 @@ final class HeadMountFusionTests: XCTestCase {
         XCTAssertNotNil(f.facingDegIgnoringQuarantine(at: t, p: p),
                         "検疫を無視する経路では、退避中でも方位が出ること")
         XCTAssertEqual(f.facingDegIgnoringQuarantine(at: t, p: p), f.correctedHeadingDeg)
+    }
+
+    // MARK: - 取り付けのずれを学習し直す(2026-09-18 の散歩)
+    //
+    // 開始 21 秒で学習した値(344°)が、その後の実測(90°)と **106° 食い違ったまま**
+    // 10 分続いた(スマホを頭に載せる前に学習したとみられる)。
+    // 一度ずれると門がその後の標本を除外するので、誤った値が自分で自分を守る。
+
+    /// **退避が続いたら学習し直し、正しい値へ乗り換える**
+    func testRelearnsTheOffsetAfterSustainedDistrust() {
+        let p = learnable(staleSec: 30, relearnAfterDistrustSec: 20)
+        var f = HeadMountFusion()
+        // 最初の 10 秒だけ「ずれ 0」で学習する(= 頭に載せる前の状態)
+        var t = feed(&f, fixes: 10, from: 100, p: p,
+                     heading: { _ in 90 }, course: { _ in 90 })
+        XCTAssertEqual(f.use(at: t, p: p), .use)
+        XCTAssertEqual(f.learnedOffsetDeg ?? -1, 0, accuracy: 1)
+
+        // ここで装着し、ずれが +100° になった(実測と同じ形)。歩き続ける
+        t = feed(&f, fixes: 60, from: t + 0.1, p: p,
+                 heading: { i in Double((190 + i * 7) % 360) },
+                 course: { i in Double((90 + i * 7) % 360) })
+
+        XCTAssertGreaterThan(f.relearnCount, 0, "学習し直していないと、ずれたまま鳴り続ける")
+        XCTAssertEqual(f.learnedOffsetDeg ?? -1, 100, accuracy: 5, "新しいずれを学習していること")
+        XCTAssertEqual(f.use(at: t, p: p), .use, "乗り換えた後は採用へ戻ること")
+    }
+
+    /// **乗り換えるまでの間も、音の基準を失わない。**
+    /// 学習をその場で捨てると基準が消え、音が飛ぶ(2026-09-18 に「離散的」と言われた現象)
+    func testKeepsTheOldOffsetWhileRelearning() {
+        let p = learnable(staleSec: 30, relearnAfterDistrustSec: 20)
+        var f = HeadMountFusion()
+        var t = feed(&f, fixes: 10, from: 100, p: p,
+                     heading: { _ in 90 }, course: { _ in 90 })
+        let before = f.learnedOffsetDeg
+        XCTAssertNotNil(before)
+
+        // 退避が始まってから、学習し直しが成立するまでの間
+        t = feed(&f, fixes: 12, from: t + 0.1, p: p,
+                 heading: { i in Double((190 + i * 7) % 360) },
+                 course: { i in Double((90 + i * 7) % 360) })
+        XCTAssertNotNil(f.facingDegIgnoringQuarantine(at: t, p: p),
+                        "学習し直しの最中も、音楽の基準は消えないこと")
+    }
+
+    /// **短い食い違いでは学習し直さない**(一時的に横を向いただけで学習を捨てない)
+    func testBriefDisagreementDoesNotRelearn() {
+        let p = learnable(staleSec: 30, relearnAfterDistrustSec: 20)
+        var f = HeadMountFusion()
+        var t = feed(&f, fixes: 20, from: 100, p: p,
+                     heading: { _ in 184 }, course: { _ in 90 })
+        let learned = f.learnedOffsetDeg
+        t = feed(&f, fixes: 6, from: t + 0.1, p: p,
+                 heading: { _ in 304 }, course: { _ in 90 })
+        XCTAssertEqual(f.relearnCount, 0, "6 秒の横向きで学習を捨ててはいけない")
+        XCTAssertEqual(f.learnedOffsetDeg, learned)
+    }
+
+    /// 設定が 0 なら学習し直さない(従来どおり一度きり)
+    func testRelearnCanBeTurnedOff() {
+        let p = learnable(staleSec: 30, relearnAfterDistrustSec: 0)
+        var f = HeadMountFusion()
+        var t = feed(&f, fixes: 10, from: 100, p: p,
+                     heading: { _ in 90 }, course: { _ in 90 })
+        t = feed(&f, fixes: 60, from: t + 0.1, p: p,
+                 heading: { i in Double((190 + i * 7) % 360) },
+                 course: { i in Double((90 + i * 7) % 360) })
+        XCTAssertEqual(f.relearnCount, 0)
+        XCTAssertEqual(f.learnedOffsetDeg ?? -1, 0, accuracy: 1, "最初の値のまま")
     }
 
     /// **鮮度と学習は捨てない。** 検疫だけを無視する(2026-09-18)
