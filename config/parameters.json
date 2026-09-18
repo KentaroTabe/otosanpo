@@ -288,6 +288,17 @@
         "harmonic_decay": 0.7,
         "attack_ratio": 0.5
       },
+      "ear_calibration": {
+        "freqs_hz": [
+          880.0
+        ],
+        "blip_sec": 0.06,
+        "gap_sec": 0.0,
+        "noise_mix": 0.0,
+        "harmonics": 4,
+        "harmonic_decay": 0.7,
+        "attack_ratio": 0.05
+      },
       "spot_move": {
         "freqs_hz": [
           698.5,

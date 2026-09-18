@@ -668,6 +668,13 @@ public struct AppParameters: Codable, Equatable {
             public var arrival: ToneSpec
             /// スポットを移す提案(2026-09-18)。**時間到来とは別の音**
             public var spotMove: ToneSpec
+            /// **真横に聞こえる角度を合わせる時の音**(2026-09-18 利用者依頼)。
+            ///
+            /// 「もう少し音の範囲を細く」— 像がぼやけるのは音のせい。
+            /// 440 Hz の純音は波長 78 cm で頭を回折し、**両耳間レベル差がほとんど出ない**
+            /// (ILD が効くのは概ね 1.5 kHz 以上)。なだらかな立ち上がりでは時間差の
+            /// 手がかりも弱い。**倍音を足して高域を作り、立ち上がりを鋭くする**と像が締まる
+            public var earCalibration: ToneSpec
         }
     }
 

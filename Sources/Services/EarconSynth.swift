@@ -30,6 +30,8 @@ final class EarconSynth {
     private let musicMixer = AVAudioMixerNode()
     /// 広がりの最大値 [0..1]。**残響を混ぜすぎると屋外の散歩で不自然になる**ので蓋をする
     private let spreadMax: Double
+    /// 校正で鳴らす音。**案内音とは別に持つ**(像を締めるため音色が違う)
+    private var calibrationBuffer: AVAudioPCMBuffer?
     /// **音楽が 3D の経路(環境ノード)を通っているか。**
     /// 通っていれば仰角と広がりが載る
     var musicIsSpatial: Bool { useSpatialAudio }
@@ -133,6 +135,9 @@ final class EarconSynth {
         // スポットを移す提案。**方向を持たない音**なので実験の音色は載せない
         buffers[.spotMove] = Self.render(audio.tones.spotMove, format: format,
                                          gain: gain, leadSilenceSec: lead)
+        // 校正の音は**専用**(倍音つき・鋭い立ち上がり)。像を締めるため
+        calibrationBuffer = Self.render(audio.tones.earCalibration, format: format,
+                                        gain: gain, leadSilenceSec: lead)
         let beaconTone = tones.homeBeacon
         // 有効性パルスは**実験のときだけ作る**。作らなければ play が黙って何もしないので、
         // 配布版で鳴る経路が存在しないことがここで担保される
@@ -387,12 +392,21 @@ final class EarconSynth {
     /// つまみで動かした角度にそのまま置く。**前半球へ畳まない** —
     /// 「左後ろから正面を経由して右後ろまで」を動かせることが校正の前提なので、
     /// 点の earcon の畳み込み(docs/03)をここへ持ち込んではいけない。
-    /// 距離の減衰・正面の強調・指向性・後方の高域シェルフも掛けない(動くのは角度だけ)
+    /// 距離の減衰・正面の強調・指向性・後方の高域シェルフも掛けない(動くのは角度だけ)。
+    ///
+    /// **像を締めるための 3 点**(2026-09-18「もう少し音の範囲を細く」):
+    ///
+    /// 1. 専用の音色(倍音つき・鋭い立ち上がり)。440 Hz の純音では
+    ///    両耳間レベル差がほとんど出ず、像がぼやける
+    /// 2. **音楽と同じ `HRTFHQ`** で鳴らす。合わせる相手と違う描き方で測らない
+    /// 3. 残響を混ぜない(広がりは距離の手がかりなので、校正では邪魔)
     func playCalibrationTone(relativeBearingDeg deg: Double) {
         if !engine.isRunning { recover(reason: "校正音の再生前") }
-        guard let b = buffers[.homeBeacon] else { return }
+        guard let b = calibrationBuffer ?? buffers[.homeBeacon] else { return }
         player.volume = Float(max(0, min(1, audio.earconGain)))
         if isSpatial {
+            player.renderingAlgorithm = .HRTFHQ
+            player.reverbBlend = 0
             let p = SoundPlacement.position(relativeBearingDeg: deg)
             player.position = AVAudio3DPoint(x: Float(p.x), y: Float(p.y), z: Float(p.z))
         } else {
@@ -400,6 +414,12 @@ final class EarconSynth {
         }
         player.scheduleBuffer(b)
         if !player.isPlaying { player.play() }
+    }
+
+    /// **校正が終わったら、案内音の描き方へ戻す。**
+    /// `player` は案内音と共用なので、`HRTFHQ` のままにしない
+    func endCalibration() {
+        player.renderingAlgorithm = .HRTF
     }
 
     /// - Parameter gain: 相対音量 [0..1]。曲がり角の誘導が「角までの近さ」を音量で表すため

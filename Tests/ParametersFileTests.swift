@@ -165,6 +165,21 @@ final class ParametersFileTests: XCTestCase {
                                  "つまみの端まで動かした所を印にできること")
     }
 
+    /// **校正の音は像が締まる作りになっていること**(2026-09-18 利用者依頼)。
+    ///
+    /// 440 Hz の純音は波長 78 cm で頭を回折し、両耳間レベル差がほとんど出ない。
+    /// 倍音で高域(概ね 1.5 kHz 以上)を作り、立ち上がりを鋭くして時間差の手がかりを持たせる
+    func testEarCalibrationToneIsMadeToBeLocalisable() throws {
+        let t = try ConfigLoader.load(from: repositoryParametersURL()).audio.tones.earCalibration
+        XCTAssertGreaterThan(t.harmonics, 1, "純音では左右の手がかりが出ない")
+        let top = (t.freqsHz.max() ?? 0) * Double(t.harmonics)
+        XCTAssertGreaterThan(top, 1500, "両耳間レベル差が効く帯域(1.5 kHz 以上)まで届くこと")
+        XCTAssertLessThan(t.attackRatio, 0.2, "立ち上がりが鋭いこと(時間差の手がかり)")
+        XCTAssertNotEqual(t, try ConfigLoader.load(from: repositoryParametersURL())
+                             .audio.tones.homeBeacon,
+                          "案内音とは別の音であること")
+    }
+
     /// **近づくと下から・一点から鳴る**(2026-09-18 利用者依頼)
     func testMusicSpotElevationAndSpreadValuesArrive() throws {
         let e = try ConfigLoader.load(from: repositoryParametersURL()).experiment

@@ -514,6 +514,11 @@ final class WalkSessionController: ObservableObject {
         synth.playCalibrationTone(relativeBearingDeg: deg)
     }
 
+    /// 校正を終える(音の描き方を案内音のものへ戻す)
+    func endEarCalibration() {
+        synth?.endCalibration()
+    }
+
     /// 校正を確定する。**範囲外なら保存しない**(端に張り付いた値を成功として残さない)
     @discardableResult
     func saveEarAngleMap(rightAnchorDeg: Double, leftAnchorDeg: Double) -> Bool {

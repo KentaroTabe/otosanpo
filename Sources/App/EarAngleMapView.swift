@@ -61,6 +61,10 @@ struct EarAngleMapView: View {
                      + "iPhone のスピーカーでは左右がほとんど分かりません。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text("音は輪郭が締まるように作ってあります(倍音つき・立ち上がりが鋭い)。"
+                     + "散歩中の案内音とは別の音です。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("つまみ") {
@@ -126,7 +130,10 @@ struct EarAngleMapView: View {
         }
         .navigationTitle("真横に聞こえる角度")
         .navigationBarTitleDisplayMode(.inline)
-        .onDisappear { stop() }
+        .onDisappear {
+            stop()
+            controller.endEarCalibration()
+        }
     }
 
     private var angleLabel: String {
