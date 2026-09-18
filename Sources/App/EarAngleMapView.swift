@@ -8,7 +8,10 @@ import SwiftUI
 /// ## 使い方(この画面の流れ)
 ///
 /// 1. 「鳴らす」を押すと、つまみの角度に音が繰り返し置かれる
-/// 2. つまみを動かすと音が周りを回る(左後ろ → 正面 → 右後ろ)
+/// 2. つまみを動かすと音が周りを回る(左後ろ → 正面 → 右後ろ)。
+///    **振れ幅と刻みは設定から**(`audio.ear_calibration_span_deg` / `_step_deg`)。
+///    真後ろまで振らないのは、そこを合わせることが無いのに travel を食うため
+///    (2026-09-18 利用者依頼「もう少し音の範囲を細く」)
 /// 3. **真右から聞こえた所**で止めて「ここが真右」を押す。真左も同じ
 /// 4. 「この設定で使う」で確定
 ///
@@ -31,6 +34,14 @@ struct EarAngleMapView: View {
 
     /// 校正音の間隔 [秒]。**繰り返し鳴らす**ので、つまみを動かしながら比べられる
     private let repeatSec = 0.8
+
+    /// つまみの振れ幅 [deg](片側)。設定から取る
+    private var span: Double { controller.params.audio.earCalibrationSpanDeg }
+    /// つまみの刻み [deg]
+    private var step: Double { controller.params.audio.earCalibrationStepDeg }
+    private var stepLabel: String {
+        step == step.rounded() ? String(Int(step)) : String(format: "%.1f", step)
+    }
 
     init(controller: WalkSessionController) {
         self.controller = controller
@@ -55,10 +66,13 @@ struct EarAngleMapView: View {
             Section("つまみ") {
                 Text(angleLabel)
                     .font(.title3.monospacedDigit())
-                Slider(value: $angle, in: -180...180, step: 5)
+                // **振れ幅は設定から**(2026-09-18 利用者依頼「もう少し音の範囲を細く」)。
+                // 狭くするほど、同じ指の動きで細かく合わせられる
+                Slider(value: $angle, in: -span...span, step: step)
                     .onChange(of: angle) { _, _ in if playing { play() } }
                 Button(playing ? "止める" : "鳴らす") { playing ? stop() : start() }
-                Text("左端が左後ろ、真ん中が正面、右端が右後ろです")
+                Text("左端が左後ろ、真ん中が正面、右端が右後ろです"
+                     + "(左右 \(Int(span.rounded()))° まで・\(stepLabel)° 刻み)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

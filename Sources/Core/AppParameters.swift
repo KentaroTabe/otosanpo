@@ -650,6 +650,14 @@ public struct AppParameters: Codable, Equatable {
         /// 0 で無効
         public var earconLeadSilenceSec: Double
         public var earconGain: Double
+        /// **真横に聞こえる角度を合わせる時、つまみが振れる幅** [deg](片側)。
+        ///
+        /// 180 まで振れると、正面付近を合わせるのにつまみの travel を使い切ってしまう。
+        /// 真後ろは校正に使わない(印を付けられない)ので、そこまで動かす必要が無い。
+        /// **狭くするほど、同じ指の動きで細かく合わせられる**(2026-09-18 利用者依頼)
+        public var earCalibrationSpanDeg: Double
+        /// つまみの刻み [deg]。細かすぎると狙った所で止めにくい
+        public var earCalibrationStepDeg: Double
         public var tones: Tones
 
         public struct Tones: Codable, Equatable {

@@ -150,6 +150,21 @@ final class ParametersFileTests: XCTestCase {
                           "1 秒を超えると、通り過ぎる場面に間に合わない")
     }
 
+    /// **真横に聞こえる角度を合わせるつまみ**(2026-09-18 利用者依頼)。
+    /// 「もう少し音の範囲を細く」— 振れ幅を狭め、刻みを細かくした
+    func testEarCalibrationSliderValuesArrive() throws {
+        let a = try ConfigLoader.load(from: repositoryParametersURL()).audio
+        XCTAssertGreaterThan(a.earCalibrationSpanDeg, 90,
+                             "真横より外(左後ろ・右後ろ)まで動かせること")
+        XCTAssertLessThanOrEqual(a.earCalibrationSpanDeg, 180)
+        XCTAssertGreaterThan(a.earCalibrationStepDeg, 0)
+        XCTAssertLessThanOrEqual(a.earCalibrationStepDeg, 5,
+                                 "刻みが粗いと合わせられない")
+        // つまみで届く範囲が、印として保存できる範囲に収まっていること
+        XCTAssertLessThanOrEqual(a.earCalibrationSpanDeg, EarAngleMap.maxAnchorDeg,
+                                 "つまみの端まで動かした所を印にできること")
+    }
+
     /// **近づくと下から・一点から鳴る**(2026-09-18 利用者依頼)
     func testMusicSpotElevationAndSpreadValuesArrive() throws {
         let e = try ConfigLoader.load(from: repositoryParametersURL()).experiment
