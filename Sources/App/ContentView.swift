@@ -115,6 +115,18 @@ struct ContentView: View {
                     NavigationLink("案内音") {
                         GuidanceSoundView(controller: controller)
                     }
+                    // **左右の音量差は人によって違う**(2026-09-18 利用者依頼)。
+                    // 真横に感じる差を自分で合わせてもらう。
+                    // **入れ子の HStack を label に置かない** — この body は既に大きく、
+                    // 型検査が重くなる(SourceKit が時間切れを警告した)
+                    NavigationLink("左右の音量差") {
+                        EarBalanceView(controller: controller)
+                    }
+                    Text(controller.earBalance == nil
+                         ? "未設定(従来どおりの聞こえ方で鳴ります)"
+                         : "設定済み(合わせた左右比で音楽が鳴ります)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("セッション") {

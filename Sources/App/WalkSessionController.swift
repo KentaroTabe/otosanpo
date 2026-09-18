@@ -49,6 +49,10 @@ final class WalkSessionController: ObservableObject {
             synth?.setDirectionalTones(experimental: guidanceToneExperimental)
         }
     }
+    /// **左右の音量差の初期設定**(→ Core の EarBalance・2026-09-18 利用者依頼)。
+    /// nil なら未校正で、従来どおり HRTF の経路で鳴らす。
+    /// **散歩の途中で変えても、その散歩の音には効かない**(音声経路を作る時に決まる)
+    @Published private(set) var earBalance: EarBalance?
     @Published private(set) var home: GeoPoint?
     @Published private(set) var statusLine = "位置情報待ち"
     /// ヘッドフォンモーションの受信状況。検出できない原因の切り分けに使う
@@ -252,6 +256,7 @@ final class WalkSessionController: ObservableObject {
         // 一度選んだら次からはその選択(→ SettingStore)
         orientationMode = SettingStore.loadOrientationMode()
         rearDarkening = SettingStore.loadRearDarkening()
+        earBalance = SettingStore.loadEarBalance()
         guidanceToneExperimental = SettingStore.loadGuidanceToneExperimental()
             ?? params.headMount.enabled
         grid = GridStore.load(cellSizeM: params.route.cellSizeM,
@@ -463,8 +468,11 @@ final class WalkSessionController: ObservableObject {
     private func ensureSynth() {
         guard synth == nil else { return }
         // 実験のスイッチは head_mount.enabled ただ 1 つ(→ AppParameters.Experiment)
+        // **左右比の校正は、音声エンジンを作る時に決める**(→ EarBalance・2026-09-18)。
+        // 校正済みなら音楽は環境ノードを通さない経路になるので、途中では変えられない
         let s = try? EarconSynth(audio: params.audio, experiment: params.experiment,
-                                 experimentActive: params.headMount.enabled)
+                                 experimentActive: params.headMount.enabled,
+                                 earBalance: earBalance)
         s?.onEvent = { [weak self] message in
             Task { @MainActor in self?.log(message) }
         }
@@ -485,6 +493,39 @@ final class WalkSessionController: ObservableObject {
         log("デバッグ再生: \(e.rawValue) 方位=\(String(format: "%.0f", relativeBearingDeg))°"
             + "(\(synth.isSpatial ? "3D" : "パン")"
             + "・エンジン\(synth.isRunning ? "稼働" : "停止"))")
+    }
+
+    // MARK: - 左右の音量差の初期設定(2026-09-18 利用者依頼)
+
+    /// 校正の音を 1 つ鳴らす。**左右差だけが動く**(距離・向き・音色は動かさない)
+    func playBalanceTone(differenceDb: Double) {
+        ensureSynth()
+        guard let synth else {
+            log("音声エンジンの初期化に失敗しました")
+            return
+        }
+        synth.playBalanceTone(differenceDb: differenceDb)
+    }
+
+    /// 校正を確定する。**範囲外なら保存しない**(端に張り付いた値を成功として残さない)
+    @discardableResult
+    func saveEarBalance(rightDb: Double, leftDb: Double) -> Bool {
+        let cal = EarBalance(rightDb: rightDb, leftDb: leftDb)
+        guard SettingStore.saveEarBalance(cal) else {
+            log("左右の音量差: 保存できません(範囲外)")
+            return false
+        }
+        earBalance = cal
+        log(String(format: "左右の音量差: 右 90° = %.1f dB / 左 90° = %.1f dB",
+                   rightDb, leftDb))
+        return true
+    }
+
+    /// 校正を捨てて、汎用 HRTF の聞こえ方へ戻す
+    func clearEarBalance() {
+        SettingStore.clearEarBalance()
+        earBalance = nil
+        log("左右の音量差: 初期設定を消しました(汎用の聞こえ方へ戻します)")
     }
 
     // MARK: - 左右の聴き比べ(実験ビルドのみ)

@@ -28,6 +28,10 @@ final class EarconSynth {
     /// 「player → EQ → musicMixer → environment」の順に繋ぐ
     private let musicEQ = AVAudioUnitEQ(numberOfBands: 1)
     private let musicMixer = AVAudioMixerNode()
+    /// **利用者が合わせた左右の音量差**(→ Core の EarBalance・2026-09-18)。
+    /// nil なら従来どおり環境ノード(HRTF)で鳴らす。
+    /// **散歩の途中では変えない** — 経路の繋ぎ替えが要るので、作る時に決める
+    private let earBalance: EarBalance?
     /// 音楽が止まったときに理由つきで呼ばれる(**一度だけ**鳴らす約束のため)。
     /// 鳴り終わった場合と、音声経路が切れて中断した場合を区別する
     var onMusicStopped: ((String) -> Void)?
@@ -74,7 +78,8 @@ final class EarconSynth {
     ///   - experimentActive: `head_mount.enabled`。**スイッチはこれ 1 つ**(→ AppParameters.Experiment)。
     ///     false なら音は配布版とまったく同じで、有効性パルスの音は作られもしない
     init(audio: AppParameters.Audio, experiment: AppParameters.Experiment,
-         experimentActive: Bool) throws {
+         experimentActive: Bool, earBalance: EarBalance? = nil) throws {
+        self.earBalance = earBalance
         // 3D 音響(HRTF)は **モノラル入力にしか効かない**。ステレオのままでは
         // AVAudioEnvironmentNode が定位を付けず、黙って素通りする
         guard let mono = AVAudioFormat(standardFormatWithSampleRate: audio.sampleRate, channels: 1),
@@ -169,7 +174,11 @@ final class EarconSynth {
         // 音楽は「player → ミキサ(モノラルへ落とす)→ 環境ノード」。
         // 環境ノードはモノラル入力にしか効かないので、ここでチャンネル数を落とす。
         // player 側は接続時に音源の形式へ合わせる(startMusic で繋ぎ直す)
-        if useSpatialAudio {
+        // **左右比を自分で合わせた人は、環境ノードを通さない**(2026-09-18 利用者依頼)。
+        // 校正で決めるのは文字どおり左右の音量差なので、HRTF の左右差と二重に掛からないよう
+        // 音楽だけミキサへ直結し、パンで鳴らす(→ Core の EarBalance)。
+        // 前後の手がかりは元から成立していないので、失うものは少ない(2026-09-18 の合議)
+        if useSpatialAudio, earBalance == nil {
             engine.connect(musicMixer, to: environment, format: monoFormat)
             // **定位は環境ノードに直結したノードに設定する。**
             // AVAudioMixing の position / renderingAlgorithm が効くのは
@@ -273,6 +282,12 @@ final class EarconSynth {
                            rearShelfDb: Double = 0) {
         musicMixer.volume = Float(max(0, min(1, gain)))
         musicEQ.bands.first?.gain = Float(max(-24, min(0, rearShelfDb)))
+        // **校正済みなら、利用者が合わせた左右比で鳴らす**(環境ノードは通っていない)。
+        // 距離・正面強調・指向性は `gain` として左右へ共通に掛かるので、比は変わらない
+        if let cal = earBalance {
+            musicMixer.pan = Float(max(-1, min(1, cal.pan(relativeBearingDeg: deg))))
+            return
+        }
         if isSpatial {
             let p = SoundPlacement.position(relativeBearingDeg: deg)
             musicMixer.position = AVAudio3DPoint(x: Float(p.x), y: Float(p.y), z: Float(p.z))
@@ -355,6 +370,20 @@ final class EarconSynth {
         ToneRenderer.darken(tone, by: darkness)
     }
 
+    /// **左右比の校正で鳴らす音**(2026-09-18 利用者依頼)。
+    ///
+    /// 環境ノード(HRTF)を通さない専用ノードで、**指定した左右差そのもの**で鳴らす。
+    /// 校正中は距離の減衰・正面の強調・指向性・後方の高域シェルフを一切掛けない —
+    /// 動くのは左右比だけ、というのが校正の前提(合議 C1)
+    func playBalanceTone(differenceDb: Double) {
+        if !engine.isRunning { recover(reason: "校正音の再生前") }
+        guard let b = buffers[.homeBeacon] else { return }
+        pulsePlayer.volume = Float(max(0, min(1, audio.earconGain)))
+        pulsePlayer.pan = Float(EarBalance.pan(differenceDb: differenceDb))
+        pulsePlayer.scheduleBuffer(b)
+        if !pulsePlayer.isPlaying { pulsePlayer.play() }
+    }
+
     /// - Parameter gain: 相対音量 [0..1]。曲がり角の誘導が「角までの近さ」を音量で表すため
     ///   (間隔の変化では距離が伝わらなかった。2026-08-18 実測)。
     ///   バッファは焼き直さず、再生ノードの音量で変える
@@ -368,6 +397,8 @@ final class EarconSynth {
         if e == .validityPulse {
             guard let b = buffers[e] else { return }
             pulsePlayer.volume = Float(max(0, min(1, gain)))
+            // 校正で左右へ寄せたままにしない(同じノードを使い回している)
+            pulsePlayer.pan = 0
             pulsePlayer.scheduleBuffer(b)
             if !pulsePlayer.isPlaying { pulsePlayer.play() }
             return

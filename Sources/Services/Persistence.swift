@@ -260,6 +260,8 @@ enum SettingStore {
     private static let orientationModeKey = "orientation_mode"
     /// 後ろの音を暗くするか。前後の手がかりの比較用(2026-09-18)
     private static let rearDarkeningKey = "rear_darkening"
+    /// 左右の音量差の初期設定(→ Core の EarBalance・2026-09-18)
+    private static let earBalanceKey = "ear_balance"
 
     /// 保存先を差し替えられるようにしてあるのは、テストが**本物の設定を汚さない**ため
     static func loadShopSearchEnabled(from defaults: UserDefaults = .standard) -> Bool {
@@ -301,6 +303,31 @@ enum SettingStore {
 
     static func saveRearDarkening(_ on: Bool, to defaults: UserDefaults = .standard) {
         defaults.set(on, forKey: rearDarkeningKey)
+    }
+
+    /// **左右の音量差の初期設定**(→ Core の EarBalance・2026-09-18 利用者依頼)。
+    ///
+    /// **未校正は nil。** その時は従来の HRTF の経路で鳴らす(合議 C9)。
+    /// 範囲外・壊れた値は校正済みとして扱わない
+    static func loadEarBalance(from defaults: UserDefaults = .standard) -> EarBalance? {
+        guard let data = defaults.data(forKey: earBalanceKey),
+              let cal = try? JSONDecoder().decode(EarBalance.self, from: data),
+              cal.isValid else { return nil }
+        return cal
+    }
+
+    /// 保存する。**範囲外は保存しない**(端に張り付いた値を成功として残さない)
+    @discardableResult
+    static func saveEarBalance(_ cal: EarBalance,
+                               to defaults: UserDefaults = .standard) -> Bool {
+        guard cal.isValid, let data = try? JSONEncoder().encode(cal) else { return false }
+        defaults.set(data, forKey: earBalanceKey)
+        return true
+    }
+
+    /// 校正を捨てる(HRTF の経路へ戻す)
+    static func clearEarBalance(from defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: earBalanceKey)
     }
 }
 

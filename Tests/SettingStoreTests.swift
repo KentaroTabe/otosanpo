@@ -71,4 +71,42 @@ final class SettingStoreTests: XCTestCase {
         SettingStore.saveGuidanceToneExperimental(true, to: defaults)
         XCTAssertEqual(SettingStore.loadGuidanceToneExperimental(from: defaults), true)
     }
+
+    // MARK: - 左右の音量差(2026-09-18)
+
+    /// **未校正は nil。** その時は従来の HRTF の経路で鳴らす(→ 合議 C9)
+    func testEarBalanceIsNilUntilCalibrated() {
+        XCTAssertNil(SettingStore.loadEarBalance(from: defaults))
+    }
+
+    /// 合わせた値が残る(→ 合議 C2)
+    func testEarBalanceSurvives() {
+        XCTAssertTrue(SettingStore.saveEarBalance(EarBalance(rightDb: 7, leftDb: 11),
+                                                  to: defaults))
+        XCTAssertEqual(SettingStore.loadEarBalance(from: defaults),
+                       EarBalance(rightDb: 7, leftDb: 11))
+    }
+
+    /// **範囲外は保存しない**(端に張り付いた値を成功として残さない → 合議 C8)
+    func testOutOfRangeCalibrationIsNotSaved() {
+        XCTAssertFalse(SettingStore.saveEarBalance(EarBalance(rightDb: 99, leftDb: 6),
+                                                   to: defaults))
+        XCTAssertNil(SettingStore.loadEarBalance(from: defaults))
+        XCTAssertFalse(SettingStore.saveEarBalance(EarBalance(rightDb: .nan, leftDb: 6),
+                                                   to: defaults))
+        XCTAssertNil(SettingStore.loadEarBalance(from: defaults))
+    }
+
+    /// 壊れた中身が入っていても、校正済みとして扱わない
+    func testBrokenStoredCalibrationIsIgnored() {
+        defaults.set(Data("これは JSON ではない".utf8), forKey: "ear_balance")
+        XCTAssertNil(SettingStore.loadEarBalance(from: defaults))
+    }
+
+    /// 消したら未校正へ戻る(汎用の聞こえ方へ)
+    func testClearingReturnsToUncalibrated() {
+        SettingStore.saveEarBalance(EarBalance(rightDb: 6, leftDb: 6), to: defaults)
+        SettingStore.clearEarBalance(from: defaults)
+        XCTAssertNil(SettingStore.loadEarBalance(from: defaults))
+    }
 }
