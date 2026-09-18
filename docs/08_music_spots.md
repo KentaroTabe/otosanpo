@@ -551,8 +551,32 @@ GPS の誤差(14 m)があっても、見えている角の方から鳴ってい�
 | PHASE への移行 | 移行だけで前後が解決する保証が無い |
 | `outputType = .headphones` の明示 | いま `.HRTFHQ` を明示しており、これで前後が改善する根拠が無い |
 
-**次の候補**: 個人化 HRTF(Spatial Audio Profile)。現行の `AVAudioEngine` のままでも
-利用者の個人プロファイルを使える見込み。音色補助で足りなければこちらへ進む。
+### 個人化 HRTF を使う(2026-09-18 利用者依頼)
+
+**利用者が設定で作った「個人用の空間オーディオ」の形(耳と頭の形)を、こちらの音にも使う。**
+汎用 HRTF で前後が伝わらないのは、耳介の形が人それぞれだから。個人の形を使えば、
+前後と上下の手がかりが効く見込みがある。
+
+**やったことは権利情報を 1 つ足すだけ**(`Support/OtoSanpo.entitlements`・project.yml で生成):
+
+```
+com.apple.developer.spatial-audio.profile-access
+```
+
+- **コードの呼び出しは要らない。** この権利情報があると `AVAudioEngine` の定位に自動で適用される
+  (Apple の資料「Personalizing spatial audio in your app」。AVAudioEngine / AUSpatialMixer /
+  PHASE の 3 つが対象)
+- **iOS 18 以降**。利用者側で「設定 > (AirPods)> 個人用の空間オーディオ」を作っていて、
+  対応する AirPods を使っている必要がある。作っていなければ従来どおり汎用 HRTF
+- 署名に入ったことは `scripts/check_key.sh` が確かめる。
+  **入っていなくても音は鳴る**(黙って汎用 HRTF に戻る)ので、検査で押さえる
+
+**AirPods のヘッドトラッキングは入れない。** それは別の権利情報
+(`com.apple.developer.coremotion.head-pose` + `isListenerHeadTrackingEnabled`)で、
+**この装置では二重に回る** — 頭の向きはスマホの `CMMotionManager` から取っているため。
+`DistributionHygieneTests` が「入っていないこと」を検査する。
+
+**効果は未確認。** 個人プロファイルの有無で聞こえ方が変わるかは実機でしか分からない。
 
 **評価は 3 つに分ける**(2026-09-18 合議): 「前後を答えられたか」「後ろから聞こえたか」
 「音楽が不自然になったか」。**暗い音を後ろと答えられても、後方定位が成立した扱いにはしない。**

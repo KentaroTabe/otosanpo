@@ -158,6 +158,16 @@ public struct AppParameters: Codable, Equatable {
         public var courseHoldSec: Double
         /// course が使えないとき端末コンパスへ退避するか
         public var allowCompassFallback: Bool
+        /// **位置を「案内向けの最高精度」で取るか**(`kCLLocationAccuracyBestForNavigation`)。
+        ///
+        /// 追加のセンサ(加速度・ジャイロ)を使う最高精度の要求で、**電力を多く使う**。
+        /// Apple は給電しながらの利用を勧めている。2026-09-18 の利用者判断で有効にした
+        /// (「電力消費は問題になっておらず、やる価値はある」)。
+        ///
+        /// **効果は未確認。** `horizontalAccuracy` は OS の見積もりであって実測誤差ではないので、
+        /// 数字が下がったことだけでは精度が上がった根拠にならない(2026-09-18 合議)。
+        /// 散歩の前後で比べる材料として、ログに「どちらで取ったか」を残す
+        public var useBestForNavigation: Bool
     }
 
     /// 散歩の記録(WalkSummary)。**開発中の振り返り用**の画面に効く

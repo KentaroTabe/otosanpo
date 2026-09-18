@@ -424,7 +424,8 @@ final class HeadMountFusionTests: XCTestCase {
                                             maxCourseAccuracyDeg: 70,
                                             maxFixAgeSec: 10,
                                             courseHoldSec: 15,
-                                            allowCompassFallback: false)
+                                            allowCompassFallback: false,
+                                                                         useBestForNavigation: false)
         let stopped = MotionFix(courseDeg: 90, courseAccuracyDeg: 10, speedMps: 0.1,
                                 compassHeadingDeg: 200, ageSec: 1, fixTime: 1000)
         XCTAssertNil(TravelDirection.resolve(stopped, held: nil, params: params),
@@ -442,7 +443,8 @@ final class HeadMountFusionTests: XCTestCase {
                                          maxCourseAccuracyDeg: 70,
                                          maxFixAgeSec: 10,
                                          courseHoldSec: 15,
-                                         allowCompassFallback: false)
+                                         allowCompassFallback: false,
+                                                                      useBestForNavigation: false)
         let noTime = MotionFix(courseDeg: 90, courseAccuracyDeg: 10, speedMps: 1.0,
                                compassHeadingDeg: 200, ageSec: 1, fixTime: nil)
         let obs = TravelDirection.courseObservation(noTime, params: loc)
@@ -464,7 +466,8 @@ final class HeadMountFusionTests: XCTestCase {
                                          maxCourseAccuracyDeg: 70,
                                          maxFixAgeSec: 10,
                                          courseHoldSec: 15,
-                                         allowCompassFallback: false)
+                                         allowCompassFallback: false,
+                                                                      useBestForNavigation: false)
         let stopped = MotionFix(courseDeg: 90, courseAccuracyDeg: 10, speedMps: 0.1,
                                 compassHeadingDeg: 200, ageSec: 1, fixTime: 1234)
         let obs = TravelDirection.courseObservation(stopped, params: loc)
@@ -483,7 +486,8 @@ final class HeadMountFusionTests: XCTestCase {
                                          maxCourseAccuracyDeg: 70,
                                          maxFixAgeSec: 10,
                                          courseHoldSec: 15,
-                                         allowCompassFallback: false)
+                                         allowCompassFallback: false,
+                                                                      useBestForNavigation: false)
         let p = learnable(staleSec: 30)
         var f = HeadMountFusion()
 
@@ -534,7 +538,8 @@ final class HeadMountFusionTests: XCTestCase {
                                          maxCourseAccuracyDeg: 70,
                                          maxFixAgeSec: 10,
                                          courseHoldSec: 15,
-                                         allowCompassFallback: true)
+                                         allowCompassFallback: true,
+                                                                      useBestForNavigation: false)
         let stopped = MotionFix(courseDeg: -1, courseAccuracyDeg: -1, speedMps: 0.0,
                                 compassHeadingDeg: 200, ageSec: 1, fixTime: 1000)
         XCTAssertEqual(TravelDirection.resolve(stopped, held: nil, params: loc)?.source, .compass,

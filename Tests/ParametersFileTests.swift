@@ -105,6 +105,13 @@ final class ParametersFileTests: XCTestCase {
         XCTAssertLessThanOrEqual(e.musicSpotReferenceDistanceM, e.musicSpotPinpointFullM)
     }
 
+    /// 位置の取り方が届いていること(2026-09-18 利用者判断で「案内向けの最高精度」にした)
+    func testLocationAccuracyChoiceArrives() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        XCTAssertTrue(p.location.useBestForNavigation,
+                      "利用者判断で有効にした(電力より精度を採る)。戻す時はここも直す")
+    }
+
     /// 後ろの音を暗くする値が届いていること(→ MusicSpot.Params.rearShelfDb・2026-09-18)
     func testMusicSpotRearShelfValuesArrive() throws {
         let p = try ConfigLoader.load(from: repositoryParametersURL())

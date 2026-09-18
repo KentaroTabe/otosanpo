@@ -279,6 +279,8 @@ final class WalkSessionController: ObservableObject {
         headMountMotion.onSample = { [weak self] s in
             Task { @MainActor in self?.onHeadMountSample(s) }
         }
+        // 位置の取り方(精度)を設定から反映する(→ AppParameters.Location)
+        location.apply(params.location)
         Task { await refreshShopHistoryRecords() }
         if shouldStartLocationServices {
             location.requestPermission()
@@ -418,6 +420,8 @@ final class WalkSessionController: ObservableObject {
         // 後から「なぜ 0 軒だったのか」をログだけで切り分けられるようにする(2026-09-17)
         log("店舗の記録: \(shopSearchWanted ? "する(現在地を送ります)" : "しない")"
             + " APIキー=\(HotPepperShopCandidateProvider.apiKey() == nil ? "未設定" : "設定済み")")
+        // **どの精度で位置を取ったかを残す。** 散歩どうしを比べる時の前提になる(2026-09-18)
+        log("位置の取り方: \(location.accuracyLabel)")
         apply(.start)
         scheduleTimeUp()
         log("散歩を開始(\(Int(durationMin)) 分)")

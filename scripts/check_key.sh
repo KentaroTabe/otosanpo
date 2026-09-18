@@ -56,10 +56,28 @@ else
   report_plist "ビルド済みアプリ($CONF)" "$APP/Info.plist"
 fi
 
+# **個人化 HRTF の権利情報**(2026-09-18)。署名に入っていないと、利用者が設定で作った
+# 個人用の空間オーディオが使われず、**黙って汎用 HRTF に戻る**(音は鳴るので気づけない)
+report_entitlement() {
+  local label="$1" app="$2" ents
+  ents=$(codesign -d --entitlements :- "$app" 2>/dev/null || true)
+  if printf '%s' "$ents" | grep -q 'com.apple.developer.spatial-audio.profile-access'; then
+    echo "${label}: 個人化 HRTF の権利情報 あり"
+  else
+    echo "${label}: 個人化 HRTF の権利情報 **なし**(汎用 HRTF で鳴ります)"
+    STATUS=1
+  fi
+  if printf '%s' "$ents" | grep -q 'head-pose'; then
+    echo "${label}: AirPods のヘッドトラッキングが入っている(頭の向きが二重に回る)"
+    STATUS=1
+  fi
+}
+
 # 実機向けの開発ビルド(scripts/build_device.sh の生成物)
 DEVICE_APP=build/Build/Products/Debug-iphoneos/OtoSanpo.app
 if [ -f "$DEVICE_APP/Info.plist" ]; then
   report_plist "実機の開発ビルド" "$DEVICE_APP/Info.plist"
+  report_entitlement "実機の開発ビルド" "$DEVICE_APP"
   if [ -f "$DEVICE_APP/parameters.json" ]; then
     if grep -qE '"enabled"[[:space:]]*:[[:space:]]*true' "$DEVICE_APP/parameters.json"; then
       echo "実機の開発ビルド: 頭部固定 **有効**(実験ビルド)"
@@ -73,6 +91,8 @@ fi
 ARCHIVE_PLIST=build/OtoSanpo.xcarchive/Products/Applications/OtoSanpo.app/Info.plist
 if [ -f "$ARCHIVE_PLIST" ]; then
   report_plist "アーカイブ(配布物)" "$ARCHIVE_PLIST"
+  report_entitlement "アーカイブ(配布物)" \
+    "build/OtoSanpo.xcarchive/Products/Applications/OtoSanpo.app"
 else
   echo "アーカイブ: まだありません(scripts/archive.sh で作ります)"
 fi

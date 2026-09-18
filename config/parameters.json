@@ -92,7 +92,8 @@
     "max_course_accuracy_deg": 70,
     "max_fix_age_sec": 10,
     "course_hold_sec": 15,
-    "allow_compass_fallback": false
+    "allow_compass_fallback": false,
+    "use_best_for_navigation": true
   },
   "heading": {
     "use_head_orientation": false,
