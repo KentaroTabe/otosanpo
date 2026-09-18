@@ -303,6 +303,31 @@ final class HeadMountFusionTests: XCTestCase {
         XCTAssertEqual(f.quarantineState, .distrusted)
         XCTAssertEqual(f.use(at: t, p: p), .quarantined(.distrusted))
         XCTAssertNil(f.facingDeg(at: t, p: p), "退避中の方位が定位に流れてはいけない")
+
+        // **音楽スポットだけは、退避中でも方位を使う**(2026-09-18 利用者判断)。
+        // 連続音では基準が切り替わること自体が壊れた体験になる
+        // (実測: 退避のたびに音が別基準へ飛び、53 秒間「離散的」になった)
+        XCTAssertNotNil(f.facingDegIgnoringQuarantine(at: t, p: p),
+                        "検疫を無視する経路では、退避中でも方位が出ること")
+        XCTAssertEqual(f.facingDegIgnoringQuarantine(at: t, p: p), f.correctedHeadingDeg)
+    }
+
+    /// **鮮度と学習は捨てない。** 検疫だけを無視する(2026-09-18)
+    func testIgnoringQuarantineStillRespectsStalenessAndLearning() {
+        let p = learnable(staleSec: 1)
+        var f = HeadMountFusion()
+        // まだ 1 標本も無い
+        XCTAssertNil(f.facingDegIgnoringQuarantine(at: 100, p: p))
+        // 学習が成立する前も使わない(取り付けのずれが分からなければ方位が決まらない)
+        _ = f.ingest(headingDeg: 184, rawCourseDeg: 90, fixTime: 100.0, at: 100.0, p: p)
+        XCTAssertEqual(f.use(at: 100.0, p: p), .offsetNotLearned)
+        XCTAssertNil(f.facingDegIgnoringQuarantine(at: 100.0, p: p))
+        // 学習が立った後、受信が止まれば使わない
+        let t = feed(&f, fixes: 20, from: 101, p: p,
+                     heading: { _ in 184 }, course: { _ in 90 })
+        XCTAssertNotNil(f.facingDegIgnoringQuarantine(at: t, p: p))
+        XCTAssertNil(f.facingDegIgnoringQuarantine(at: t + 5, p: p),
+                     "古い方位に音が凍りついてはいけない")
     }
 
     // MARK: - A3 立ち止まっても学習と検疫が壊れない

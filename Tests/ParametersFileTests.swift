@@ -125,6 +125,25 @@ final class ParametersFileTests: XCTestCase {
                              "耳介の手がかりが載る帯域より上から落とす")
     }
 
+    /// 向きによる音量の割り振りが届いていること(2026-09-18 利用者判断)。
+    /// **深すぎると距離が分からなくなる** — 音量は距離も表しているため
+    func testMusicSpotDirectivityArrives() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        let e = p.experiment
+        XCTAssertGreaterThan(e.musicSpotDirectivityDepthDb, 0, "0 だと前後で音量が変わらない")
+        let range = 20 * log10(e.musicSpotMaxGain / e.musicSpotMinGain)
+        XCTAssertLessThan(e.musicSpotDirectivityDepthDb, range / 2,
+                          "距離の幅(\(String(format: "%.0f", range)) dB)の半分を超えると、"
+                          + "向きが距離を食いつぶす")
+    }
+
+    /// 音楽スポットでは検疫の判断を無視する(2026-09-18 利用者判断)。
+    /// **基準が切り替わること自体が、連続音では壊れた体験になる**
+    func testMusicIgnoresQuarantineIsOn() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        XCTAssertTrue(p.headMount.musicIgnoresQuarantine)
+    }
+
     /// **設定から Core への受け渡し**で、音楽スポットの値が取り違えられていないこと
     /// (2026-09-15 の検証で挙がった系列)。
     ///
@@ -151,6 +170,7 @@ final class ParametersFileTests: XCTestCase {
         e.musicSpotPinpointFullM = 4.3
         e.musicSpotPinpointBeamDeg = 53.9
         e.musicSpotPinpointDepthDb = 11.3
+        e.musicSpotDirectivityDepthDb = 8.3
         e.musicSpotRearShelfStartDeg = 71.7
         e.musicSpotRearShelfDepthDb = 4.9
         let sp = e.musicSpot(durationMin: 20)
@@ -169,6 +189,7 @@ final class ParametersFileTests: XCTestCase {
         XCTAssertEqual(sp.pinpointFullM, 4.3)
         XCTAssertEqual(sp.pinpointBeamDeg, 53.9)
         XCTAssertEqual(sp.pinpointDepthDb, 11.3)
+        XCTAssertEqual(sp.directivityDepthDb, 8.3)
         XCTAssertEqual(sp.rearShelfStartDeg, 71.7)
         XCTAssertEqual(sp.rearShelfDepthDb, 4.9)
     }

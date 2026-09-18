@@ -16,6 +16,7 @@ final class MusicSpotTests: XCTestCase {
                         blend: Double = 0,
                         pinpointStart: Double = 15, pinpointFull: Double = 5,
                         beam: Double = 60, depth: Double = 12,
+                        directivity: Double = 0,
                         rearStart: Double = 90, rearDepth: Double = 0) -> MusicSpot.Params {
         MusicSpot.Params(
             minDistanceM: min, maxDistanceM: max, distanceStepCount: steps,
@@ -25,6 +26,7 @@ final class MusicSpotTests: XCTestCase {
             maxGain: 0.9, minGain: 0.08, routeBlend: blend,
             pinpointStartM: pinpointStart, pinpointFullM: pinpointFull,
             pinpointBeamDeg: beam, pinpointDepthDb: depth,
+            directivityDepthDb: directivity,
             rearShelfStartDeg: rearStart, rearShelfDepthDb: rearDepth)
     }
 
@@ -467,6 +469,54 @@ final class MusicSpotTests: XCTestCase {
             XCTAssertLessThan(abs(db - previous), 0.21, "\(deg)° で強調が跳んだ")
             previous = db
         }
+    }
+
+    // MARK: - 向きで音量を割り振る(2026-09-18 利用者判断)
+    //
+    // 「左右のイヤホンの合計音量がほぼ一定なので、左右に偏った時しか分からない」。
+    // 合計を一定に保たず、正面を大きく・後ろを小さくする(頭の影と注意の向きに倣う)。
+
+    /// 正面 0・真横で半分・真後ろで最大。**距離によらず掛かる**
+    func testDirectivityIsDeepestBehind() {
+        let p = params(directivity: 9)
+        XCTAssertEqual(p.directivityDb(relativeBearingDeg: 0), 0, accuracy: 1e-12)
+        XCTAssertEqual(p.directivityDb(relativeBearingDeg: 90), -4.5, accuracy: 1e-9)
+        XCTAssertEqual(p.directivityDb(relativeBearingDeg: 180), -9, accuracy: 1e-9)
+        XCTAssertEqual(p.directivityDb(relativeBearingDeg: -90), -4.5, accuracy: 1e-9,
+                       "左右で同じ")
+        XCTAssertEqual(p.directivityDb(relativeBearingDeg: 0), 0, accuracy: 1e-12)
+        XCTAssertEqual(params(directivity: 0).directivityDb(relativeBearingDeg: 180), 0,
+                       "0 なら何もしない")
+    }
+
+    /// **首を回すと滑らかに変わる。** 段があると「壁」に聞こえる
+    func testDirectivityIsSmoothAllTheWayAround() {
+        let p = params(directivity: 9)
+        var previous = p.directivityDb(relativeBearingDeg: -180)
+        for deg in stride(from: -179.0, through: 180, by: 1) {
+            let db = p.directivityDb(relativeBearingDeg: deg)
+            XCTAssertLessThan(abs(db - previous), 0.2, "\(deg)° で跳んだ")
+            previous = db
+        }
+    }
+
+    /// **正面と背後で、実際に鳴る音量が違うこと。**
+    /// これが前回の散歩で足りなかったもの(前後が分からず、左右に振らないと分からなかった)
+    func testPlacementIsQuieterBehindThanInFront() {
+        let p = params(directivity: 9)
+        let spot = MusicSpot(center: Geo.destination(from: origin, bearingDeg: 0, distanceM: 80))
+        let front = spot.placement(from: origin, referenceBearingDeg: 0,
+                                   gainFromDistanceM: 90, p: p)
+        let side = spot.placement(from: origin, referenceBearingDeg: 90,
+                                  gainFromDistanceM: 90, p: p)
+        let behind = spot.placement(from: origin, referenceBearingDeg: 180,
+                                    gainFromDistanceM: 90, p: p)
+        XCTAssertEqual(front.distanceGain, behind.distanceGain, accuracy: 1e-12,
+                       "距離ぶんの音量は同じ(変えたのは割り振りだけ)")
+        XCTAssertGreaterThan(front.gain, side.gain)
+        XCTAssertGreaterThan(side.gain, behind.gain)
+        XCTAssertEqual(20 * log10(front.gain / behind.gain), 9, accuracy: 0.01,
+                       "正面と真後ろで 9 dB 違う")
     }
 
     // MARK: - 後ろの音を暗くする(2026-09-18 利用者依頼「前後が弱い」)

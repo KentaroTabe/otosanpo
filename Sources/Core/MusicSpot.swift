@@ -73,6 +73,20 @@ public struct MusicSpot: Equatable {
         public var pinpointBeamDeg: Double
         /// 効果が最大の時、正面から `pinpointBeamDeg` 以上外れたら下げる音量 [dB]
         public var pinpointDepthDb: Double
+        /// **向きによる音量の割り振り** [dB](正の値)。正面で 0、真後ろで −この値。
+        ///
+        /// ## なぜ要るか(2026-09-18 利用者判断)
+        ///
+        /// HRTF は左右の差で向きを伝えるが、**左右を足した音量はほぼ一定**になる。
+        /// そのため「左右に偏った時だけはっきり分かる」状態になり、
+        /// 正面と背後の区別がつかない(実測: 前後を答えられず、首を左右に振らないと分からない)。
+        ///
+        /// 現実の聞こえ方では、頭が影になって**後ろの音は小さく**なり、
+        /// 注意も正面へ向く。合計を一定に保たず、**向きで音量を割り振る**。
+        ///
+        /// 代償: 音量は距離も表しているので、**向きと距離が混ざる**。
+        /// 深くするほど前後は分かるが、近い / 遠いが分かりにくくなる
+        public var directivityDepthDb: Double
         /// **後ろの音を暗くし始める角度** [deg](正面から測る)。ここまでは何も変えない
         public var rearShelfStartDeg: Double
         /// 真後ろで高域を落とす量 [dB](正の値で置く)。0 なら何もしない
@@ -160,6 +174,16 @@ public struct MusicSpot: Equatable {
         ///
         /// 正面〜`rearShelfStartDeg` は 0。そこから真後ろへ向けて滑らかに増やす
         /// (両端で傾きが 0 になる形。向きの境目で音色が急に変わらないように)
+        /// **向きで割り振った音量** [dB](0 以下)。正面 0・真横 −半分・真後ろ −`directivityDepthDb`。
+        ///
+        /// 形は余弦(頭の影の効き方に近い)。境目が無いので、首を回すと**滑らかに**変わる。
+        /// スポットの近くで掛ける「正面の強調」(→ `facingDb`)とは別物で、こちらは**距離によらない**
+        public func directivityDb(relativeBearingDeg rel: Double) -> Double {
+            guard directivityDepthDb > 0 else { return 0 }
+            let t = (1 - cos(rel * .pi / 180)) / 2   // 正面 0 → 真後ろ 1
+            return -directivityDepthDb * Swift.min(1, Swift.max(0, t))
+        }
+
         public func rearShelfDb(relativeBearingDeg rel: Double) -> Double {
             guard rearShelfDepthDb > 0, rearShelfStartDeg < 180 else { return 0 }
             let off = abs(Geo.angularDiffDeg(rel, 0))
@@ -175,6 +199,7 @@ public struct MusicSpot: Equatable {
                     maxGain: Double, minGain: Double, routeBlend: Double,
                     pinpointStartM: Double, pinpointFullM: Double,
                     pinpointBeamDeg: Double, pinpointDepthDb: Double,
+                    directivityDepthDb: Double = 0,
                     rearShelfStartDeg: Double = 90, rearShelfDepthDb: Double = 0) {
             self.minDistanceM = minDistanceM
             self.maxDistanceM = maxDistanceM
@@ -191,6 +216,7 @@ public struct MusicSpot: Equatable {
             self.pinpointFullM = pinpointFullM
             self.pinpointBeamDeg = pinpointBeamDeg
             self.pinpointDepthDb = pinpointDepthDb
+            self.directivityDepthDb = directivityDepthDb
             self.rearShelfStartDeg = rearShelfStartDeg
             self.rearShelfDepthDb = rearShelfDepthDb
         }
@@ -206,6 +232,8 @@ public struct MusicSpot: Equatable {
         public var distanceGain: Double
         /// 正面の強調で下げた量 [dB](0 以下。頭の向きが基準でない時は 0)
         public var facingDb: Double
+        /// 向きで割り振った音量 [dB](0 以下。→ `Params.directivityDb`)
+        public var directivityDb: Double
         /// 後ろの時に高域を落とす量 [dB](0 以下。→ `Params.rearShelfDb`)
         public var rearShelfDb: Double
         /// スポットの近さ [0..1](→ `Params.pinpointWeight`)
@@ -215,12 +243,14 @@ public struct MusicSpot: Equatable {
         public var worldBearingDeg: Double
 
         public init(relDeg: Double, gain: Double, distanceGain: Double, facingDb: Double,
+                    directivityDb: Double = 0,
                     rearShelfDb: Double = 0,
                     pinpointWeight: Double, distanceM: Double, worldBearingDeg: Double) {
             self.relDeg = relDeg
             self.gain = gain
             self.distanceGain = distanceGain
             self.facingDb = facingDb
+            self.directivityDb = directivityDb
             self.rearShelfDb = rearShelfDb
             self.pinpointWeight = pinpointWeight
             self.distanceM = distanceM
@@ -312,10 +342,14 @@ public struct MusicSpot: Equatable {
         let rel = Geo.angularDiffDeg(world, referenceBearingDeg)
         let distanceGain = p.gain(atDistanceM: distance, fromDistanceM: gainFromDistanceM)
         let facing = headIsReference ? p.facingDb(relativeBearingDeg: rel, weight: weight) : 0
+        // **向きで音量を割り振る**(2026-09-18 利用者判断)。距離によらず掛かる。
+        // 基準が取れていない時は相対方位が 0 になるので、ここも自然に 0 になる
+        let directivity = p.directivityDb(relativeBearingDeg: rel)
         return Placement(relDeg: rel,
-                         gain: distanceGain * pow(10, facing / 20),
+                         gain: distanceGain * pow(10, (facing + directivity) / 20),
                          distanceGain: distanceGain,
                          facingDb: facing,
+                         directivityDb: directivity,
                          // 基準が取れていない時は相対方位が 0 になるので、ここも自然に 0 になる
                          rearShelfDb: p.rearShelfDb(relativeBearingDeg: rel),
                          pinpointWeight: weight,

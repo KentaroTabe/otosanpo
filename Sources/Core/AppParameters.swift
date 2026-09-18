@@ -314,6 +314,14 @@ public struct AppParameters: Codable, Equatable {
         /// **画面を消して頭に載せる構成の要**: CoreMotion の配信が止まっても、
         /// 最後の頭の向きに音が凍りついたまま残らないようにする(2026-09-08)
         public var staleSec: Double
+        /// **音楽スポットの定位では、検疫の判断を無視するか**(2026-09-18 利用者判断)。
+        ///
+        /// 連続音では、基準が切り替わること自体が壊れた体験になる。
+        /// 実測(2026-09-18)では検疫の退避で 53 秒間、音が進行方位を基準に置かれ、
+        /// 「首を振っても音が動かない・階段状に飛ぶ」状態になった。
+        /// 鮮度と取り付けのずれの学習は守り、検疫の判断だけ捨てる
+        /// (→ HeadMountFusion.facingDegIgnoringQuarantine)
+        public var musicIgnoresQuarantine: Bool
 
         /// HeadingQuarantine に渡す設定値
         public var quarantine: HeadingQuarantine.Params {
@@ -415,6 +423,9 @@ public struct AppParameters: Codable, Equatable {
         public var musicSpotPinpointBeamDeg: Double
         /// 効果が最大の時、正面から外れたら下げる音量 [dB]。**首を振って探せる**ようにする
         public var musicSpotPinpointDepthDb: Double
+        /// **向きによる音量の割り振り** [dB]。正面 0・真後ろ −この値(→ MusicSpot.directivityDb)。
+        /// 左右の合計をほぼ一定に保つ HRTF だけでは前後が分からない、という実測への手当て(2026-09-18)
+        public var musicSpotDirectivityDepthDb: Double
         /// 後ろの音を暗くし始める角度 [deg](正面から測る・2026-09-18)
         public var musicSpotRearShelfStartDeg: Double
         /// 真後ろで高域を落とす量 [dB](正の値)。**前後を音色で補助する**(→ MusicSpot.rearShelfDb)
@@ -439,6 +450,7 @@ public struct AppParameters: Codable, Equatable {
                 pinpointFullM: musicSpotPinpointFullM,
                 pinpointBeamDeg: musicSpotPinpointBeamDeg,
                 pinpointDepthDb: musicSpotPinpointDepthDb,
+                directivityDepthDb: musicSpotDirectivityDepthDb,
                 rearShelfStartDeg: musicSpotRearShelfStartDeg,
                 rearShelfDepthDb: musicSpotRearShelfDepthDb)
         }

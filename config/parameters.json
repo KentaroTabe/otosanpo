@@ -123,7 +123,8 @@
     "quarantine_regain_ratio": 0.7,
     "quarantine_regain_sec": 8,
     "log_interval_sec": 1,
-    "stale_sec": 1.0
+    "stale_sec": 1.0,
+    "music_ignores_quarantine": true
   },
   "experiment": {
     "validity_pulse_sec": 30,
@@ -164,6 +165,7 @@
     "music_spot_pinpoint_full_m": 5,
     "music_spot_pinpoint_beam_deg": 60,
     "music_spot_pinpoint_depth_db": 12,
+    "music_spot_directivity_depth_db": 9,
     "music_spot_rear_shelf_start_deg": 90,
     "music_spot_rear_shelf_depth_db": 6,
     "music_spot_rear_shelf_hz": 4000

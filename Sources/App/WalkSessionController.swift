@@ -1024,6 +1024,38 @@ final class WalkSessionController: ObservableObject {
     /// 定位の基準が**頭部固定の方位**であることを表す名前。ログに出すうえ、
     /// 音楽の正面の強調を掛けてよいかの判定にも使うので、**文字列を 2 か所に書かない**
     private static let headReferenceLabel = "頭部"
+    /// 検疫が退避を出している間も頭の向きを使った、という印(音楽スポットだけ・2026-09-18)
+    private static let headReferenceLooseLabel = "頭部(検疫外)"
+
+    /// 基準が頭の向きか(印が 2 種類あるのでここで判断する)
+    private static func isHeadReference(_ source: String?) -> Bool {
+        source == headReferenceLabel || source == headReferenceLooseLabel
+    }
+
+    /// **音楽スポット専用の定位の基準。**
+    ///
+    /// 連続音では、**基準が切り替わること自体が壊れた体験になる**。
+    /// 2026-09-18 の散歩では、検疫の退避で 53 秒間、音が進行方位を基準に置かれ、
+    /// 首を振っても音が動かず、course の更新に合わせて階段状に飛んだ(利用者の言葉で「離散的」)。
+    /// 途中で基準が「なし」になり、音が中央へ飛んだ場面もある。
+    ///
+    /// そこで**検疫の判断だけ捨てる**(鮮度と取り付けのずれの学習は守る)。
+    /// 磁気が乱れて向きがずれる危険は残るが、基準が飛ぶ方が体験を壊すという判断(利用者)
+    private func musicPlacementReference(_ travel: TravelDirectionFix?,
+                                         now: Date = Date()) -> (deg: Double, source: String)? {
+        guard headMountActive, params.headMount.musicIgnoresQuarantine else {
+            return placementReference(travel, now: now)
+        }
+        if let facing = facingBearing(now: now) {
+            return (facing, Self.headReferenceLabel)
+        }
+        // 検疫が退避を出していても、**新しい標本があれば**頭の向きを使う
+        if let loose = headMountFusion.facingDegIgnoringQuarantine(
+            at: now.timeIntervalSinceReferenceDate, p: params.headMount.fusion) {
+            return (loose, Self.headReferenceLooseLabel)
+        }
+        return placementReference(travel, now: now)
+    }
 
     private func placementReference(_ travel: TravelDirectionFix?,
                                     now: Date = Date()) -> (deg: Double, source: String)? {
@@ -1463,12 +1495,13 @@ final class WalkSessionController: ObservableObject {
         // **音量の幅の起点は、鳴り始めるこの地点。** スポットもここから置いたので、
         // 起点は置いた距離そのもの。着くまでの全体に音量の幅を割り振る(2026-09-11)
         let gainFrom = Geo.distanceM(p, spot.center)
-        let reference = placementReference(currentTravel(location.motionFix()))
+        // **音楽は基準を切り替えない**(→ musicPlacementReference・2026-09-18)
+        let reference = musicPlacementReference(currentTravel(location.motionFix()))
         // 道をたどる向きはまだ無い(経路の場はこの後で背景に解く)。できるまでは直線だけ
         let placed = spot.placement(from: p,
                                     referenceBearingDeg: reference?.deg
                                         ?? Geo.bearingDeg(from: p, to: spot.center),
-                                    headIsReference: reference?.source == Self.headReferenceLabel,
+                                    headIsReference: Self.isHeadReference(reference?.source),
                                     gainFromDistanceM: gainFrom,
                                     p: sp)
         do {
@@ -1523,13 +1556,14 @@ final class WalkSessionController: ObservableObject {
         // 早期に return すると近づいても音が大きくならない(2026-09-09 の検証で指摘)。
         // 向きだけ中央へ退避させる
         let travel = currentTravel(location.motionFix())
-        let reference = placementReference(travel)
+        // **音楽は基準を切り替えない**(→ musicPlacementReference・2026-09-18)
+        let reference = musicPlacementReference(travel)
         // **首を振って探せるのは、基準が頭の向きの時だけ。** その時だけ正面の強調を掛ける
         // (進行方位を基準にしている間は、首を回しても基準が動かない)
         let placed = spot.placement(from: p,
                                     referenceBearingDeg: reference?.deg
                                         ?? Geo.bearingDeg(from: p, to: spot.center),
-                                    headIsReference: reference?.source == Self.headReferenceLabel,
+                                    headIsReference: Self.isHeadReference(reference?.source),
                                     routeBearingDeg: musicRouteBearing(from: p),
                                     gainFromDistanceM: musicGainFromM
                                         ?? Geo.distanceM(p, spot.center),
@@ -1548,12 +1582,12 @@ final class WalkSessionController: ObservableObject {
         // `音量=` は**距離だけ**から決めた値のまま残す(過去のログと比べられるように)。
         // 実際に鳴らしたのは 音量 × 10^(正面/20) × 立ち上がり
         logToFile(String(format: "音楽 距離=%.0fm 向き=%@ 音量=%.2f 基準=%@ 音源方位=%.0f°%@"
-                         + " 近さ=%.2f 正面=%.1fdB 後方=%.1fdB",
+                         + " 近さ=%.2f 正面=%.1fdB 指向性=%.1fdB 後方=%.1fdB",
                          placed.distanceM,
                          reference == nil ? "中央" : String(format: "%+.0f°", placed.relDeg),
                          placed.distanceGain, reference?.source ?? "なし", placed.worldBearingDeg,
                          musicSpotField == nil ? "(直線)" : "(直線と道の間)",
-                         placed.pinpointWeight, placed.facingDb,
+                         placed.pinpointWeight, placed.facingDb, placed.directivityDb,
                          appliedRearShelfDb(placed)))
     }
 

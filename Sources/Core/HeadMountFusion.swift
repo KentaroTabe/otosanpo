@@ -169,4 +169,33 @@ public struct HeadMountFusion: Equatable {
     public func facingDeg(at now: TimeInterval, p: Params) -> Double? {
         use(at: now, p: p).isUsable ? correctedHeadingDeg : nil
     }
+
+    /// **検疫の判断を無視して**定位に使う方位 [deg](音楽スポット専用・2026-09-18 利用者判断)。
+    ///
+    /// ## なぜ要るか
+    ///
+    /// 連続音では、**基準が切り替わること自体が壊れた体験になる**。
+    /// 2026-09-18 の散歩で、01:13:01 に検疫が退避を出して基準が「頭部 → 進行」へ変わり
+    /// (相対方位が +71° 跳んだ)、そこから **53 秒間**、音は進行方位を基準に置かれた。
+    /// その間は**首を振っても音が動かず**、course が更新される時だけ階段状に動く。
+    /// 途中では基準が「なし」になり、音が中央へ飛んだ。
+    /// 利用者の言葉では「音楽の向きの変化が離散的になった」。
+    ///
+    /// ## 何を守り、何を捨てるか
+    ///
+    /// - **守る**: 鮮度(更新が止まったら使わない)と、取り付けのずれの学習
+    ///   (ずれが分からなければ方位そのものが不明)
+    /// - **捨てる**: 検疫の判断。磁気の乱れで向きがずれる危険は残るが、
+    ///   **基準が飛ぶことの方が体験を壊す**という判断(利用者)
+    ///
+    /// 検疫は「首を回すほど学習が汚れる」性質を持つ(docs/13)。
+    /// **音の方へ首を振って探す**というこの体験では、その前提自体が噛み合わない。
+    public func facingDegIgnoringQuarantine(at now: TimeInterval, p: Params) -> Double? {
+        switch use(at: now, p: p) {
+        case .use, .quarantined:
+            return correctedHeadingDeg
+        case .noSample, .stale, .offsetNotLearned:
+            return nil
+        }
+    }
 }
