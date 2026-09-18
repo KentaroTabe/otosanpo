@@ -184,6 +184,14 @@ final class WalkSessionController: ObservableObject {
     /// 音量の幅の**起点**: スポットまでの距離 [m]。鳴り始めた地点で決める
     /// (スポットもその時にその地点から置く)。ここで最小、スポットの手前で最大(→ MusicSpot.gain)
     private var musicGainFromM: Double?
+    /// **スポットの向きの遊び**(→ BearingHold・2026-09-18)。
+    /// スポットの中心は動かないのに「小刻みに移動して聞こえる」原因は位置の推定の揺れ。
+    /// 位置から決まる向きにだけ遊びを持たせる(頭の向きには掛けない)
+    private var musicBearingHold = BearingHold()
+    /// 遊びへ取り込んだ最後の fix の時刻。**同じ位置を 50 Hz で取り込まない**ため
+    private var lastMusicFixTime: TimeInterval?
+    /// 鳴らす向きを進めた時刻。追従は**経過時間**で決める(更新頻度に依らせない)
+    private var lastMusicUpdateAt: Date?
     /// 音楽の行を残した時刻。音は頭方位の受信ごと(`head_mount.update_hz`)に付け直すが、
     /// ログはこの間隔に間引く
     private var lastMusicLogAt: Date?
@@ -1531,6 +1539,10 @@ final class WalkSessionController: ObservableObject {
         musicSpot = spot
         musicSpotReached = false
         musicGainFromM = gainFrom
+        // 置き直したら向きの遊びも捨てる(次の標本がそのまま基準になる)
+        musicBearingHold.reset()
+        lastMusicFixTime = nil
+        lastMusicUpdateAt = nil
         pendingMusicURL = nil
         musicWaitStartedAt = nil
         musicStartedAt = Date()
@@ -1568,18 +1580,36 @@ final class WalkSessionController: ObservableObject {
         // **基準が取れなくても音量は更新する** — 距離は方位の有無と関係なく変わるので、
         // 早期に return すると近づいても音が大きくならない(2026-09-09 の検証で指摘)。
         // 向きだけ中央へ退避させる
-        let travel = currentTravel(location.motionFix())
+        let fix = location.motionFix()
+        let travel = currentTravel(fix)
         // **音楽は基準を切り替えない**(→ musicPlacementReference・2026-09-18)
         let reference = musicPlacementReference(travel)
+        // **位置から決まる向きの揺れだけを落とす**(→ BearingHold・2026-09-18)。
+        // 頭の向き(基準)には掛けない — 首を振った時の追従が鈍ると音を探せなくなる。
+        // 遊びの幅は「位置の不確かさが張る角度」で決める(近いほど広い)
+        let hp = params.experiment.musicSpotBearingHold
+        let distanceToSpot = Geo.distanceM(p, spot.center)
+        let uncertainty = BearingHold.uncertaintyDeg(
+            accuracyM: fix.horizontalAccuracyM ?? 0, distanceM: distanceToSpot)
+        let rawBearing = Geo.bearingDeg(from: p, to: spot.center)
+        // **新しい fix の時だけ取り込む。** 音は頭方位の受信ごと(50 Hz)に付け直すので、
+        // 同じ位置を何度も入れると遊びがその回数ぶん進んでしまう(→ 合議 J11)
+        let now = Date()
+        if distanceToSpot > 0, fix.fixTime != lastMusicFixTime {
+            lastMusicFixTime = fix.fixTime
+            musicBearingHold.ingest(rawBearing, uncertaintyDeg: uncertainty, p: hp)
+        }
+        let dt = lastMusicUpdateAt.map { now.timeIntervalSince($0) } ?? 0
+        lastMusicUpdateAt = now
+        let held = musicBearingHold.output(after: dt, p: hp) ?? rawBearing
         // **首を振って探せるのは、基準が頭の向きの時だけ。** その時だけ正面の強調を掛ける
         // (進行方位を基準にしている間は、首を回しても基準が動かない)
         let placed = spot.placement(from: p,
-                                    referenceBearingDeg: reference?.deg
-                                        ?? Geo.bearingDeg(from: p, to: spot.center),
+                                    referenceBearingDeg: reference?.deg ?? held,
                                     headIsReference: Self.isHeadReference(reference?.source),
                                     routeBearingDeg: musicRouteBearing(from: p),
-                                    gainFromDistanceM: musicGainFromM
-                                        ?? Geo.distanceM(p, spot.center),
+                                    directBearingDeg: held,
+                                    gainFromDistanceM: musicGainFromM ?? distanceToSpot,
                                     p: sp)
         // **鳴り始めはじんわり。** 距離から決めた音量に、立ち上がりの係数を掛ける。
         // 頭方位の受信ごとに呼ばれるので、別のタイマーを持たずに滑らかに上がる
@@ -1587,19 +1617,24 @@ final class WalkSessionController: ObservableObject {
                                  gain: placed.gain * musicFadeFactor(),
                                  rearShelfDb: appliedRearShelfDb(placed))
         // **音は毎回付け直すが、ログは間引く。** 受信ごとに書くとログが音楽で埋まる
-        let now = Date()
         guard lastMusicLogAt == nil
             || now.timeIntervalSince(lastMusicLogAt!) >= params.experiment.musicLogIntervalSec
         else { return }
         lastMusicLogAt = now
         // `音量=` は**距離だけ**から決めた値のまま残す(過去のログと比べられるように)。
         // 実際に鳴らしたのは 音量 × 10^(正面/20) × 立ち上がり
+        // **生の向きと遊びの幅も残す**(2026-09-18)。揺れがどれだけ落ちたかは、
+        // 鳴らした向き(音源方位)と生の向きの差でしか後から測れない
         logToFile(String(format: "音楽 距離=%.0fm 向き=%@ 音量=%.2f 基準=%@ 音源方位=%.0f°%@"
+                         + " 生方位=%.0f° 遊び=%.0f°"
                          + " 近さ=%.2f 正面=%.1fdB 指向性=%.1fdB 後方=%.1fdB",
                          placed.distanceM,
                          reference == nil ? "中央" : String(format: "%+.0f°", placed.relDeg),
                          placed.distanceGain, reference?.source ?? "なし", placed.worldBearingDeg,
                          musicSpotField == nil ? "(直線)" : "(直線と道の間)",
+                         Geo.bearingDeg(from: p, to: spot.center),
+                         BearingHold.deadbandDeg(uncertaintyDeg: uncertainty,
+                                                 p: params.experiment.musicSpotBearingHold),
                          placed.pinpointWeight, placed.facingDb, placed.directivityDb,
                          appliedRearShelfDb(placed)))
     }
@@ -1630,6 +1665,9 @@ final class WalkSessionController: ObservableObject {
         musicGainFromM = nil
         musicSpotField = nil
         musicSpotTrace = nil
+        musicBearingHold.reset()
+        lastMusicFixTime = nil
+        lastMusicUpdateAt = nil
         if wasPlaying {
             synth?.stopMusic()
             log("音楽スポット: 終了(\(reason))")

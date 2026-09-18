@@ -453,6 +453,26 @@ public struct AppParameters: Codable, Equatable {
         public var musicSpotRearShelfDepthDb: Double
         /// 高域を落とし始める周波数 [Hz]。耳介の手がかりが載る帯域より上に置く
         public var musicSpotRearShelfHz: Double
+        /// **スポットの向きの遊び(不感帯)の下限** [deg]。0 で素通し。
+        ///
+        /// スポットの中心は動かないのに「小刻みに移動して聞こえる」のは、
+        /// 自分の位置の推定が揺れるため(実測 0〜5 m で 19°/s・20 m 以上で 1°/s 以下)。
+        /// → BearingHold。**段差を作らない遊び**なので、本当に動いた時は連続して付いていく
+        public var musicSpotBearingDeadbandMinDeg: Double
+        /// スポットの向きの遊びの上限 [deg]。近距離で不確かさが大きくなっても凍結させない蓋。
+        /// **大きくしすぎると、通り過ぎても向きが前のままになる**(2026-09-18 の合議で 10° へ)
+        public var musicSpotBearingDeadbandMaxDeg: Double
+        /// 遊びを抜けた目標へ追従する時定数 [sec]。
+        /// 遊びだけでは**入力が飛んだ時に出力も飛ぶ**(実測 82°)ので、ここで吸収する。
+        /// 2〜3 秒では通り過ぎる場面に間に合わない
+        public var musicSpotBearingFollowSec: Double
+
+        /// BearingHold に渡す設定値
+        public var musicSpotBearingHold: BearingHold.Params {
+            BearingHold.Params(minDeadbandDeg: musicSpotBearingDeadbandMinDeg,
+                               maxDeadbandDeg: musicSpotBearingDeadbandMaxDeg,
+                               timeConstantSec: musicSpotBearingFollowSec)
+        }
 
         /// MusicSpot に渡す設定値。**散歩時間で距離が決まる**ので時間を渡す
         public func musicSpot(durationMin: Double) -> MusicSpot.Params {

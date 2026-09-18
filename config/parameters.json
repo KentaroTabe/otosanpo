@@ -170,7 +170,10 @@
     "music_spot_directivity_depth_db": 9,
     "music_spot_rear_shelf_start_deg": 90,
     "music_spot_rear_shelf_depth_db": 6,
-    "music_spot_rear_shelf_hz": 4000
+    "music_spot_rear_shelf_hz": 4000,
+    "music_spot_bearing_deadband_min_deg": 2,
+    "music_spot_bearing_deadband_max_deg": 10,
+    "music_spot_bearing_follow_sec": 0.25
   },
   "gesture": {
     "nod_pitch_threshold_deg": 8,

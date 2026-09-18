@@ -324,12 +324,18 @@ public struct MusicSpot: Equatable {
     ///   取れなければ nil(直線の向きだけを使う)
     /// - Parameter gainFromDistanceM: 音量の幅の**起点**(鳴り始めた地点でのスポットまでの
     ///   距離)[m]。ここで最小、スポットの手前で最大になる(→ `Params.gain`)
+    /// - Parameters:
+    ///   - directBearingDeg: **揺れを落とした「自分 → スポット」の向き**を外から渡す口
+    ///     (→ `BearingHold`・2026-09-18)。nil なら位置から素直に計算する。
+    ///     位置の推定は近いほど角度に効くので、ここを生のまま使うと
+    ///     スポットが小刻みに動いて聞こえる(実測 0〜5 m で 19°/s)
     public func placement(from listener: GeoPoint, referenceBearingDeg: Double,
                           headIsReference: Bool = false,
                           routeBearingDeg: Double? = nil,
+                          directBearingDeg: Double? = nil,
                           gainFromDistanceM: Double,
                           p: Params) -> Placement {
-        let direct = Geo.bearingDeg(from: listener, to: center)
+        let direct = directBearingDeg ?? Geo.bearingDeg(from: listener, to: center)
         let distance = Geo.distanceM(listener, center)
         let weight = p.pinpointWeight(atDistanceM: distance)
         // **スポットの近くでは道の向きを混ぜない**(2026-09-15)。
