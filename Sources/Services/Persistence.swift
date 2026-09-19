@@ -35,22 +35,25 @@ enum ConfigLoader {
 /// 名前は問わない(地図の `MapFiles` と同じ考え方)。**並びを名前順に固定する**ので、
 /// 同じ端末なら毎回同じ曲が選ばれる
 enum MusicStore {
-    /// 読める拡張子。m4a を主に想定するが、AVAudioFile が開けるものは通す
-    static let extensions = ["m4a", "mp3", "wav", "aif", "aiff", "caf"]
-
     static func documentsURL() -> URL? {
         try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
                                      appropriateFor: nil, create: false)
     }
 
-    /// Documents にある音源のうち、名前順で最初のもの。無ければ nil
-    static func firstFile() -> URL? {
+    /// Documents にある音源のうち、名前順で最初のもの。無ければ nil。
+    ///
+    /// **読める拡張子は設定から渡す**(2026-09-19)。Swift と Kotlin で別々に持つと
+    /// 必ずずれるので、`config/parameters.json` の `audio.music_source_extensions`
+    /// 1 か所だけに置く(→ docs/08「音源の形式」)。
+    /// 再生そのものは `AVAudioFile` 任せで形式に依存しない
+    static func firstFile(extensions: [String]) -> URL? {
         guard let dir = documentsURL(),
               let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
             return nil
         }
+        let allowed = Set(extensions.map { $0.lowercased() })
         return names
-            .filter { extensions.contains(($0 as NSString).pathExtension.lowercased()) }
+            .filter { allowed.contains(($0 as NSString).pathExtension.lowercased()) }
             .sorted()
             .first
             .map { dir.appendingPathComponent($0) }

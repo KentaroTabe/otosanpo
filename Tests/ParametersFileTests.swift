@@ -150,6 +150,26 @@ final class ParametersFileTests: XCTestCase {
                           "1 秒を超えると、通り過ぎる場面に間に合わない")
     }
 
+    /// **音源の形式は、両 OS が読めるものに保つ**(2026-09-19)。
+    ///
+    /// iOS は `AVAudioFile`(Core Audio)、Android は `MediaCodec` が復号できるものが対象。
+    /// **交差するのは m4a(AAC)・mp3・wav・flac**。
+    /// `aif` / `aiff` / `caf` は Apple だけ、`ogg` / `opus` は Android だけなので、
+    /// 片方しか読めないものを黙って足すと、もう片方で「音源が無い」になる
+    func testMusicSourceExtensionsStayReadableOnBothPlatforms() throws {
+        let list = try ConfigLoader.load(from: repositoryParametersURL())
+            .audio.musicSourceExtensions
+        XCTAssertFalse(list.isEmpty)
+        XCTAssertEqual(list.map { $0.lowercased() }, list, "小文字で持つこと(比較を揃えるため)")
+        let crossPlatform: Set<String> = ["m4a", "mp3", "wav", "flac"]
+        let appleOnly: Set<String> = ["aif", "aiff", "caf"]
+        XCTAssertTrue(crossPlatform.isSubset(of: Set(list).union(["flac"])),
+                      "両 OS で読める基本形式(m4a・mp3・wav)が欠けている")
+        let unknown = Set(list).subtracting(crossPlatform).subtracting(appleOnly)
+        XCTAssertTrue(unknown.isEmpty,
+                      "iOS か Android のどちらかが読めない形式が入っている: \(unknown)")
+    }
+
     /// **真横に聞こえる角度を合わせるつまみ**(2026-09-18 利用者依頼)。
     /// 「もう少し音の範囲を細く」— 振れ幅を狭め、刻みを細かくした
     func testEarCalibrationSliderValuesArrive() throws {

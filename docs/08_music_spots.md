@@ -810,6 +810,48 @@ com.apple.developer.spatial-audio.profile-access
 **真横の角度の校正とは両立する**(2026-09-18 の作り直し後)。校正は角度の写像なので
 音の通り道を変えず、仰角も広がりもそのまま載る。
 
+## 音源の形式(Android へ出すことを考える・2026-09-19)
+
+### いまの実装は m4a 専用ではない
+
+- 再生は `AVAudioFile(forReading:)` 任せで、**形式に依存する分岐は 1 つも無い**。
+  音源の `processingFormat`(モノ / ステレオ・標本化周波数)でグラフを繋ぎ直すだけ
+- 形式の前提があるのは **2 か所だけ**: 読む拡張子の一覧と、docs/08 の配信 URL の例(`.m4a`)
+
+### 両 OS が素で読めるもの
+
+| 形式 | iOS(Core Audio) | Android(MediaCodec) | 判断 |
+|---|---|---|---|
+| AAC `.m4a` | ○ | ○ | **主**。128 kbps で約 1 MB/分 |
+| MP3 | ○ | ○ | ○ |
+| WAV | ○ | ○ | 確実だが大きい |
+| FLAC | ○(iOS 11 以降・**未測定**) | ○ | 可 |
+| AIFF / CAF | ○ | **×** | **Apple だけ** |
+| Ogg Vorbis / Opus | **×** | ○ | **Android だけ**。使わない |
+
+**交差は m4a・mp3・wav・flac。** いまの一覧には `aif` / `aiff` / `caf` が残っているので、
+Android へ出す時に外すか、「iOS だけ」と明記するかの判断が要る(判断待ち)。
+
+### 一覧は設定に 1 か所だけ置く
+
+`config/parameters.json` の `audio.music_source_extensions`。
+**Swift と Kotlin で別々に持たない** — 別々に育つと必ずずれ、片方で「音源が無い」になる。
+`ParametersFileTests` が「両 OS の交差 + Apple 専用」以外の形式が入ったら落とす。
+
+### 形式より重い 3 つ
+
+1. **置き場所。** iOS はファイルアプリに置けるが、**Android のテスターは
+   `Android/data/` に置けなかった**実績がある(docs/01)。地図はそれで配信に切り替えた。
+   音源も同じ壁に当たるので、**配信で取る**(docs/08 の設計)か、
+   **システムのピッカー(SAF)で選ばせる**かを決める必要がある
+2. **定位。** Android に `AVAudioEnvironmentNode` 相当が無い(→ android の EarconPlayer)。
+   いま音楽スポットに載せた**仰角・広がり(残響)・後方の高域シェルフは iOS 専用**になる。
+   Android では pan + 音量 +(必要なら `Equalizer` / `DynamicsProcessing`)まで。
+   docs/03 の「前後は音色で分ける」と同じ形の割り切りが要る
+3. **再生器。** `MediaPlayer`(簡単・`setVolume(l,r)` だけ)/ `ExoPlayer`(Media3・
+   `AudioProcessor` を挟める)/ `MediaCodec` + `AudioTrack`(全部自前)。
+   **連続音に毎フレーム左右比を掛ける**なら ExoPlayer か AudioTrack
+
 ## ブランチ
 
 `feature/music-spots`。**`feature/p1-experience` から分岐**した(経路の場・地帯・記録など、

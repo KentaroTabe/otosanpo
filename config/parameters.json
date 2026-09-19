@@ -224,6 +224,14 @@
     "guidance_left_behind_m": 12,
     "earcon_lead_silence_sec": 0.06,
     "earcon_gain": 0.5,
+    "music_source_extensions": [
+      "m4a",
+      "mp3",
+      "wav",
+      "aif",
+      "aiff",
+      "caf"
+    ],
     "ear_calibration_span_deg": 110,
     "ear_calibration_step_deg": 2.5,
     "tones": {

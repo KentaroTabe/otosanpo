@@ -650,6 +650,14 @@ public struct AppParameters: Codable, Equatable {
         /// 0 で無効
         public var earconLeadSilenceSec: Double
         public var earconGain: Double
+        /// **音楽スポットで読む音源の拡張子**(小文字)。
+        ///
+        /// **Swift と Kotlin で別々に持たない**(2026-09-19)。別々に育つと必ずずれる。
+        /// iOS は `AVAudioFile` が開けるもの、Android は `MediaCodec` が復号できるものが
+        /// 対象で、**両方が読めるのは m4a(AAC)・mp3・wav・flac**。
+        /// `aif` / `aiff` / `caf` は Apple だけなので、Android へ出す時は外す判断が要る
+        /// (→ docs/08「音源の形式」)
+        public var musicSourceExtensions: [String]
         /// **真横に聞こえる角度を合わせる時、つまみが振れる幅** [deg](片側)。
         ///
         /// 180 まで振れると、正面付近を合わせるのにつまみの travel を使い切ってしまう。

@@ -213,7 +213,9 @@ final class WalkSessionController: ObservableObject {
     /// `head_mount.enabled` のまま(画面の選択から実験の値へ到達しない・2026-09-18 合議)
     private(set) var headMountActive = false
     /// 音源が Documents にあるか。無ければ画面に選択肢を出さない
-    var musicFileAvailable: Bool { MusicStore.firstFile() != nil }
+    var musicFileAvailable: Bool {
+        MusicStore.firstFile(extensions: params.audio.musicSourceExtensions) != nil
+    }
 
     /// **音楽スポットの最中は、散策の案内音を鳴らさない**(2026-09-18 利用者依頼)。
     ///
@@ -1465,7 +1467,7 @@ final class WalkSessionController: ObservableObject {
         pendingMusicURL = nil
         musicWaitStartedAt = nil
         guard musicSpotWanted, let start = location.position else { return }
-        guard let url = MusicStore.firstFile() else {
+        guard let url = MusicStore.firstFile(extensions: params.audio.musicSourceExtensions) else {
             log("音楽スポット: 音源がありません(Finder の「iPhone > ファイル」に置いてください)")
             return
         }
