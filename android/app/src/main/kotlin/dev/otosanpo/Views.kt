@@ -2,15 +2,17 @@ package dev.otosanpo
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
-import android.graphics.drawable.LayerDrawable
-import android.graphics.drawable.ShapeDrawable
-import android.graphics.drawable.shapes.RectShape
 import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -59,10 +61,44 @@ fun Context.row() = LinearLayout(this).apply {
     orientation = LinearLayout.HORIZONTAL
 }
 
-/** 縦に伸びる画面を巻物に入れる */
-fun Context.scrolling(content: View) = ScrollView(this).apply {
+/**
+ * 縦に伸びる画面を巻物に入れ、**システムバーの下に潜り込まないよう余白を当てる**。
+ *
+ * ## なぜ余白が要るか(2026-09-19 にエミュレータで実測)
+ *
+ * `targetSdk 35` のアプリは **Android 15 から端から端まで描く**のが既定になった。
+ * 素の Activity では内容が窓の y=0 から並ぶので、**状態バーと上の帯が内容を覆う**。
+ *
+ * 実測では `ScrollView` の bounds が `[0,0][1080,2400]` になり、
+ * 「設定」(y 32–134)と「自宅: 未設定」(134–196)が完全に隠れ、
+ * **テスターが最初に押す「自宅を現在地に設定」が 40px しか見えていなかった。**
+ *
+ * `res/` にテーマを足せば `windowOptOutEdgeToEdgeEnforcement` で降りられるが、
+ * **素の View だけで組む構成を崩さない**ため、差し込まれた余白を自分で当てる。
+ */
+fun Activity.scrolling(content: View) = ScrollView(this).apply {
     addView(content, ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT)
+    // **上の帯のぶんを自分で足さない。** 内容へ配られる余白には既に帯の高さが入っている
+    // (2026-09-19 実測: 275px = 状態バー 132 + 帯 147)。足すと二重になり、
+    // 帯と「設定」の間が 150px ほど空いた
+    setOnApplyWindowInsetsListener { v, insets ->
+        val top: Int
+        val bottom: Int
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val bars = insets.getInsets(WindowInsets.Type.systemBars())
+            top = bars.top
+            bottom = bars.bottom
+        } else {
+            @Suppress("DEPRECATION")
+            top = insets.systemWindowInsetTop
+            @Suppress("DEPRECATION")
+            bottom = insets.systemWindowInsetBottom
+        }
+        v.setPadding(v.paddingLeft, top, v.paddingRight, bottom)
+        insets
+    }
+    requestApplyInsets()
 }
 
 /**
@@ -76,29 +112,27 @@ fun Context.scrolling(content: View) = ScrollView(this).apply {
  */
 fun Activity.menuIcon(): Drawable {
     val d = resources.displayMetrics.density
-    fun px(dp: Double) = (dp * d).toInt()
-    val box = px(24.0)          // 枠の当たり(Android の標準的な操作アイコンの大きさ)
+    fun px(dp: Double) = (dp * d).toFloat()
+    val box = px(24.0).toInt()  // 枠(Android の標準的な操作アイコンの大きさ)
     val thick = px(2.0)         // 線の太さ
     val side = px(3.0)          // 左右の余白
-    val tops = listOf(px(4.0), px(11.0), px(18.0))
 
     val value = TypedValue()
     theme.resolveAttribute(android.R.attr.colorForeground, value, true)
     val fg = if (value.type >= TypedValue.TYPE_FIRST_COLOR_INT &&
                  value.type <= TypedValue.TYPE_LAST_COLOR_INT) value.data else Color.BLACK
 
-    val bars = Array<Drawable>(tops.size) {
-        ShapeDrawable(RectShape()).apply {
-            paint.color = fg
-            // LayerDrawable の大きさは子から決まる。3 本とも枠いっぱいに取り、
-            // inset で線の位置を作る
-            intrinsicWidth = box
-            intrinsicHeight = box
-        }
+    // **Canvas で直に描く。** `LayerDrawable` + `setLayerInset` で組んだ版は
+    // **黒い四角になった**(2026-09-19 にエミュレータで実測)。inset は子の固有サイズに
+    // **加算**されるので、枠が 24dp を超えて広がり、3 本が太って潰れていた。
+    // 絵を焼いてしまえば、枠の大きさも線の位置も見たとおりになる
+    val bitmap = Bitmap.createBitmap(box, box, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fg }
+    for (top in listOf(px(5.0), px(11.0), px(17.0))) {
+        canvas.drawRect(side, top, box - side, top + thick, paint)
     }
-    return LayerDrawable(bars).apply {
-        tops.forEachIndexed { i, top -> setLayerInset(i, side, top, side, box - top - thick) }
-    }
+    return BitmapDrawable(resources, bitmap)
 }
 
 /**

@@ -57,8 +57,19 @@ if ! "$ADB" devices | grep -q "emulator-"; then
   echo "エミュレータを起動します: $AVD_NAME"
   # **画面は出さない。** 撮るのは adb 越しなので窓は要らず、窓を開くと
   # 他の作業の前に割り込む。音は鳴らせないが、鳴らすのは実機の仕事
+  # **GPU はソフトウェア描画(swiftshader)にする。**
+  #
+  # 2026-09-19 に両方試した結果:
+  #
+  # | 設定 | 画面を撮れるか | SystemUI |
+  # |---|---|---|
+  # | `-gpu auto`(Mac では Metal) | **真っ黒**。窓なしでは面を読めない | 軽い |
+  # | `-gpu swiftshader_indirect` | **撮れる** | 重い(ANR が出る) |
+  #
+  # **撮れないと確かめる意味が無い**のでソフトウェア描画を採り、
+  # 代わりにアニメーションを切って SystemUI の負荷を下げる(下記)
   "$EMULATOR" -avd "$AVD_NAME" -no-window -no-audio -no-snapshot \
-      -gpu swiftshader_indirect >> "$LOG" 2>&1 &
+      -gpu swiftshader_indirect -no-boot-anim >> "$LOG" 2>&1 &
 fi
 
 echo "起動を待ちます(初回は数分かかります)"
@@ -79,6 +90,12 @@ if [ ! -f "$APK" ]; then
   echo "scripts/build_android.sh で作ってください" >&2
   exit 1
 fi
+
+# **アニメーションを切る。** ソフトウェア描画では SystemUI が追いつかず、
+# 「System UI isn't responding」が画面を覆って確かめられなくなる(2026-09-19 実測)
+for KEY in window_animation_scale transition_animation_scale animator_duration_scale; do
+  "$ADB" shell settings put global "$KEY" 0 >> "$LOG" 2>&1 || true
+done
 
 echo "APK を入れます"
 "$ADB" install -r "$APK" >> "$LOG" 2>&1
