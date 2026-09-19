@@ -46,7 +46,10 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         # 表示上の版。**外部テストの Beta App Review はこの値が変わるたびに要る**ので、
         # 中身の修正だけなら据え置き、ビルド番号(下)だけを上げる
-        MARKETING_VERSION: "1.0"
+        # 1.1(2026-09-19): 画面の作り直し(左上のメニュー・曲のピッカー)と、
+        # 音楽スポットの追加。**通信の内容が変わっていないかは毎回確かめる**
+        # (App のプライバシー申告は版ごとに見直す → docs/09_distribution_private.md)
+        MARKETING_VERSION: "1.1"
         # scripts/archive.sh が配信のたびに日時で上書きする。ここの値は既定にすぎない
         CURRENT_PROJECT_VERSION: "1"
     # **個人化 HRTF**(2026-09-18 利用者依頼)。利用者が設定 > AirPods で作った
