@@ -829,8 +829,20 @@ com.apple.developer.spatial-audio.profile-access
 | AIFF / CAF | ○ | **×** | **Apple だけ** |
 | Ogg Vorbis / Opus | **×** | ○ | **Android だけ**。使わない |
 
-**交差は m4a・mp3・wav・flac。** いまの一覧には `aif` / `aiff` / `caf` が残っているので、
-Android へ出す時に外すか、「iOS だけ」と明記するかの判断が要る(判断待ち)。
+**交差は m4a・mp3・wav・flac。**
+
+### 一覧の決着(2026-09-19 利用者判断)
+
+**`flac` を足し、`aif` / `aiff` / `caf` は残す。**
+
+- **flac を足す。** 両 OS が読めるのに一覧から漏れていた。
+  Android のピッカーで flac を選ぶと「読み込めません」になっていた(取りこぼし)
+- **Apple 専用の 3 つは残す。** Android 側は
+  `AppParameters.androidReadableExtensions` が自動で外すので、**何も壊れない**。
+  外すと iOS の選択肢が減るだけで、得るものが無い
+
+**一覧は「その OS が選べるもの」ではなく「どちらかが読めるもの」**と読む。
+絞り込みは各 OS の側でやる。
 
 ### 一覧は設定に 1 か所だけ置く
 
