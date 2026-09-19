@@ -48,15 +48,24 @@ public enum SoundPlacement {
         return (d >= 0 ? 1.0 : -1.0) * (180 - abs(d))
     }
 
-    /// 3D の位置。減衰の基準距離に合わせて半径 `radiusM` の円周上に置く。
+    /// 3D の位置。減衰の基準距離に合わせて半径 `radiusM` の球面上に置く。
     /// 基準距離のまま置けば距離減衰が働かないので、音量は方向によらず一定になる
     /// (距離は間隔で伝える。docs/03「ビーコンの距離・方向キュー」)。
+    ///
+    /// - Parameter elevationDeg: 見上げる角度 [deg]。**負が下**。
+    ///   音楽スポットは地面にあり、耳はその上にあるので、近づくほど下から鳴る
+    ///   (→ MusicSpot.Params.elevationDeg・2026-09-18 利用者依頼)
     public static func position(relativeBearingDeg deg: Double,
+                                elevationDeg: Double = 0,
                                 radiusM: Double = 1.0) -> SoundPosition {
         let rad = deg * .pi / 180
-        // 正面 = −Z、右 = +X
-        return SoundPosition(x: sin(rad) * radiusM,
-                             y: 0,
-                             z: -cos(rad) * radiusM)
+        let el = elevationDeg * .pi / 180
+        // 水平の成分は cos(仰角) で縮む。**球面上に置く**ので、
+        // 仰角を付けても基準距離(= 音量)は変わらない
+        let horizontal = cos(el) * radiusM
+        // 正面 = −Z、右 = +X、上 = +Y
+        return SoundPosition(x: sin(rad) * horizontal,
+                             y: sin(el) * radiusM,
+                             z: -cos(rad) * horizontal)
     }
 }

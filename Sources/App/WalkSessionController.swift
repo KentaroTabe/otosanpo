@@ -22,6 +22,24 @@ final class WalkSessionController: ObservableObject {
             log("通りかかった店の記録: \(shopSearchWanted ? "する(現在地を送ります)" : "しない")")
         }
     }
+    /// **音の向きの基準**(→ Core の OrientationMode・2026-09-18 利用者依頼)。
+    /// 画面から選べるのは**音楽スポットを選んだ時だけ**。実験ビルドは設定によらず頭部固定を使う
+    @Published var orientationMode: OrientationMode {
+        didSet {
+            guard orientationMode != oldValue else { return }
+            SettingStore.saveOrientationMode(orientationMode)
+            log("音の向きの基準: \(orientationMode == .phoneHeadMounted ? "頭の向き" : "進む向き")")
+        }
+    }
+    /// **後ろの音を暗くするか**(前後の手がかりの比較用・2026-09-18)。
+    /// 同じ散歩の中で切り替えて聴き比べられるように画面へ出す
+    @Published var rearDarkening: Bool {
+        didSet {
+            guard rearDarkening != oldValue else { return }
+            SettingStore.saveRearDarkening(rearDarkening)
+            log("後ろの音を暗くする: \(rearDarkening ? "する" : "しない")")
+        }
+    }
     /// 案内音に**倍音を足した音**(実験の音色)を使うか。
     /// 画面の「案内音」から選べる(2026-09-17 利用者依頼)。既定はビルドの設定に従う
     @Published var guidanceToneExperimental: Bool {
@@ -31,6 +49,10 @@ final class WalkSessionController: ObservableObject {
             synth?.setDirectionalTones(experimental: guidanceToneExperimental)
         }
     }
+    /// **真横に聞こえる角度の初期設定**(→ Core の EarAngleMap・2026-09-18 利用者依頼)。
+    /// nil なら未校正で、置きたい角度をそのまま置く。
+    /// 音の通り道は変わらないので、**散歩の途中で変えてもすぐ効く**
+    @Published private(set) var earAngleMap: EarAngleMap?
     @Published private(set) var home: GeoPoint?
     @Published private(set) var statusLine = "位置情報待ち"
     /// ヘッドフォンモーションの受信状況。検出できない原因の切り分けに使う
@@ -166,11 +188,65 @@ final class WalkSessionController: ObservableObject {
     /// 音量の幅の**起点**: スポットまでの距離 [m]。鳴り始めた地点で決める
     /// (スポットもその時にその地点から置く)。ここで最小、スポットの手前で最大(→ MusicSpot.gain)
     private var musicGainFromM: Double?
+    /// **スポットの向きの遊び**(→ BearingHold・2026-09-18)。
+    /// スポットの中心は動かないのに「小刻みに移動して聞こえる」原因は位置の推定の揺れ。
+    /// 位置から決まる向きにだけ遊びを持たせる(頭の向きには掛けない)
+    private var musicBearingHold = BearingHold()
+    /// **スポットを移す提案の日程**(→ SpotMoveSchedule・2026-09-18 利用者依頼)
+    private var spotMove = SpotMoveSchedule()
+    /// 移す提案への応答だけを読む検出器。**窓が開く時に空にする**(影の履歴を流用しない)
+    private var spotMoveDetector: HeadGestureDetector
+    /// この散歩で**実際に置いた**所。次に移す時、ここから離して選ぶ
+    private var placedSpots: [GeoPoint] = []
+    /// 移すと決めてから音を絞り切るまでの間。絞り切ったら中心を入れ替える
+    private var spotMoveFadeOutStartedAt: Date?
+    /// 遊びへ取り込んだ最後の fix の時刻。**同じ位置を 50 Hz で取り込まない**ため
+    private var lastMusicFixTime: TimeInterval?
+    /// 鳴らす向きを進めた時刻。追従は**経過時間**で決める(更新頻度に依らせない)
+    private var lastMusicUpdateAt: Date?
     /// 音楽の行を残した時刻。音は頭方位の受信ごと(`head_mount.update_hz`)に付け直すが、
     /// ログはこの間隔に間引く
     private var lastMusicLogAt: Date?
+    /// **この散歩で頭部固定の方位を定位の基準に使うか。** 出発時に決め、歩き出してから変えない
+    /// (途中で設定を触っても、鳴り方が散歩の途中で変わらないようにする)。
+    /// **実験の音(有効性パルス・実験音色)はこれに含めない** — それらは
+    /// `head_mount.enabled` のまま(画面の選択から実験の値へ到達しない・2026-09-18 合議)
+    private(set) var headMountActive = false
     /// 音源が Documents にあるか。無ければ画面に選択肢を出さない
-    var musicFileAvailable: Bool { MusicStore.firstFile() != nil }
+    var musicFileAvailable: Bool { musicSourceURL != nil }
+
+    /// 音楽スポットで鳴らす曲。**画面で選んだものを優先**し、無ければ
+    /// ファイルアプリに置かれたものを名前順で拾う(既存のテスターの手順を壊さないため)
+    var musicSourceURL: URL? {
+        let ext = params.audio.musicSourceExtensions
+        return MusicStore.chosenFile(extensions: ext) ?? MusicStore.firstFile(extensions: ext)
+    }
+
+    /// いま使う曲の名前(画面に出す)。無ければ nil
+    var musicSourceName: String? { musicSourceURL?.lastPathComponent }
+
+    /// **画面から選んだ曲を取り込む**(2026-09-19 利用者依頼)。
+    /// ピッカーが返す URL はそのままでは後で読めないので、その場で写しておく
+    func chooseMusicSource(_ url: URL) {
+        guard let saved = MusicStore.importFile(from: url,
+                                                extensions: params.audio.musicSourceExtensions)
+        else {
+            alertMessage = "この曲は読み込めませんでした(対応している形式: "
+                + params.audio.musicSourceExtensions.joined(separator: " / ") + ")"
+            return
+        }
+        log("音楽スポット: 曲を取り込みました(\(saved.lastPathComponent))")
+        objectWillChange.send()
+    }
+
+    /// **音楽スポットの最中は、散策の案内音を鳴らさない**(2026-09-18 利用者依頼)。
+    ///
+    /// 連続音を聴いている所へ方向を持つ点の音が重なると、どちらの向きの話か分からなくなる。
+    /// **帰路の音はそのまま鳴らす** — 帰れなくなる方が困るため(利用者判断)。
+    /// 記録は残すので、「どこで鳴るはずだったか」は後からログで追える
+    private var suppressesGuidanceSounds: Bool {
+        musicSpotWanted && state == .wandering
+    }
     // MARK: - 経路データの取得(→ docs/12)
 
     /// 取得中か。二重に走らせないための旗
@@ -210,12 +286,19 @@ final class WalkSessionController: ObservableObject {
         durationMin = params.session.defaultDurationMin
         // **まだ選んでいなければ、このビルドの既定に従う**(実験ビルド = 倍音を足した音)。
         // 一度選んだら次からはその選択(→ SettingStore)
+        // **配る版では頭の向きを使わない**(2026-09-19 利用者判断)。
+        // 画面から選ぶ道を無くしたので、前に選ばれていた値が残っていても進む向きへ戻す。
+        // 実験は `head_mount.enabled`(ビルドの設定)からだけ入れる(→ docs/13)
+        orientationMode = .travelDirection
+        rearDarkening = SettingStore.loadRearDarkening()
+        earAngleMap = SettingStore.loadEarAngleMap()
         guidanceToneExperimental = SettingStore.loadGuidanceToneExperimental()
             ?? params.headMount.enabled
         grid = GridStore.load(cellSizeM: params.route.cellSizeM,
                               halfLifeM: params.route.visitHalfLifeM)
         detector = HeadGestureDetector(params: params.gesture)
         shadowDetector = HeadGestureDetector(params: params.gesture)
+        spotMoveDetector = HeadGestureDetector(params: params.gesture)
         shopHistory = injectedShopHistory
             ?? ShopHistoryService(provider: HotPepperShopCandidateProvider.configuredOrEmpty(),
                                   store: LocalShopHistoryStore(),
@@ -245,6 +328,8 @@ final class WalkSessionController: ObservableObject {
         headMountMotion.onSample = { [weak self] s in
             Task { @MainActor in self?.onHeadMountSample(s) }
         }
+        // 位置の取り方(精度)を設定から反映する(→ AppParameters.Location)
+        location.apply(params.location)
         Task { await refreshShopHistoryRecords() }
         if shouldStartLocationServices {
             location.requestPermission()
@@ -340,7 +425,13 @@ final class WalkSessionController: ObservableObject {
             motion.start()
             pedometer.start()
         }
-        if params.headMount.enabled {
+        // **この散歩で頭部固定を使うかは、出発時に決める**(歩き出してから変えない)。
+        // 実験ビルドは従来どおり常に使い、配布ビルドでは画面の選択が効く(→ OrientationMode)
+        headMountActive = OrientationMode.usesHeadMount(
+            mode: orientationMode,
+            musicSpotWanted: musicSpotWanted,
+            experimentEnabled: params.headMount.enabled)
+        if headMountActive {
             // 検疫も取り付けのずれの学習も**散歩ごとに白紙から**。
             // 前回の散歩の信頼を持ち越さない(乱れた場所で終えた場合も、正常な場所で
             // 終えた場合も、実績は今回の分だけ)。付け直しでずれも変わる
@@ -359,13 +450,14 @@ final class WalkSessionController: ObservableObject {
             ) { [weak self] _ in
                 Task { @MainActor in self?.tickHeadMount() }
             }
-            log("頭部固定: 有効(利用可能=\(headMountMotion.isAvailable ? "はい" : "いいえ")"
+            log("頭部固定: 有効(\(params.headMount.enabled ? "実験ビルド" : "画面の設定")・"
+                + "利用可能=\(headMountMotion.isAvailable ? "はい" : "いいえ")"
                 + " 取り付けのずれは歩きながら学習)")
         } else {
             // **無効であることも残す。** 黙っていると「実験ビルドのつもりで配布ビルドを
             // 歩いた」ことに気づけない(2026-09-10 に実際に 1 回分の散歩を失った)。
             // 無音や即時再生の理由が、後からログだけで分かるようにする
-            log("頭部固定: 無効(配布と同じ設定。音楽は待たずに鳴り始めます)")
+            log("頭部固定: 無効(進む向きを基準にします。音楽は待たずに鳴り始めます)")
         }
         startMusicSpotIfWanted()
         log("歩調: 利用可能=\(PedometerService.isAvailable ? "はい" : "いいえ")"
@@ -377,6 +469,8 @@ final class WalkSessionController: ObservableObject {
         // 後から「なぜ 0 軒だったのか」をログだけで切り分けられるようにする(2026-09-17)
         log("店舗の記録: \(shopSearchWanted ? "する(現在地を送ります)" : "しない")"
             + " APIキー=\(HotPepperShopCandidateProvider.apiKey() == nil ? "未設定" : "設定済み")")
+        // **どの精度で位置を取ったかを残す。** 散歩どうしを比べる時の前提になる(2026-09-18)
+        log("位置の取り方: \(location.accuracyLabel)")
         apply(.start)
         scheduleTimeUp()
         log("散歩を開始(\(Int(durationMin)) 分)")
@@ -432,6 +526,45 @@ final class WalkSessionController: ObservableObject {
         log("デバッグ再生: \(e.rawValue) 方位=\(String(format: "%.0f", relativeBearingDeg))°"
             + "(\(synth.isSpatial ? "3D" : "パン")"
             + "・エンジン\(synth.isRunning ? "稼働" : "停止"))")
+    }
+
+    // MARK: - 真横に聞こえる角度の初期設定(2026-09-18 利用者依頼)
+
+    /// つまみで動かした角度に、校正の音を 1 つ置いて鳴らす。
+    /// **前半球へ畳まない**(左後ろ〜右後ろまで動かせることが前提)
+    func playCalibrationTone(relativeBearingDeg deg: Double) {
+        ensureSynth()
+        guard let synth else {
+            log("音声エンジンの初期化に失敗しました")
+            return
+        }
+        synth.playCalibrationTone(relativeBearingDeg: deg)
+    }
+
+    /// 校正を終える(音の描き方を案内音のものへ戻す)
+    func endEarCalibration() {
+        synth?.endCalibration()
+    }
+
+    /// 校正を確定する。**範囲外なら保存しない**(端に張り付いた値を成功として残さない)
+    @discardableResult
+    func saveEarAngleMap(rightAnchorDeg: Double, leftAnchorDeg: Double) -> Bool {
+        let cal = EarAngleMap(rightAnchorDeg: rightAnchorDeg, leftAnchorDeg: leftAnchorDeg)
+        guard SettingStore.saveEarAngleMap(cal) else {
+            log("真横に聞こえる角度: 保存できません(範囲外)")
+            return false
+        }
+        earAngleMap = cal
+        log(String(format: "真横に聞こえる角度: 右 %.0f° / 左 %.0f°",
+                   rightAnchorDeg, leftAnchorDeg))
+        return true
+    }
+
+    /// 校正を捨てて、置きたい角度をそのまま置く形へ戻す
+    func clearEarAngleMap() {
+        SettingStore.clearEarAngleMap()
+        earAngleMap = nil
+        log("真横に聞こえる角度: 初期設定を消しました(そのままの角度で置きます)")
     }
 
     // MARK: - 左右の聴き比べ(実験ビルドのみ)
@@ -750,7 +883,7 @@ final class WalkSessionController: ObservableObject {
             // 定位の基準を進行方位に戻す(次の散歩の検疫が通るまで使わない)。
             // 学習と検疫は散歩ごとに白紙なので、判断ごと捨てる
             latestFacingBearing = nil
-            if params.headMount.enabled {
+            if headMountActive {
                 headMountFusion = HeadMountFusion()
                 // 記録の集計も散歩ごとに作り直す(前の散歩の末尾の時刻を持ち越さない)
                 motionDigest = HeadMotionDigest()
@@ -850,6 +983,14 @@ final class WalkSessionController: ObservableObject {
             }
             lastSuggestionPoint = p
             lastSuggestionAt = Date()
+            // 音楽スポットの最中は鳴らさない(記録だけ残す・→ `suppressesGuidanceSounds`)
+            if suppressesGuidanceSounds {
+                logToFile(String(format: "提案(音楽スポット中につき鳴らさない): 相対 %+.0f° %@ "
+                                 + "交差点まで=%.0fm score=%.2f [%@]",
+                                 c.relativeBearingDeg, "\(c.branch.cls)",
+                                 x.distanceM, c.score, context))
+                return
+            }
             log(String(format: "提案(分岐): 相対 %+.0f° %@ 横断=%d 交差点まで=%.0fm score=%.2f [%@]",
                        c.relativeBearingDeg, "\(c.branch.cls)", c.branch.crossCost,
                        x.distanceM, c.score, context))
@@ -868,9 +1009,14 @@ final class WalkSessionController: ObservableObject {
             // 頭部固定が使えていればそちらが基準になる(同じ resolver を通す)
             let reference = placementReference(travel)?.deg ?? heading
             let rel = Geo.angularDiffDeg(s.absoluteBearingDeg, reference)
-            synth?.play(.suggestion, relativeBearingDeg: rel)
             lastSuggestionPoint = p
             lastSuggestionAt = Date()
+            // 音楽スポットの最中は鳴らさない(記録だけ残す・→ `suppressesGuidanceSounds`)
+            if suppressesGuidanceSounds {
+                logToFile("提案(音楽スポット中につき鳴らさない): \(label(for: s.direction)) [\(context)]")
+                return
+            }
+            synth?.play(.suggestion, relativeBearingDeg: rel)
             log("提案: \(label(for: s.direction)) [\(context)]")
         } else {
             // 「なぜ鳴らなかったか」を後から追えるようにする(直進が最良 or スコア不足)
@@ -966,6 +1112,38 @@ final class WalkSessionController: ObservableObject {
     /// 定位の基準が**頭部固定の方位**であることを表す名前。ログに出すうえ、
     /// 音楽の正面の強調を掛けてよいかの判定にも使うので、**文字列を 2 か所に書かない**
     private static let headReferenceLabel = "頭部"
+    /// 検疫が退避を出している間も頭の向きを使った、という印(音楽スポットだけ・2026-09-18)
+    private static let headReferenceLooseLabel = "頭部(検疫外)"
+
+    /// 基準が頭の向きか(印が 2 種類あるのでここで判断する)
+    private static func isHeadReference(_ source: String?) -> Bool {
+        source == headReferenceLabel || source == headReferenceLooseLabel
+    }
+
+    /// **音楽スポット専用の定位の基準。**
+    ///
+    /// 連続音では、**基準が切り替わること自体が壊れた体験になる**。
+    /// 2026-09-18 の散歩では、検疫の退避で 53 秒間、音が進行方位を基準に置かれ、
+    /// 首を振っても音が動かず、course の更新に合わせて階段状に飛んだ(利用者の言葉で「離散的」)。
+    /// 途中で基準が「なし」になり、音が中央へ飛んだ場面もある。
+    ///
+    /// そこで**検疫の判断だけ捨てる**(鮮度と取り付けのずれの学習は守る)。
+    /// 磁気が乱れて向きがずれる危険は残るが、基準が飛ぶ方が体験を壊すという判断(利用者)
+    private func musicPlacementReference(_ travel: TravelDirectionFix?,
+                                         now: Date = Date()) -> (deg: Double, source: String)? {
+        guard headMountActive, params.headMount.musicIgnoresQuarantine else {
+            return placementReference(travel, now: now)
+        }
+        if let facing = facingBearing(now: now) {
+            return (facing, Self.headReferenceLabel)
+        }
+        // 検疫が退避を出していても、**新しい標本があれば**頭の向きを使う
+        if let loose = headMountFusion.facingDegIgnoringQuarantine(
+            at: now.timeIntervalSinceReferenceDate, p: params.headMount.fusion) {
+            return (loose, Self.headReferenceLooseLabel)
+        }
+        return placementReference(travel, now: now)
+    }
 
     private func placementReference(_ travel: TravelDirectionFix?,
                                     now: Date = Date()) -> (deg: Double, source: String)? {
@@ -973,7 +1151,7 @@ final class WalkSessionController: ObservableObject {
         // AirPods の融合(latestFacingBearing)は進行方位から育てる推定値で、
         // 鮮度の判定も持たない。立ち止まりで基準に使えるようにはしない
         // (2026-08-19 に左右を壊した系統。既定でも切ってある)
-        if params.headMount.enabled, let facing = facingBearing(now: now) {
+        if headMountActive, let facing = facingBearing(now: now) {
             return (facing, Self.headReferenceLabel)
         }
         guard let travel else { return nil }
@@ -995,7 +1173,7 @@ final class WalkSessionController: ObservableObject {
     /// 画面を消して頭にスマホを載せる構成では、これが
     /// 「音が最後の頭の向きに凍りついたまま戻らない」という形で出る
     private func facingBearing(now: Date = Date()) -> Double? {
-        guard params.headMount.enabled else { return latestFacingBearing }
+        guard headMountActive else { return latestFacingBearing }
         return headMountFusion.facingDeg(at: now.timeIntervalSinceReferenceDate,
                                          p: params.headMount.fusion)
     }
@@ -1165,7 +1343,7 @@ final class WalkSessionController: ObservableObject {
         }
         guard params.heading.useHeadOrientation else { return }
         // 頭部固定が有効な間は、スマホの方位が定位の基準を持つ(書き手を 2 つにしない)
-        guard !params.headMount.enabled else { return }
+        guard !headMountActive else { return }
         let p = HeadingFusion.Params(baselineAlpha: params.heading.baselineAlpha,
                                      maxOffsetDeg: params.heading.maxOffsetDeg,
                                      minSamples: params.heading.minSamples,
@@ -1187,7 +1365,7 @@ final class WalkSessionController: ObservableObject {
     /// 使用可能でない間は `facingBearing()` が nil を返し、従来どおり進行方位で定位する
     /// (同じビルドで装着あり / なしを比べられるのはこのため。docs/14)
     private func onHeadMountSample(_ sample: HeadMotionService.Sample) {
-        guard params.headMount.enabled else { return }
+        guard headMountActive else { return }
         let headingDeg = sample.headingDeg
         let nowDate = Date()
         let now = nowDate.timeIntervalSinceReferenceDate
@@ -1240,12 +1418,25 @@ final class WalkSessionController: ObservableObject {
             } ?? "-"
             // 分類は「最後に来た新しい fix がどう扱われたか」。直前の標本を出すと、
             // 50 Hz のうち 49 回は同じ fix の読み直しなので、ほぼ常に「同fix」になる
+            // **見直しの滑り窓の中身も残す**(2026-09-18)。
+            // 「何度目の値か / 窓がいま出している値 / 窓の証拠と R」。
+            // 途中でずれが変わったか、見直しがそもそも回っているかは、後からこれでしか分からない
+            let fusionParams = params.headMount.fusion
+            let windowLabel = headMountFusion.windowOffsetDeg(p: fusionParams)
+                .map { String(format: "%.1f", $0) } ?? "未成立"
+            let relearnLabel = String(format: "%@ 窓=%@/%.1fs/R%.2f",
+                                      headMountFusion.relearnCount > 0
+                                          ? "\(headMountFusion.relearnCount + 1)回目"
+                                          : "初回",
+                                      windowLabel,
+                                      headMountFusion.windowEvidenceSec,
+                                      headMountFusion.windowConcentration)
             logToFile(String(format: "頭方位 raw=%.1f° heading=%.1f° course=%@° 差=%@°"
-                             + " 状態=%@ 補正=%@ R=%.2f 証拠=%.1fs 分類=%@"
+                             + " 状態=%@ 補正=%@(%@) R=%.2f 証拠=%.1fs 分類=%@"
                              + " 門内=%.1fs 門外=%.1fs 門外割合=%.2f fix=%@ 今回=%@ 使用=%@",
                              headingDeg, corrected, courseLabel, diffLabel,
                              headMountFusion.quarantineState.label,
-                             offsetLabel, headMountFusion.concentration,
+                             offsetLabel, relearnLabel, headMountFusion.concentration,
                              headMountFusion.offsetEvidenceSec,
                              headMountFusion.lastNewFixLabel,
                              headMountFusion.insideEvidenceSec,
@@ -1253,7 +1444,7 @@ final class WalkSessionController: ObservableObject {
                              headMountFusion.outsideRatio,
                              fixLabel,
                              headMountFusion.currentObservationLabel,
-                             headMountFusion.use(at: now, p: params.headMount.fusion).label))
+                             headMountFusion.use(at: now, p: fusionParams).label))
             logToFile(headMotionLine())
             motionDigest.rollOver()
         }
@@ -1301,8 +1492,8 @@ final class WalkSessionController: ObservableObject {
         pendingMusicURL = nil
         musicWaitStartedAt = nil
         guard musicSpotWanted, let start = location.position else { return }
-        guard let url = MusicStore.firstFile() else {
-            log("音楽スポット: 音源がありません(Finder の「iPhone > ファイル」に置いてください)")
+        guard let url = musicSourceURL else {
+            log("音楽スポット: 曲が選ばれていません(画面の「曲を選ぶ」から選んでください)")
             return
         }
         pendingMusicURL = url
@@ -1310,7 +1501,7 @@ final class WalkSessionController: ObservableObject {
         // 定まる前に鳴らすと、音は進行方位を基準に置かれる。首を回しても動かないので
         // 「頭に追従しない」体験になり、しかも確かめようと首を回すほど
         // ずれの学習が汚れて、いつまでも定まらない(2026-09-09 の実測: 採用 7%)
-        if params.headMount.enabled {
+        if headMountActive {
             musicWaitStartedAt = Date()
             log(String(format: "音楽スポット: 頭の向きが定まるまで待ち、鳴り始める地点から置きます"
                        + "(上限 %.0f 秒・%@)",
@@ -1405,17 +1596,19 @@ final class WalkSessionController: ObservableObject {
         // **音量の幅の起点は、鳴り始めるこの地点。** スポットもここから置いたので、
         // 起点は置いた距離そのもの。着くまでの全体に音量の幅を割り振る(2026-09-11)
         let gainFrom = Geo.distanceM(p, spot.center)
-        let reference = placementReference(currentTravel(location.motionFix()))
+        // **音楽は基準を切り替えない**(→ musicPlacementReference・2026-09-18)
+        let reference = musicPlacementReference(currentTravel(location.motionFix()))
         // 道をたどる向きはまだ無い(経路の場はこの後で背景に解く)。できるまでは直線だけ
         let placed = spot.placement(from: p,
                                     referenceBearingDeg: reference?.deg
                                         ?? Geo.bearingDeg(from: p, to: spot.center),
-                                    headIsReference: reference?.source == Self.headReferenceLabel,
+                                    headIsReference: Self.isHeadReference(reference?.source),
                                     gainFromDistanceM: gainFrom,
                                     p: sp)
         do {
             // **無音から始める。** ここから music_fade_in_sec かけて距離ぶんの音量まで上げる
-            try synth.startMusic(url: url, relativeBearingDeg: placed.relDeg, gain: 0)
+            try synth.startMusic(url: url, relativeBearingDeg: placed.relDeg, gain: 0,
+                                 rearShelfDb: appliedRearShelfDb(placed))
         } catch {
             log("音楽スポット: 音源を開けませんでした(\(error.localizedDescription))")
             pendingMusicURL = nil
@@ -1426,6 +1619,15 @@ final class WalkSessionController: ObservableObject {
         musicSpot = spot
         musicSpotReached = false
         musicGainFromM = gainFrom
+        // 置き直したら向きの遊びも捨てる(次の標本がそのまま基準になる)
+        musicBearingHold.reset()
+        lastMusicFixTime = nil
+        lastMusicUpdateAt = nil
+        // **移す提案は、音が実際に鳴り始めた時から数える**(待った時間は含めない → 合議 E1)
+        placedSpots = [spot.center]
+        spotMove.start(at: Date().timeIntervalSinceReferenceDate,
+                       p: params.experiment.musicSpotMove)
+        spotMoveFadeOutStartedAt = nil
         pendingMusicURL = nil
         musicWaitStartedAt = nil
         musicStartedAt = Date()
@@ -1434,6 +1636,20 @@ final class WalkSessionController: ObservableObject {
         buildMusicSpotField(to: spot.center)
         log(String(format: "音楽スポット: %.0fm 先 方位 %.0f°(鳴り始める地点から置いた・%@)",
                    gainFrom, Geo.bearingDeg(from: p, to: spot.center), url.lastPathComponent))
+        // **仰角と広がりは 3D の経路でしか載らない**(2026-09-18)
+        if synth.musicIsSpatial {
+            log(String(format: "音楽スポット: 近づくと下から・一点から鳴ります"
+                       + "(耳の高さ %.1fm・広がり %.0f〜%.0fm)",
+                       params.experiment.musicSpotListenerHeightM,
+                       params.experiment.musicSpotSpreadNearM,
+                       params.experiment.musicSpotSpreadFarM))
+        } else {
+            log("音楽スポット: 3D 音響が切ってあるため、仰角と広がりは載りません")
+        }
+        if let cal = earAngleMap {
+            log(String(format: "音楽スポット: 真横に聞こえる角度の設定を使います(右 %.0f°/左 %.0f°)",
+                       cal.rightAnchorDeg, cal.leftAnchorDeg))
+        }
         log(String(format: "音楽スポット: 鳴らし始めます(%.0fm 先 音量 %.2f 基準 %@・"
                    + "10m あたり %.1f dB・%.0f 秒かけて)",
                    placed.distanceM, placed.gain, reference?.source ?? "中央",
@@ -1453,6 +1669,10 @@ final class WalkSessionController: ObservableObject {
     /// 止めていた頃は、着いてから帰宅までの 80 秒が無音になった(実測)。
     /// 通り過ぎれば背後に回って自然に遠ざかるので、止める必要が無い
     private func updateMusicSpot(at p: GeoPoint) {
+        // **移す提案の時刻の勘定は、スポットの更新と同じ所で回す**(別のタイマーを増やさない)
+        let tickNow = Date()
+        tickSpotMove(now: tickNow)
+        swapSpotIfFadedOut(now: tickNow, at: p)
         guard let spot = musicSpot else { return }
         let sp = params.experiment.musicSpot(durationMin: durationMin)
         if !musicSpotReached, spot.isReached(from: p, p: sp) {
@@ -1463,41 +1683,191 @@ final class WalkSessionController: ObservableObject {
         // **基準が取れなくても音量は更新する** — 距離は方位の有無と関係なく変わるので、
         // 早期に return すると近づいても音が大きくならない(2026-09-09 の検証で指摘)。
         // 向きだけ中央へ退避させる
-        let travel = currentTravel(location.motionFix())
-        let reference = placementReference(travel)
+        let fix = location.motionFix()
+        let travel = currentTravel(fix)
+        // **音楽は基準を切り替えない**(→ musicPlacementReference・2026-09-18)
+        let reference = musicPlacementReference(travel)
+        // **位置から決まる向きの揺れだけを落とす**(→ BearingHold・2026-09-18)。
+        // 頭の向き(基準)には掛けない — 首を振った時の追従が鈍ると音を探せなくなる。
+        // 遊びの幅は「位置の不確かさが張る角度」で決める(近いほど広い)
+        let hp = params.experiment.musicSpotBearingHold
+        let distanceToSpot = Geo.distanceM(p, spot.center)
+        let uncertainty = BearingHold.uncertaintyDeg(
+            accuracyM: fix.horizontalAccuracyM ?? 0, distanceM: distanceToSpot)
+        let rawBearing = Geo.bearingDeg(from: p, to: spot.center)
+        // **新しい fix の時だけ取り込む。** 音は頭方位の受信ごと(50 Hz)に付け直すので、
+        // 同じ位置を何度も入れると遊びがその回数ぶん進んでしまう(→ 合議 J11)
+        let now = Date()
+        if distanceToSpot > 0, fix.fixTime != lastMusicFixTime {
+            lastMusicFixTime = fix.fixTime
+            musicBearingHold.ingest(rawBearing, uncertaintyDeg: uncertainty, p: hp)
+        }
+        let dt = lastMusicUpdateAt.map { now.timeIntervalSince($0) } ?? 0
+        lastMusicUpdateAt = now
+        let held = musicBearingHold.output(after: dt, p: hp) ?? rawBearing
         // **首を振って探せるのは、基準が頭の向きの時だけ。** その時だけ正面の強調を掛ける
         // (進行方位を基準にしている間は、首を回しても基準が動かない)
         let placed = spot.placement(from: p,
-                                    referenceBearingDeg: reference?.deg
-                                        ?? Geo.bearingDeg(from: p, to: spot.center),
-                                    headIsReference: reference?.source == Self.headReferenceLabel,
+                                    referenceBearingDeg: reference?.deg ?? held,
+                                    headIsReference: Self.isHeadReference(reference?.source),
                                     routeBearingDeg: musicRouteBearing(from: p),
-                                    gainFromDistanceM: musicGainFromM
-                                        ?? Geo.distanceM(p, spot.center),
+                                    directBearingDeg: held,
+                                    gainFromDistanceM: musicGainFromM ?? distanceToSpot,
                                     p: sp)
         // **鳴り始めはじんわり。** 距離から決めた音量に、立ち上がりの係数を掛ける。
         // 頭方位の受信ごとに呼ばれるので、別のタイマーを持たずに滑らかに上がる
-        synth?.setMusicPlacement(relativeBearingDeg: reference == nil ? 0 : placed.relDeg,
-                                 gain: placed.gain * musicFadeFactor())
+        // 移す時は**絞り切ってから入れ替える**ので、その係数もここで掛ける
+        // **その人にとって真横に聞こえる角度へ写す**(→ EarAngleMap・2026-09-18 利用者依頼)。
+        // 未校正なら何もしない。音の通り道は変えないので、仰角と広がりはそのまま載る
+        let intended = reference == nil ? 0 : placed.relDeg
+        let placedDeg = earAngleMap?.rendered(intendedDeg: intended) ?? intended
+        // **近づくほど下から・一点から鳴る**(2026-09-18 利用者依頼)。
+        // どちらも水平距離だけで決まるので、GPS が数 m ずれても壊れない
+        synth?.setMusicPlacement(relativeBearingDeg: placedDeg,
+                                 gain: placed.gain * musicFadeFactor()
+                                     * musicFadeOutFactor(now: tickNow),
+                                 rearShelfDb: appliedRearShelfDb(placed),
+                                 elevationDeg: placed.elevationDeg,
+                                 spread: placed.spread)
         // **音は毎回付け直すが、ログは間引く。** 受信ごとに書くとログが音楽で埋まる
-        let now = Date()
         guard lastMusicLogAt == nil
             || now.timeIntervalSince(lastMusicLogAt!) >= params.experiment.musicLogIntervalSec
         else { return }
         lastMusicLogAt = now
         // `音量=` は**距離だけ**から決めた値のまま残す(過去のログと比べられるように)。
         // 実際に鳴らしたのは 音量 × 10^(正面/20) × 立ち上がり
+        // **生の向きと遊びの幅も残す**(2026-09-18)。揺れがどれだけ落ちたかは、
+        // 鳴らした向き(音源方位)と生の向きの差でしか後から測れない
         logToFile(String(format: "音楽 距離=%.0fm 向き=%@ 音量=%.2f 基準=%@ 音源方位=%.0f°%@"
-                         + " 近さ=%.2f 正面=%.1fdB",
+                         + " 生方位=%.0f° 遊び=%.0f° 仰角=%.0f° 広がり=%.2f"
+                         + " 近さ=%.2f 正面=%.1fdB 指向性=%.1fdB 後方=%.1fdB",
                          placed.distanceM,
                          reference == nil ? "中央" : String(format: "%+.0f°", placed.relDeg),
                          placed.distanceGain, reference?.source ?? "なし", placed.worldBearingDeg,
                          musicSpotField == nil ? "(直線)" : "(直線と道の間)",
-                         placed.pinpointWeight, placed.facingDb))
+                         Geo.bearingDeg(from: p, to: spot.center),
+                         BearingHold.deadbandDeg(uncertaintyDeg: uncertainty,
+                                                 p: params.experiment.musicSpotBearingHold),
+                         placed.elevationDeg, placed.spread,
+                         placed.pinpointWeight, placed.facingDb, placed.directivityDb,
+                         appliedRearShelfDb(placed)))
+    }
+
+    /// 実際に掛ける「後ろの暗さ」[dB]。画面で切っていれば 0(同じ散歩で聴き比べるため)
+    private func appliedRearShelfDb(_ placed: MusicSpot.Placement) -> Double {
+        rearDarkening ? placed.rearShelfDb : 0
     }
 
     /// 鳴り始めの立ち上がり [0..1]。待った末に不意に鳴り出すと驚くので、
     /// `music_fade_in_sec` かけて 0 から 1 へ上げる(2026-09-10 利用者依頼)
+    // MARK: - スポットを移す提案(2026-09-18 利用者依頼)
+
+    /// 提案を出す時刻か / 応答の窓が閉じたかを見る。**音楽を鳴らしている間だけ**動く。
+    ///
+    /// 「ある程度時間が経ったらイベントが発生し、うなずくとスポットが移動する。
+    /// 断ったら間隔が倍々に増え、合意して移動したら間隔はそのまま」(利用者依頼)
+    private func tickSpotMove(now: Date) {
+        guard musicSpot != nil else { return }
+        let t = now.timeIntervalSinceReferenceDate
+        let p = params.experiment.musicSpotMove
+        // **散策から抜けたら、応答待ちを畳む。** 帰路の問いかけが割り込んだ場合など。
+        // ここで畳まないと窓が開いたまま置き去りになり、延長して戻った時に
+        // 期限切れ = 断りとして数えられ、**利用者が何もしていないのに間隔が倍**になる
+        // (2026-09-19・Android への移植中に見つけた。→ 合議 E10)
+        guard state == .wandering else {
+            if spotMove.interruptIfWaiting(at: t) {
+                logToFile("スポットの移動: 別の問いかけが入ったので見送りました(断りには数えません)")
+            }
+            return
+        }
+        // 窓が閉じた = 返事が無かった → **断り**(→ 合議 E5)
+        if spotMove.windowExpired(at: t) {
+            spotMove.refused(at: t)
+            log(String(format: "スポットの移動: 返事なし(次は %.0f 秒後)", spotMove.intervalSec))
+            return
+        }
+        guard spotMove.isDue(at: t) else { return }
+        // **先に候補を確かめる。** 移せない所で提案しても断らせるだけ(→ 合議 E2・M5)
+        guard nextSpotCandidate() != nil else {
+            spotMove.postpone(at: t)
+            logToFile("スポットの移動: 移せる場所が無いので見送りました(断りには数えません)")
+            return
+        }
+        synth?.play(.spotMove)
+        spotMove.prompted(promptEndsAt: t + params.audio.tones.spotMove.durationSec, p: p)
+        spotMoveDetector = HeadGestureDetector(params: params.gesture)   // 窓は空から(E3)
+        log("スポットの移動: うなずけば別の場所へ移ります(首振り・無反応でそのまま)")
+    }
+
+    /// 移す先の候補。**これまでに置いた所から離し、帯の中から選ぶ**(→ MusicSpot.chooseSpread)
+    private func nextSpotCandidate() -> MusicSpot? {
+        guard let here = location.position else { return nil }
+        let p = params.experiment.musicSpot(durationMin: durationMin)
+        let raw = MusicSpot.candidates(around: here, p: p)
+        let snapped: [GeoPoint]
+        if let graph, graph.map.covers(here) {
+            snapped = raw.compactMap {
+                graph.snap($0, maxDistanceM: params.route.snapMaxDistanceM)?.point
+            }
+        } else {
+            snapped = raw
+        }
+        return MusicSpot.chooseSpread(
+            from: snapped.isEmpty ? raw : snapped, start: here,
+            avoiding: placedSpots,
+            minSeparationM: params.experiment.musicSpotMoveMinSeparationM,
+            p: p, pick: { Int.random(in: 0..<$0) })
+    }
+
+    /// 合意された。**音を絞り切ってから**中心を入れ替える(→ 合議 M7)
+    private func acceptSpotMove(now: Date) {
+        spotMove.accepted(at: now.timeIntervalSinceReferenceDate)
+        spotMoveFadeOutStartedAt = now
+        log("スポットの移動: うなずきを検出(音を絞ってから移します)")
+    }
+
+    /// 断られた
+    private func refuseSpotMove(now: Date, reason: String) {
+        spotMove.refused(at: now.timeIntervalSinceReferenceDate)
+        log(String(format: "スポットの移動: %@(次は %.0f 秒後)", reason, spotMove.intervalSec))
+    }
+
+    /// 絞り切ったら中心を入れ替える。**曲の再生位置は戻さない**(→ 合議 M8)
+    private func swapSpotIfFadedOut(now: Date, at here: GeoPoint) {
+        guard let started = spotMoveFadeOutStartedAt else { return }
+        let fade = max(0.01, params.experiment.musicSpotMoveFadeSec)
+        guard now.timeIntervalSince(started) >= fade else { return }
+        spotMoveFadeOutStartedAt = nil
+        // **移す直前にもう一度選び直す**(歩いている間に予算や距離が変わる → 合議 M6)
+        guard let next = nextSpotCandidate() else {
+            log("スポットの移動: 直前に移せる場所が無くなったので取りやめました")
+            musicStartedAt = Date()          // 絞った音を戻す
+            return
+        }
+        musicSpot = next
+        placedSpots.append(next.center)
+        musicSpotReached = false
+        musicGainFromM = Geo.distanceM(here, next.center)
+        musicBearingHold.reset()
+        lastMusicFixTime = nil
+        lastMusicUpdateAt = nil
+        musicSpotField = nil
+        musicSpotTrace = nil
+        musicStartedAt = Date()              // ここから立ち上げ直す
+        summary?.setMusicSpot(next.center)
+        buildMusicSpotField(to: next.center)
+        log(String(format: "スポットの移動: %.0fm 先 方位 %.0f° へ移しました(%d 回目)",
+                   musicGainFromM ?? 0, Geo.bearingDeg(from: here, to: next.center),
+                   placedSpots.count))
+    }
+
+    /// 絞っている最中の音量の係数。**移す時の飛びを隠す**
+    private func musicFadeOutFactor(now: Date) -> Double {
+        guard let started = spotMoveFadeOutStartedAt else { return 1 }
+        let fade = max(0.01, params.experiment.musicSpotMoveFadeSec)
+        return max(0, 1 - now.timeIntervalSince(started) / fade)
+    }
+
     private func musicFadeFactor(now: Date = Date()) -> Double {
         guard let started = musicStartedAt else { return 1 }
         let fade = params.experiment.musicFadeInSec
@@ -1517,6 +1887,13 @@ final class WalkSessionController: ObservableObject {
         musicGainFromM = nil
         musicSpotField = nil
         musicSpotTrace = nil
+        musicBearingHold.reset()
+        lastMusicFixTime = nil
+        lastMusicUpdateAt = nil
+        // 移す提案の予約と応答待ちも捨てる(→ 合議 E11)
+        spotMove.stop()
+        spotMoveFadeOutStartedAt = nil
+        placedSpots = []
         if wasPlaying {
             synth?.stopMusic()
             log("音楽スポット: 終了(\(reason))")
@@ -1532,7 +1909,7 @@ final class WalkSessionController: ObservableObject {
     /// 「古い」への遷移もパルスの停止も記録に残らず、`lastValidityPulseAt` も残り続けて
     /// 復帰時の鳴り直しが遅れる。**鮮度を扱う処理は時計仕掛けでなければならない。**
     private func tickHeadMount(now: Date = Date()) {
-        guard params.headMount.enabled else { return }
+        guard headMountActive else { return }
         let use = headMountFusion.use(at: now.timeIntervalSinceReferenceDate,
                                       p: params.headMount.fusion)
         headMountLabel = use.label
@@ -1645,6 +2022,24 @@ final class WalkSessionController: ObservableObject {
                 break
             }
             return
+        }
+
+        // **スポットを移す提案への返事**(2026-09-18)。窓が開いている間だけ読む。
+        // 散策中に常時ジェスチャを開けると誤検出が増えるので、窓を限る(合議 3-1)。
+        //
+        // **時計を混ぜない。** `s.time` は端末起動からの時刻(CMDeviceMotion.timestamp)で、
+        // 日程は壁時計で持っている。窓の判定には壁時計を使う
+        // (検出器の中では `s.time` のまま扱われる)
+        let wall = Date()
+        if spotMove.acceptsResponse(at: wall.timeIntervalSinceReferenceDate) {
+            switch spotMoveDetector.ingest(s) {
+            case .nod:
+                acceptSpotMove(now: wall)
+            case .shake:
+                refuseSpotMove(now: wall, reason: "首振りを検出")
+            case nil:
+                break
+            }
         }
 
         // 応答待ち以外でも同じ判定を回し、記録だけする。
@@ -1786,7 +2181,7 @@ final class WalkSessionController: ObservableObject {
         parts.append("方向: \(travel.map { label(for: $0.source) } ?? "不明")")
         // 頭部固定の実験中は、方位が採用されているかを常に見えるようにする(docs/13)。
         // 「退避」が出続けるなら磁気が乱れている(それ自体が実験の観測値)
-        if params.headMount.enabled {
+        if headMountActive {
             parts.append("頭部: \(headMountLabel ?? HeadMountFusion.Use.noSample.label)")
         }
         statusLine = parts.joined(separator: " / ")
