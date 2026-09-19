@@ -14,8 +14,11 @@ android {
         // それ未満を支えるためだけに分岐を増やす価値が無い
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        // **iOS 版と番号を揃える**(2026-09-19)。テスターの報告に出てくるのは
+        // 画面の見た目と番号だけなので、片方だけ 0.1 のままだと
+        // 「どちらの版の話か」が分からなくなる
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildTypes {
