@@ -10,13 +10,10 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MenuItem
 import android.view.View
-import android.view.ViewGroup
 import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
-import dev.otosanpo.core.Earcon
 import dev.otosanpo.core.StartGreeting
 import dev.otosanpo.core.WalkState
 import kotlin.math.roundToInt
@@ -35,13 +32,56 @@ class MainActivity : Activity() {
     private val session get() = OtoSanpoApp.instance.session
     private val handler = Handler(Looper.getMainLooper())
 
+    private companion object {
+        const val REQUEST_PICK_MUSIC = 2
+    }
+
     private lateinit var stateText: TextView
     private lateinit var statusText: TextView
     private lateinit var summaryText: TextView
-    private lateinit var logText: TextView
     private lateinit var startButton: Button
     private lateinit var durationText: TextView
     private lateinit var homeText: TextView
+    private lateinit var musicText: TextView
+    private lateinit var musicToggle: Button
+
+    /**
+     * **曲を選ぶピッカー**(2026-09-19 利用者依頼)。
+     *
+     * `androidx.activity` の仕組み(`registerForActivityResult`)は使わない。
+     * **外部の UI ライブラリを足さない**方針(docs/10)なので、素の
+     * `startActivityForResult` + [onActivityResult] で受ける。
+     *
+     * `ACTION_OPEN_DOCUMENT` が返すのは `content://` の URI。**持ち続けない** —
+     * 元を消された・SD を外された・提供元アプリを消された、で失効するうえ、
+     * クラウド上の曲だと読むたびに通信が要る(散歩中に止まる)。
+     * **選んだその場でアプリの中へ写す**ので、使い切りで足りる
+     */
+    private fun pickMusic() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "audio/*"
+        }
+        try {
+            startActivityForResult(intent, REQUEST_PICK_MUSIC)
+        } catch (e: Exception) {
+            toast("曲を選ぶ画面を開けませんでした")
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_PICK_MUSIC || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        val ext = session.params.audio.androidReadableExtensions
+        val saved = OtoSanpoApp.instance.storage.importMusic(uri, displayNameOf(uri), ext)
+        if (saved == null) {
+            toast("この曲は読み込めませんでした(${ext.joinToString(" / ")})")
+        } else {
+            toast("曲を取り込みました: ${saved.name}")
+        }
+        refresh()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,11 +91,24 @@ class MainActivity : Activity() {
             return
         }
 
-        setContentView(buildView())
+        // 毎回設定するわけではないものはメニューへ(2026-09-19 利用者依頼)。
+        // **画面を組む前に決める** — 上の帯が無い端末では画面の中に導線を置く
+        val hasBar = installMenuButton()
+        setContentView(buildView(showMenuRow = !hasBar))
         requestPermissionsIfNeeded()
         session.onChange = { handler.post { refresh() } }
         refresh()
     }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId == android.R.id.home) {
+            openMenu()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
+    private fun openMenu() = startActivity(Intent(this, MenuActivity::class.java))
 
     override fun onResume() {
         super.onResume()
@@ -101,11 +154,10 @@ class MainActivity : Activity() {
 
     // MARK: - 画面の組み立て
 
-    private fun buildView(): View {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 32)
-        }
+    private fun buildView(showMenuRow: Boolean): View {
+        val root = column()
+
+        if (showMenuRow) root.addView(button("≡ メニュー") { openMenu() })
 
         root.addView(heading("設定"))
         homeText = label("自宅: 未設定")
@@ -117,12 +169,20 @@ class MainActivity : Activity() {
 
         durationText = label("散歩時間: 30 分")
         root.addView(durationText)
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(button("− 5 分") { changeDuration(-5.0) })
-        row.addView(button("+ 5 分") { changeDuration(5.0) })
-        root.addView(row)
+        val duration = row()
+        duration.addView(button("− 5 分") { changeDuration(-5.0) })
+        duration.addView(button("+ 5 分") { changeDuration(5.0) })
+        root.addView(duration)
 
-        root.addView(heading("セッション"))
+        // **音楽スポット**(2026-09-19 に iOS から移植)。曲が取り込まれていなければ
+        // 選ぶ導線だけを出す。**基準は進む向きだけ**(頭の向きは使わない)
+        musicText = label("")
+        root.addView(musicText)
+        root.addView(button("音楽スポットに使う曲を選ぶ") { pickMusic() })
+        musicToggle = button("音楽スポット: 切") { toggleMusicSpot() }
+        root.addView(musicToggle)
+
+        root.addView(heading("状態"))
         stateText = label("待機中").apply {
             textSize = 20f
             setTypeface(typeface, Typeface.BOLD)
@@ -135,43 +195,20 @@ class MainActivity : Activity() {
 
         root.addView(heading("応答(時間到来のとき)"))
         root.addView(label("音量↓ = 帰る / 音量↑ = 延長。ポケットの中でも押せます"))
-        val answer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val answer = row()
         answer.addView(button("帰る") { session.nod() })
         answer.addView(button("延長") { session.shake() })
         root.addView(answer)
 
-        root.addView(heading("前回の散歩(開発用)"))
+        root.addView(heading("前回の散歩"))
         summaryText = label("記録はまだありません")
         root.addView(summaryText)
 
-        root.addView(heading("デバッグ"))
-        root.addView(button("時間到来を発火") { session.debugTimeUp() })
-        val tones = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        tones.addView(button("提案音 左") { session.playSample(Earcon.SUGGESTION, -90.0) })
-        tones.addView(button("提案音 右") { session.playSample(Earcon.SUGGESTION, 90.0) })
-        root.addView(tones)
-        val tones2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        tones2.addView(button("帰路音") { session.playSample(Earcon.HOME_BEACON, 0.0) })
-        tones2.addView(button("到着音") { session.playSample(Earcon.ARRIVAL, 0.0) })
-        root.addView(tones2)
+        // 試聴・ログ・出典は左上のメニューへ移した(2026-09-19 利用者依頼)。
+        // **出典の 1 行だけは主画面に残す**(ODbL の表示義務。iOS 版も同じ扱い)
+        root.addView(caption("© OpenStreetMap contributors"))
 
-        root.addView(heading("フィールドログ"))
-        root.addView(label("端末内の TSV に追記します(送信しません)"))
-        root.addView(button("ログをダウンロードへ書き出す") { shareLog() })
-        root.addView(button("ログを消去") { session.clearLog(); refresh() })
-
-        root.addView(heading("イベントログ"))
-        logText = label("").apply { typeface = Typeface.MONOSPACE; textSize = 11f }
-        root.addView(logText)
-
-        root.addView(heading("経路データの出典"))
-        root.addView(label("© OpenStreetMap contributors\n" +
-            "この経路データは OpenStreetMap から作成しました。ODbL の下で提供されています。"))
-
-        return ScrollView(this).apply {
-            addView(root, ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT)
-        }
+        return scrolling(root)
     }
 
     private fun errorView(message: String): View =
@@ -182,20 +219,21 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
         }
 
-    private fun heading(t: String) = TextView(this).apply {
-        text = t
-        setTypeface(typeface, Typeface.BOLD)
-        setPadding(0, 40, 0, 8)
-    }
+    /** ピッカーが返した表示名(拡張子の判定に使う)。取れなければ null */
+    private fun displayNameOf(uri: android.net.Uri): String? =
+        contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+        }
 
-    private fun label(t: String) = TextView(this).apply {
-        text = t
-        setPadding(0, 4, 0, 4)
-    }
-
-    private fun button(t: String, action: () -> Unit) = Button(this).apply {
-        text = t
-        setOnClickListener { action() }
+    private fun toggleMusicSpot() {
+        val ext = session.params.audio.androidReadableExtensions
+        if (OtoSanpoApp.instance.storage.musicFile(ext) == null) {
+            toast("先に曲を選んでください")
+            return
+        }
+        session.musicSpotWanted = !session.musicSpotWanted
+        refresh()
     }
 
     // MARK: - 操作
@@ -231,21 +269,10 @@ class MainActivity : Activity() {
         val message = StartGreeting.message(hour, session.params.greeting.windows) ?: return
         android.app.AlertDialog.Builder(this)
             .setMessage(message)
-            .setPositiveButton("はい") { d, _ -> d.dismiss() }
+            // 「はい」は問いへの答えに見える。ここはただの一言なので「OK」
+            // (2026-09-19 利用者依頼・iOS 版と同じ)
+            .setPositiveButton("OK") { d, _ -> d.dismiss() }
             .show()
-    }
-
-    /**
-     * ログを「ダウンロード」へ複製する。**そこからなら標準のファイルアプリで共有できる。**
-     * アプリの置き場は Android 11 以降ほかのアプリから開けないので、そのままでは返せない
-     */
-    private fun shareLog() {
-        val name = Storage(this).exportLogToDownloads()
-        if (name == null) {
-            toast("書き出せませんでした(記録がまだ無いか、保存に失敗しました)")
-            return
-        }
-        toast("ダウンロードに保存しました: $name")
     }
 
     private fun toast(t: String) {
@@ -263,6 +290,16 @@ class MainActivity : Activity() {
             WalkState.ARRIVED -> "到着"
         }
         statusText.text = session.statusLine
+
+        val ext = session.params.audio.androidReadableExtensions
+        val song = OtoSanpoApp.instance.storage.musicFile(ext)
+        musicText.text = if (song == null) {
+            "音楽スポット: 曲が未選択\n端末の曲を 1 つ選びます。選んだ曲はアプリの中へ写します"
+        } else {
+            "音楽スポット: 曲 ${song.name}\n出発した地点から散歩時間に応じた距離に 1 つ置きます"
+        }
+        musicToggle.text = if (session.musicSpotWanted) "音楽スポット: 入" else "音楽スポット: 切"
+        musicToggle.isEnabled = song != null
         startButton.text =
             if (session.state == WalkState.IDLE || session.state == WalkState.ARRIVED) {
                 if (session.home == null) "ここを自宅にして散歩を開始" else "散歩を開始"
@@ -273,7 +310,5 @@ class MainActivity : Activity() {
             "距離 %.0f m / 時間 %.0f 分 / イベント %d 件\n%s".format(
                 s.pathLengthM, s.durationSec / 60, s.guidanceEvents.size, endings)
         } ?: "記録はまだありません"
-
-        logText.text = session.eventLog.reversed().take(12).joinToString("\n")
     }
 }

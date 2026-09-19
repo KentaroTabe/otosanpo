@@ -30,6 +30,20 @@
             </intent-filter>
         </activity>
 
+        <!-- 左上の三本線から開く。毎回設定するわけではないものを入れる(2026-09-19) -->
+        <activity
+            android:name=".MenuActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity"
+            android:label="メニュー" />
+
+        <!-- フィールドログ / イベントログ。EXTRA_MODE で切り替える -->
+        <activity
+            android:name=".LogActivity"
+            android:exported="false"
+            android:parentActivityName=".MenuActivity"
+            android:label="ログ" />
+
         <!-- 画面を消してポケットに入れても、位置更新と音を続けるための常駐サービス。
              iOS の UIBackgroundModes に相当するが、Android は通知の常駐が要る -->
         <service
