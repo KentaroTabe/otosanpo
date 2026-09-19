@@ -63,6 +63,11 @@ data class AppParameters(
         val musicSpotBearingDeadbandMinDeg: Double,
         val musicSpotBearingDeadbandMaxDeg: Double,
         val musicSpotBearingFollowSec: Double,
+        val musicSpotMoveIntervalSec: Double,
+        val musicSpotMoveResponseDelaySec: Double,
+        val musicSpotMoveResponseWindowSec: Double,
+        val musicSpotMoveMinSeparationM: Double,
+        val musicSpotMoveFadeSec: Double,
     ) {
         /** MusicSpot に渡す設定値。**散歩時間で距離が決まる**ので時間を渡す */
         fun musicSpot(durationMin: Double) = MusicSpot.Params(
@@ -94,6 +99,14 @@ data class AppParameters(
                 minDeadbandDeg = musicSpotBearingDeadbandMinDeg,
                 maxDeadbandDeg = musicSpotBearingDeadbandMaxDeg,
                 timeConstantSec = musicSpotBearingFollowSec,
+            )
+
+        /** SpotMoveSchedule に渡す設定値 */
+        val musicSpotMove: SpotMoveSchedule.Params
+            get() = SpotMoveSchedule.Params(
+                baseIntervalSec = musicSpotMoveIntervalSec,
+                responseDelaySec = musicSpotMoveResponseDelaySec,
+                responseWindowSec = musicSpotMoveResponseWindowSec,
             )
     }
     @Serializable
@@ -275,6 +288,7 @@ data class AppParameters(
         val returnAck: ToneSpec,
         val homeBeacon: ToneSpec,
         val arrival: ToneSpec,
+        val spotMove: ToneSpec,
     ) {
         operator fun get(e: Earcon): ToneSpec = when (e) {
             Earcon.SUGGESTION -> suggestion
@@ -282,6 +296,7 @@ data class AppParameters(
             Earcon.RETURN_ACK -> returnAck
             Earcon.HOME_BEACON -> homeBeacon
             Earcon.ARRIVAL -> arrival
+            Earcon.SPOT_MOVE -> spotMove
         }
     }
 
@@ -307,7 +322,19 @@ data class AppParameters(
          * 小さいほど鋭くなり、両耳間時間差(ITD)の手がかりになる
          */
         val attackRatio: Double,
-    )
+    ) {
+        /**
+         * **この音が鳴り終わるまでの長さ** [sec]。
+         * 応答の窓を「鳴り終わってから」開くために要る(→ SpotMoveSchedule)。
+         * 音は「blip を freqs の数だけ、間に gap を挟んで」並べる(→ ToneRenderer)
+         */
+        val durationSec: Double
+            get() {
+                val n = freqsHz.size
+                if (n <= 0) return 0.0
+                return n * maxOf(0.0, blipSec) + (n - 1) * maxOf(0.0, gapSec)
+            }
+    }
 
     @Serializable
     data class Summary(

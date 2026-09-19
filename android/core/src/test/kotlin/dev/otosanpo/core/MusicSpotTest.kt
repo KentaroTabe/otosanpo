@@ -181,4 +181,95 @@ class MusicSpotTest {
         val far = MusicSpot(Geo.destination(origin, 0.0, 30.0))
         assertTrue(!far.isReached(origin, p))
     }
+
+    // MARK: - 置き直す時の選び方(2026-09-18 利用者依頼「特定の箇所に固まらないように」)
+
+    /** **これまでに置いた所の近くは選ばない**(→ 合議 M2) */
+    @Test
+    fun `spread choice avoids previous spots`() {
+        val p = params(min = 60.0, max = 100.0, steps = 1)
+        val north = Geo.destination(origin, 0.0, 80.0)
+        val candidates = MusicSpot.candidates(origin, p)
+        // 北を避けると、北の候補は 1 つも選ばれない
+        for (i in 0 until 12) {
+            val spot = MusicSpot.chooseSpread(candidates, origin, listOf(north), 20.0, p) { i }
+            assertNotNull(spot)
+            assertTrue(Geo.distanceM(spot.center, north) >= 20.0)
+        }
+    }
+
+    /**
+     * ちょうどの距離は許す(→ 合議 M2)。
+     *
+     * **期待値は測った距離から作る。** `destination` で 20 m 先を作っても、
+     * `distanceM` で測り返すと 20 m ちょうどにはならない(平面近似と haversine の往復)
+     */
+    @Test
+    fun `exactly the separation is allowed`() {
+        val p = params(min = 60.0, max = 100.0, steps = 1)
+        val spotPoint = Geo.destination(origin, 0.0, 80.0)
+        val away = Geo.destination(spotPoint, 90.0, 20.0)
+        val measured = Geo.distanceM(spotPoint, away)
+        assertEquals(20.0, measured, 0.05, "前提: ほぼ 20 m(実測 $measured)")
+        assertNotNull(
+            MusicSpot.chooseSpread(listOf(away), origin, listOf(spotPoint), measured, p) { 0 },
+            "ちょうどの距離は残ること")
+        assertNull(
+            MusicSpot.chooseSpread(listOf(away), origin, listOf(spotPoint), measured + 0.01, p) { 0 },
+            "それより近ければ外れること")
+    }
+
+    /** **北や先頭に固定的に寄らない**(→ 合議 M4) */
+    @Test
+    fun `spread choice can pick any eligible candidate`() {
+        val p = params(min = 60.0, max = 100.0, steps = 1)
+        val candidates = MusicSpot.candidates(origin, p)
+        val seen = mutableSetOf<String>()
+        for (i in 0 until 12) {
+            val s = MusicSpot.chooseSpread(candidates, origin, emptyList(), 20.0, p) { i }
+                ?: continue
+            seen.add("%.4f,%.4f".format(s.center.latitude, s.center.longitude))
+        }
+        assertTrue(seen.size > 4, "選び先が散らばること(得た数 ${seen.size})")
+    }
+
+    /** 同じ地点に重なった候補は 1 票にまとめる(道へ寄せると重なる → 合議 M3) */
+    @Test
+    fun `duplicate points count once`() {
+        val p = params(min = 60.0, max = 100.0, steps = 1)
+        val a = Geo.destination(origin, 0.0, 80.0)
+        val chosen = MusicSpot.chooseSpread(listOf(a, a, a), origin, emptyList(), 20.0, p) { count ->
+            assertEquals(1, count, "3 つ渡しても 1 票")
+            0
+        }
+        assertNotNull(chosen)
+    }
+
+    /** **選べなければ null。条件を黙って緩めない**(→ 合議 M5) */
+    @Test
+    fun `no eligible candidate returns null`() {
+        val p = params(min = 60.0, max = 100.0, steps = 1)
+        val candidates = MusicSpot.candidates(origin, p)
+        // **全候補を避ければ**何も残らない
+        assertNull(MusicSpot.chooseSpread(candidates, origin, candidates, 20.0, p) { 0 })
+    }
+
+    /** 帯の外は選ばない(既存の `choose` と同じ条件 → 合議 M1) */
+    @Test
+    fun `spread choice keeps the distance band`() {
+        val p = params(min = 60.0, max = 100.0, steps = 1)
+        val tooNear = Geo.destination(origin, 0.0, 30.0)
+        val tooFar = Geo.destination(origin, 180.0, 300.0)
+        assertNull(
+            MusicSpot.chooseSpread(listOf(tooNear, tooFar), origin, emptyList(), 20.0, p) { 0 })
+    }
+
+    /** 範囲外の番号を返されても落ちない(挟み込む) */
+    @Test
+    fun `pick is clamped`() {
+        val p = params(min = 60.0, max = 100.0, steps = 1)
+        val candidates = MusicSpot.candidates(origin, p)
+        assertNotNull(MusicSpot.chooseSpread(candidates, origin, emptyList(), 20.0, p) { 9999 })
+        assertNotNull(MusicSpot.chooseSpread(candidates, origin, emptyList(), 20.0, p) { -5 })
+    }
 }

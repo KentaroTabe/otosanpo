@@ -2,7 +2,9 @@ package dev.otosanpo.core
 
 /**
  * earcon(非言語効果音)の語彙。音の実体は再生側が `config` の tones から合成する。
- * **5 種から増やさない**(docs/01)。
+ *
+ * **案内の 5 種から増やさない**(docs/01)。[SPOT_MOVE] は案内ではなく
+ * 音楽スポット(実験)の問いかけで、曲を選んでいない限り一度も鳴らない。
  */
 enum class Earcon {
     /** 寄り道の提案(散策中の曲がり角の誘導)。延長了解音としても暫定共用 */
@@ -19,6 +21,13 @@ enum class Earcon {
 
     /** 到着 */
     ARRIVAL,
+
+    /**
+     * **音楽スポットを移す提案**(2026-09-18 利用者依頼・Android は 2026-09-19)。
+     * Android では「音量↓ = 別の場所へ移る / 音量↑・放っておけばそのまま」。
+     * **時間到来のプロンプトとは別の音**にする — どちらへの返事かが分からなくなるため
+     */
+    SPOT_MOVE,
 }
 
 enum class WalkState { IDLE, WANDERING, PROMPTING_RETURN, RETURNING, ARRIVED }

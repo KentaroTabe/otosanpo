@@ -116,14 +116,27 @@ class MainActivity : Activity() {
     }
 
     /**
-     * **音量ボタンを応答に使う**(時間到来の応答待ちの間だけ)。
-     * 下げる = 帰る、上げる = 延長。それ以外の場面では普通の音量操作に通す
+     * **音量ボタンを応答に使う**(応答待ちの間だけ)。それ以外の場面では普通の音量操作に通す。
+     *
+     * 2 種類の問いかけがあるが、**同時には開かない**(スポットを移す提案は
+     * 散策中しか出さず、帰路の問いかけが入れば見送られる → `WalkSession.tickSpotMove`)。
+     *
+     * | 問いかけ | 音量↓ | 音量↑ |
+     * |---|---|---|
+     * | 時間到来 | 帰る | 延長 |
+     * | スポットを移す | 移す | そのまま |
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (session.state == WalkState.PROMPTING_RETURN) {
             when (keyCode) {
                 KeyEvent.KEYCODE_VOLUME_DOWN -> { session.nod(); return true }
                 KeyEvent.KEYCODE_VOLUME_UP -> { session.shake(); return true }
+            }
+        }
+        if (session.acceptsSpotMoveResponse) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_DOWN -> { session.acceptSpotMove(); return true }
+                KeyEvent.KEYCODE_VOLUME_UP -> { session.refuseSpotMove(); return true }
             }
         }
         return super.onKeyDown(keyCode, event)

@@ -213,5 +213,38 @@ data class MusicSpot(val center: GeoPoint) {
             }
             return bestPoint?.let { MusicSpot(it) }
         }
+
+        /**
+         * 移す先を選ぶ。**これまでに置いた所から離し、帯の中から選ぶ**
+         * (2026-09-19 に iOS から移植)。
+         *
+         * [choose] と違い「目標の距離にいちばん近いもの」は選ばない。
+         * 毎回同じ規則で選ぶと**同じ所ばかりに置かれる**ので、条件を満たすものから
+         * [pick] に選ばせる(呼ぶ側が乱数を渡す。試験では固定の値を渡せる)。
+         *
+         * @param avoiding これまでに置いた中心。ここから [minSeparationM] 未満は外す
+         */
+        fun chooseSpread(
+            candidates: List<GeoPoint>, start: GeoPoint,
+            avoiding: List<GeoPoint>, minSeparationM: Double,
+            p: Params, pick: (Int) -> Int,
+        ): MusicSpot? {
+            val eligible = mutableListOf<GeoPoint>()
+            for (c in candidates) {
+                val d = Geo.distanceM(start, c)
+                if (d < p.minDistanceM || d > p.maxDistanceM) continue
+                // **これまでに置いた所の近くは外す**
+                if (avoiding.any { Geo.distanceM(it, c) < minSeparationM }) continue
+                // 道へ寄せると別々の候補が同じ地点に重なる。**票を 1 つにまとめる**
+                if (eligible.any { Geo.distanceM(it, c) < SAME_POINT_M }) continue
+                eligible.add(c)
+            }
+            if (eligible.isEmpty()) return null
+            val i = pick(eligible.size).coerceIn(0, eligible.size - 1)
+            return MusicSpot(eligible[i])
+        }
+
+        /** 道へ寄せた結果が同じ地点とみなせる距離 [m](iOS 版と同じ) */
+        private const val SAME_POINT_M = 1.0
     }
 }

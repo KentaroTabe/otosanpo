@@ -18,6 +18,7 @@ import dev.otosanpo.core.ReturnAck
 import dev.otosanpo.core.ReturnBudget
 import dev.otosanpo.core.RouteField
 import dev.otosanpo.core.SpeedEstimator
+import dev.otosanpo.core.SpotMoveSchedule
 import dev.otosanpo.core.TravelDirection
 import dev.otosanpo.core.TravelDirectionFix
 import dev.otosanpo.core.TurnGuidance
@@ -90,6 +91,13 @@ class WalkSession(
     /** 最後に見た位置。**音は位置更新より細かく付け直す**ので覚えておく */
     private var lastMusicPosition: GeoPoint? = null
     private var musicTick: Runnable? = null
+
+    /** **スポットを移す提案の日程**(→ Core の SpotMoveSchedule・2026-09-19) */
+    private var spotMove = SpotMoveSchedule()
+    /** 音を絞り始めた時刻。絞り切ってから中心を入れ替える(→ 合議 M7) */
+    private var spotMoveFadeOutStartedAt: Long? = null
+    /** これまでに置いた中心。**同じ所に固まらない**ために避ける */
+    private val placedSpots = mutableListOf<GeoPoint>()
 
     private var extensionsUsed = 0
     private var plannedDurationMin = 0.0
@@ -386,6 +394,12 @@ class WalkSession(
         musicBearingHold.reset()
         lastMusicUpdateAt = null
         lastMusicPosition = start
+        // **移す提案は、音が実際に鳴り始めた時から数える**(待った時間は含めない → 合議 E1)
+        placedSpots.clear()
+        placedSpots.add(spot.center)
+        spotMove = SpotMoveSchedule()
+        spotMove.start(System.currentTimeMillis() / 1000.0, params.experiment.musicSpotMove)
+        spotMoveFadeOutStartedAt = null
         // 位置更新(約 1 Hz)より細かく付け直す。立ち上がりが階段にならないように
         fireMusicTick()
         log("音楽スポット: %.0fm 先 方位 %.0f°(%s)".format(
@@ -425,6 +439,13 @@ class WalkSession(
      * 鳴り始めの立ち上がりが 1 秒刻みの階段になり、向きの追従も効かない
      */
     private fun renderMusic() {
+        // **移す提案の時刻の勘定は、音を付け直すのと同じ所で回す**(タイマーを増やさない)。
+        // iOS は位置更新(約 1 Hz)に乗せているが、Android はここが 10 Hz なので
+        // 窓の開け閉めがより細かく合う
+        val tickNow = System.currentTimeMillis()
+        tickSpotMove(tickNow)
+        swapSpotIfFadedOut(tickNow)
+
         val spot = musicSpot ?: return
         val p = lastMusicPosition ?: return
         val sp = params.experiment.musicSpot(durationMin)
@@ -441,7 +462,7 @@ class WalkSession(
             gainFromDistanceM = musicGainFromM ?: distance,
             p = sp,
         )
-        music.setPlacement(placed, musicFadeFactor(now))
+        music.setPlacement(placed, musicFadeFactor(now) * musicFadeOutFactor(now))
         if (now - lastMusicLogAt < (params.experiment.musicLogIntervalSec * 1000).toLong()) return
         lastMusicLogAt = now
         val uncertainty = BearingHold.uncertaintyDeg(
@@ -477,6 +498,117 @@ class WalkSession(
         return ((now - started) / 1000.0 / fade).coerceIn(0.0, 1.0)
     }
 
+    // MARK: - スポットを移す提案(2026-09-19 に iOS から移植)
+
+    /**
+     * 提案を出す時刻か / 応答の窓が閉じたかを見る。**音楽を鳴らしている間だけ**動く。
+     *
+     * > 「ある程度時間が経ったらイベントが発生し、うなずくとスポットが移動する。
+     * > 断ったら間隔が倍々に増え、合意して移動したら間隔はそのまま」(利用者依頼)
+     *
+     * Android の答え方は**音量ボタン**(↓ = 移す / ↑ = そのまま)。
+     * 「帰る / 延長」と同じ流儀で、ポケットの中でも押せる
+     */
+    private fun tickSpotMove(now: Long) {
+        if (musicSpot == null) return
+        val t = now / 1000.0
+        val p = params.experiment.musicSpotMove
+        if (state != WalkState.WANDERING) {
+            // **中断は断りに数えない**(→ 合議 E10)。帰路のプロンプトが割り込んだ時など、
+            // 利用者が何もしていないのに提案が遠のくのを避ける
+            if (spotMove.window != null) {
+                spotMove.postpone(t)
+                logToFile("スポットの移動: 別の問いかけが入ったので見送りました(断りには数えません)")
+            }
+            return
+        }
+        // 窓が閉じた = 返事が無かった → **断り**(→ 合議 E5)
+        if (spotMove.windowExpired(t)) {
+            spotMove.refused(t)
+            log("スポットの移動: 返事なし(次は %.0f 秒後)".format(spotMove.intervalSec))
+            return
+        }
+        if (!spotMove.isDue(t)) return
+        // **先に候補を確かめる。** 移せない所で提案しても断らせるだけ(→ 合議 E2・M5)
+        if (nextSpotCandidate() == null) {
+            spotMove.postpone(t)
+            logToFile("スポットの移動: 移せる場所が無いので見送りました(断りには数えません)")
+            return
+        }
+        player.play(Earcon.SPOT_MOVE, 0.0)
+        spotMove.prompted(t + params.audio.tones[Earcon.SPOT_MOVE].durationSec, p)
+        log("スポットの移動: 音量↓で別の場所へ移ります(音量↑・放っておけばそのまま)")
+    }
+
+    /** いま移す提案の返事を受け付けているか(画面の音量ボタンから引く) */
+    val acceptsSpotMoveResponse: Boolean
+        get() = musicSpot != null && state == WalkState.WANDERING &&
+            spotMove.acceptsResponse(System.currentTimeMillis() / 1000.0)
+
+    /** **合意された。** 音を絞り切ってから中心を入れ替える(→ 合議 M7) */
+    fun acceptSpotMove() {
+        if (!acceptsSpotMoveResponse) return
+        val now = System.currentTimeMillis()
+        spotMove.accepted(now / 1000.0)
+        spotMoveFadeOutStartedAt = now
+        log("スポットの移動: 受け取りました(音を絞ってから移します)")
+    }
+
+    /** **断られた。** 次までの間隔が倍になる */
+    fun refuseSpotMove() {
+        if (!acceptsSpotMoveResponse) return
+        spotMove.refused(System.currentTimeMillis() / 1000.0)
+        log("スポットの移動: そのままにします(次は %.0f 秒後)".format(spotMove.intervalSec))
+    }
+
+    /** 移す先の候補。**これまでに置いた所から離し、帯の中から選ぶ** */
+    private fun nextSpotCandidate(): MusicSpot? {
+        val here = location.position ?: return null
+        val p = params.experiment.musicSpot(durationMin)
+        val raw = MusicSpot.candidates(here, p)
+        val snapped = graph?.let { g ->
+            raw.mapNotNull { g.snap(it, params.route.snapMaxDistanceM)?.point }
+        } ?: emptyList()
+        return MusicSpot.chooseSpread(
+            candidates = if (snapped.isEmpty()) raw else snapped, start = here,
+            avoiding = placedSpots,
+            minSeparationM = params.experiment.musicSpotMoveMinSeparationM,
+            p = p, pick = { (0 until it).random() })
+    }
+
+    /** 絞り切ったら中心を入れ替える。**曲の再生位置は戻さない**(→ 合議 M8) */
+    private fun swapSpotIfFadedOut(now: Long) {
+        val started = spotMoveFadeOutStartedAt ?: return
+        val fade = maxOf(0.01, params.experiment.musicSpotMoveFadeSec)
+        if ((now - started) / 1000.0 < fade) return
+        spotMoveFadeOutStartedAt = null
+        val here = location.position ?: lastMusicPosition
+        // **移す直前にもう一度選び直す**(歩いている間に予算や距離が変わる → 合議 M6)
+        val next = nextSpotCandidate()
+        if (next == null || here == null) {
+            log("スポットの移動: 直前に移せる場所が無くなったので取りやめました")
+            musicStartedAt = now          // 絞った音を戻す
+            return
+        }
+        musicSpot = next
+        placedSpots.add(next.center)
+        musicSpotReached = false
+        musicGainFromM = Geo.distanceM(here, next.center)
+        musicBearingHold.reset()
+        lastMusicUpdateAt = null
+        lastMusicPosition = here
+        musicStartedAt = now              // ここから立ち上げ直す
+        log("スポットの移動: %.0fm 先 方位 %.0f° へ移しました(%d 回目)".format(
+            musicGainFromM ?: 0.0, Geo.bearingDeg(here, next.center), placedSpots.size - 1))
+    }
+
+    /** 絞っている最中の音量の係数。**移す時の飛びを隠す** */
+    private fun musicFadeOutFactor(now: Long): Double {
+        val started = spotMoveFadeOutStartedAt ?: return 1.0
+        val fade = maxOf(0.01, params.experiment.musicSpotMoveFadeSec)
+        return (1 - (now - started) / 1000.0 / fade).coerceIn(0.0, 1.0)
+    }
+
     private fun stopMusicSpot(reason: String) {
         if (musicSpot == null && !music.isPlaying) return
         music.onFinished = null
@@ -487,6 +619,10 @@ class WalkSession(
         musicBearingHold.reset()
         lastMusicUpdateAt = null
         lastMusicPosition = null
+        // 移す提案の予約と応答待ちも捨てる(→ 合議 E11)
+        spotMove.stop()
+        spotMoveFadeOutStartedAt = null
+        placedSpots.clear()
         cancel(musicTick)
         musicTick = null
         log("音楽スポット: 終了($reason)")
