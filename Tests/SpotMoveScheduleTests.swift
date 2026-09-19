@@ -106,6 +106,39 @@ final class SpotMoveScheduleTests: XCTestCase {
         XCTAssertTrue(s.isDue(at: 362))
     }
 
+    /// **応答待ちの最中に割り込まれたら、断りに数えず見送る**(→ 合議 E10)。
+    ///
+    /// 2026-09-19 に Android へ移植している途中で見つけた穴の再現。
+    /// 帰路の問いかけが割り込むと窓が開いたまま置き去りになり、
+    /// 延長して散策へ戻った時に期限切れ = 断りとして数えられていた
+    func testInterruptWhileWaitingDoesNotCountAsRefusal() {
+        var s = SpotMoveSchedule()
+        let p = params(base: 180, delay: 0.5, window: 8)
+        s.start(at: 0, p: p)
+        s.prompted(promptEndsAt: 180, p: p)
+        XCTAssertTrue(s.acceptsResponse(at: 181))
+
+        // 帰路の問いかけが割り込んだ
+        XCTAssertTrue(s.interruptIfWaiting(at: 181), "応答待ちだったので見送る")
+        XCTAssertEqual(s.refusals, 0, "断りに数えない")
+        XCTAssertEqual(s.intervalSec, 180, accuracy: 1e-9, "間隔は変わらない")
+        XCTAssertFalse(s.acceptsResponse(at: 182), "窓は畳まれている")
+
+        // **置き去りの窓が残っていない**ので、戻ってきても断りにならない
+        XCTAssertFalse(s.windowExpired(at: 1000))
+        XCTAssertTrue(s.isDue(at: 361), "見送った時刻 + いまの間隔")
+    }
+
+    /// 応答待ちでなければ、割り込みは何もしない(予約を押し戻さない)
+    func testInterruptDoesNothingWhenNotWaiting() {
+        var s = SpotMoveSchedule()
+        let p = params(base: 180)
+        s.start(at: 0, p: p)
+        XCTAssertFalse(s.interruptIfWaiting(at: 50), "応答待ちではない")
+        XCTAssertTrue(s.isDue(at: 180), "予約はそのまま(50 + 180 へずれない)")
+        XCTAssertEqual(s.refusals, 0)
+    }
+
     /// 倍々を繰り返しても、短い間隔へ戻らない(→ 合議 E12)
     func testDoublingNeverWrapsAround() {
         var s = SpotMoveSchedule()

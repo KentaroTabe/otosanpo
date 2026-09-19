@@ -115,6 +115,24 @@ public struct SpotMoveSchedule: Equatable {
         nextAt = t + intervalSec
     }
 
+    /// **応答待ちの最中に割り込まれた**(帰路の問いかけが入った・散策から抜けた)。
+    ///
+    /// 応答待ちでなければ何もしない。待っていた時だけ [postpone] する。
+    ///
+    /// ## なぜ要るか(2026-09-19・Android への移植中に見つけた穴)
+    ///
+    /// 呼ぶ側は「散策中でなければ何もしない」で返していた。すると**窓が開いたまま
+    /// 置き去りになり**、延長して散策へ戻った時に期限切れとして [refused] が呼ばれ、
+    /// **利用者が何もしていないのに間隔が倍**になっていた。合議 E10 に反する。
+    ///
+    /// - Returns: 実際に見送ったか(記録に残すかの判断に使う)
+    @discardableResult
+    public mutating func interruptIfWaiting(at t: TimeInterval) -> Bool {
+        guard window != nil else { return false }
+        postpone(at: t)
+        return true
+    }
+
     /// 予約と応答待ちを捨てる(音楽の終了・帰路・散歩の終わり → 合議 E11)
     public mutating func stop() {
         nextAt = nil

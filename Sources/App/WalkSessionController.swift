@@ -1767,9 +1767,19 @@ final class WalkSessionController: ObservableObject {
     /// 「ある程度時間が経ったらイベントが発生し、うなずくとスポットが移動する。
     /// 断ったら間隔が倍々に増え、合意して移動したら間隔はそのまま」(利用者依頼)
     private func tickSpotMove(now: Date) {
-        guard musicSpot != nil, state == .wandering else { return }
+        guard musicSpot != nil else { return }
         let t = now.timeIntervalSinceReferenceDate
         let p = params.experiment.musicSpotMove
+        // **散策から抜けたら、応答待ちを畳む。** 帰路の問いかけが割り込んだ場合など。
+        // ここで畳まないと窓が開いたまま置き去りになり、延長して戻った時に
+        // 期限切れ = 断りとして数えられ、**利用者が何もしていないのに間隔が倍**になる
+        // (2026-09-19・Android への移植中に見つけた。→ 合議 E10)
+        guard state == .wandering else {
+            if spotMove.interruptIfWaiting(at: t) {
+                logToFile("スポットの移動: 別の問いかけが入ったので見送りました(断りには数えません)")
+            }
+            return
+        }
         // 窓が閉じた = 返事が無かった → **断り**(→ 合議 E5)
         if spotMove.windowExpired(at: t) {
             spotMove.refused(at: t)
