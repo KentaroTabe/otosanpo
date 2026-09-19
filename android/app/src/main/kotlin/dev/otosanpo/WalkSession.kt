@@ -100,6 +100,9 @@ class WalkSession(
     private val placedSpots = mutableListOf<GeoPoint>()
 
     private var extensionsUsed = 0
+
+    /** 残りの延長回数。画面に出して「押しても延びない」を防ぐ(iOS 版と同じ) */
+    val extensionsLeft: Int get() = maxOf(0, params.session.maxExtensions - extensionsUsed)
     private var plannedDurationMin = 0.0
     private var sessionEndMillis: Long? = null
     private var suggestionsEnabled = false
@@ -193,7 +196,8 @@ class WalkSession(
     /** 音量ボタン(下)= 帰る / (上)= 延長。画面のボタンからも同じ入口を使う */
     fun nod() = apply(WalkEvent.NOD)
     fun shake() = apply(WalkEvent.SHAKE)
-    fun debugTimeUp() = apply(WalkEvent.TIME_UP)
+    // **時間到来を画面から起こす口は持たない**(2026-09-19・iOS 版に揃えた)。
+    // 時間到来は時計から来るものだけにする(→ MenuActivity のコメント)
 
     fun playSample(e: Earcon, relativeBearingDeg: Double) {
         player.play(e, relativeBearingDeg)

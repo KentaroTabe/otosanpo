@@ -44,6 +44,8 @@ class MainActivity : Activity() {
     private lateinit var homeText: TextView
     private lateinit var musicText: TextView
     private lateinit var musicToggle: Button
+    private lateinit var promptSection: View
+    private lateinit var extendButton: Button
 
     /**
      * **曲を選ぶピッカー**(2026-09-19 利用者依頼)。
@@ -172,6 +174,11 @@ class MainActivity : Activity() {
 
         if (showMenuRow) root.addView(button("≡ メニュー") { openMenu() })
 
+        // **時間到来の応答を一番上に置く**(2026-09-19・iOS 版と同じ形にした)。
+        // ポケットから出して開いた人が最初に見る場所。**問いかけの間だけ出す** —
+        // 常に並べておくと、押せない時に押せてしまうように見える
+        root.addView(buildPromptSection())
+
         root.addView(heading("設定"))
         homeText = label("自宅: 未設定")
         root.addView(homeText)
@@ -206,13 +213,6 @@ class MainActivity : Activity() {
         startButton = button("散歩を開始") { toggleWalk() }
         root.addView(startButton)
 
-        root.addView(heading("応答(時間到来のとき)"))
-        root.addView(label("音量↓ = 帰る / 音量↑ = 延長。ポケットの中でも押せます"))
-        val answer = row()
-        answer.addView(button("帰る") { session.nod() })
-        answer.addView(button("延長") { session.shake() })
-        root.addView(answer)
-
         root.addView(heading("前回の散歩"))
         summaryText = label("記録はまだありません")
         root.addView(summaryText)
@@ -222,6 +222,34 @@ class MainActivity : Activity() {
         root.addView(caption("© OpenStreetMap contributors"))
 
         return scrolling(root)
+    }
+
+    /**
+     * 時間到来の問いかけ(iOS の `ContentView` の「時間になりました」に対応)。
+     *
+     * **音量ボタンが本来の答え方**で、ここは画面を開いた人のための逃げ道。
+     * iOS 版が「うなずき・首振りが使えない人のために画面にも用意する」としているのと
+     * 同じ位置づけで、Android では音量ボタンが効かない場面(画面が消えている等)に当たる
+     */
+    private fun buildPromptSection(): View {
+        val box = column().apply {
+            setPadding(0, 0, 0, 0)
+            visibility = View.GONE
+        }
+        box.addView(heading("時間になりました"))
+        box.addView(label("そろそろ帰りますか?").apply {
+            textSize = 18f
+            setTypeface(typeface, Typeface.BOLD)
+        })
+        val answer = row()
+        answer.addView(button("帰る") { session.nod() })
+        extendButton = button("もう少し歩く") { session.shake() }
+        answer.addView(extendButton)
+        box.addView(answer)
+        box.addView(caption("音量↓ = 帰る / 音量↑ = もう少し歩く でも答えられます。" +
+            "ポケットの中でも押せます"))
+        promptSection = box
+        return box
     }
 
     private fun errorView(message: String): View =
@@ -293,6 +321,15 @@ class MainActivity : Activity() {
     }
 
     private fun refresh() {
+        // **問いかけの間だけ出す**(iOS 版と同じ)。残りの延長回数も出して、
+        // 「押しても延びない」を防ぐ
+        val prompting = session.state == WalkState.PROMPTING_RETURN
+        promptSection.visibility = if (prompting) View.VISIBLE else View.GONE
+        val left = session.extensionsLeft
+        extendButton.isEnabled = left > 0
+        extendButton.text =
+            if (left > 0) "もう少し歩く(あと $left 回)" else "延長の上限に達しています"
+
         homeText.text = if (session.home == null) "自宅: 未設定" else "自宅: 設定済み"
         durationText.text = "散歩時間: ${session.durationMin.roundToInt()} 分"
         stateText.text = when (session.state) {

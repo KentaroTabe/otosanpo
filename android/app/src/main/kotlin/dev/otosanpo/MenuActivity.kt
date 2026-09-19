@@ -43,13 +43,9 @@ class MenuActivity : Activity() {
         root.addView(button("フィールドログ") { openLog(LogActivity.MODE_FIELD) })
         root.addView(button("イベントログ") { openLog(LogActivity.MODE_EVENT) })
 
-        root.addView(heading("デバッグ"))
-        root.addView(button("時間到来を発火") {
-            session.debugTimeUp()
-            finish()
-        })
-        root.addView(caption("散歩中に押すと、時間到来の流れを画面から起こせます"))
-
+        // **「時間到来を発火」は置かない**(2026-09-19 利用者判断)。
+        // iOS 版では 2026-09-17 に消してある(CLAUDE.md)。片方だけ画面から
+        // 流れを起こせると、**同じ手順で試したつもりの記録が食い違う**
         root.addView(heading("クレジット"))
         // 経路データは OpenStreetMap 由来。**ODbL は出典表示を求める**
         // (docs/04「OSM データの持ち方」)。主画面にも 1 行残してある
