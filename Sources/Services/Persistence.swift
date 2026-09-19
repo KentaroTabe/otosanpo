@@ -35,9 +35,53 @@ enum ConfigLoader {
 /// 名前は問わない(地図の `MapFiles` と同じ考え方)。**並びを名前順に固定する**ので、
 /// 同じ端末なら毎回同じ曲が選ばれる
 enum MusicStore {
+    /// 画面から選んだ曲の置き場。**拡張子は選んだ物に合わせる**(復号は拡張子ではなく
+    /// 中身で決まるが、`AVAudioFile` は拡張子から形式を推測することがある)
+    private static let chosenBase = "music-source"
+
     static func documentsURL() -> URL? {
         try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
                                      appropriateFor: nil, create: false)
+    }
+
+    /// 画面から選んで取り込んだ曲。無ければ nil
+    static func chosenFile(extensions: [String]) -> URL? {
+        guard let dir = documentsURL() else { return nil }
+        for ext in extensions {
+            let url = dir.appendingPathComponent("\(chosenBase).\(ext.lowercased())")
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    /// **選んだ曲を自分の置き場へ写す**(2026-09-19 利用者依頼)。
+    ///
+    /// ピッカーが返す URL は、そのままでは後で読めない
+    /// (iOS は security-scoped・Android は `content://` で失効しうる)。
+    /// **選んだその場で写しておけば、以後は普通のファイルとして扱える。**
+    /// クラウド上の曲を選ばれても、散歩中に通信が要らない
+    ///
+    /// - Returns: 写した先。写せなければ nil
+    @discardableResult
+    static func importFile(from source: URL, extensions: [String]) -> URL? {
+        guard let dir = documentsURL() else { return nil }
+        let ext = source.pathExtension.lowercased()
+        guard extensions.map({ $0.lowercased() }).contains(ext) else { return nil }
+        // 以前の曲は消す(拡張子が変わると残ってしまうため)
+        for old in extensions {
+            try? FileManager.default.removeItem(
+                at: dir.appendingPathComponent("\(chosenBase).\(old.lowercased())"))
+        }
+        let dest = dir.appendingPathComponent("\(chosenBase).\(ext)")
+        // **security-scoped の URL は、開く前に権限を取る**(ピッカー経由の URL)
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        do {
+            try FileManager.default.copyItem(at: source, to: dest)
+            return dest
+        } catch {
+            return nil
+        }
     }
 
     /// Documents にある音源のうち、名前順で最初のもの。無ければ nil。

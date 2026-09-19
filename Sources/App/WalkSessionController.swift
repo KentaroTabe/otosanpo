@@ -213,8 +213,30 @@ final class WalkSessionController: ObservableObject {
     /// `head_mount.enabled` のまま(画面の選択から実験の値へ到達しない・2026-09-18 合議)
     private(set) var headMountActive = false
     /// 音源が Documents にあるか。無ければ画面に選択肢を出さない
-    var musicFileAvailable: Bool {
-        MusicStore.firstFile(extensions: params.audio.musicSourceExtensions) != nil
+    var musicFileAvailable: Bool { musicSourceURL != nil }
+
+    /// 音楽スポットで鳴らす曲。**画面で選んだものを優先**し、無ければ
+    /// ファイルアプリに置かれたものを名前順で拾う(既存のテスターの手順を壊さないため)
+    var musicSourceURL: URL? {
+        let ext = params.audio.musicSourceExtensions
+        return MusicStore.chosenFile(extensions: ext) ?? MusicStore.firstFile(extensions: ext)
+    }
+
+    /// いま使う曲の名前(画面に出す)。無ければ nil
+    var musicSourceName: String? { musicSourceURL?.lastPathComponent }
+
+    /// **画面から選んだ曲を取り込む**(2026-09-19 利用者依頼)。
+    /// ピッカーが返す URL はそのままでは後で読めないので、その場で写しておく
+    func chooseMusicSource(_ url: URL) {
+        guard let saved = MusicStore.importFile(from: url,
+                                                extensions: params.audio.musicSourceExtensions)
+        else {
+            alertMessage = "この曲は読み込めませんでした(対応している形式: "
+                + params.audio.musicSourceExtensions.joined(separator: " / ") + ")"
+            return
+        }
+        log("音楽スポット: 曲を取り込みました(\(saved.lastPathComponent))")
+        objectWillChange.send()
     }
 
     /// **音楽スポットの最中は、散策の案内音を鳴らさない**(2026-09-18 利用者依頼)。
@@ -264,7 +286,10 @@ final class WalkSessionController: ObservableObject {
         durationMin = params.session.defaultDurationMin
         // **まだ選んでいなければ、このビルドの既定に従う**(実験ビルド = 倍音を足した音)。
         // 一度選んだら次からはその選択(→ SettingStore)
-        orientationMode = SettingStore.loadOrientationMode()
+        // **配る版では頭の向きを使わない**(2026-09-19 利用者判断)。
+        // 画面から選ぶ道を無くしたので、前に選ばれていた値が残っていても進む向きへ戻す。
+        // 実験は `head_mount.enabled`(ビルドの設定)からだけ入れる(→ docs/13)
+        orientationMode = .travelDirection
         rearDarkening = SettingStore.loadRearDarkening()
         earAngleMap = SettingStore.loadEarAngleMap()
         guidanceToneExperimental = SettingStore.loadGuidanceToneExperimental()
@@ -1467,8 +1492,8 @@ final class WalkSessionController: ObservableObject {
         pendingMusicURL = nil
         musicWaitStartedAt = nil
         guard musicSpotWanted, let start = location.position else { return }
-        guard let url = MusicStore.firstFile(extensions: params.audio.musicSourceExtensions) else {
-            log("音楽スポット: 音源がありません(Finder の「iPhone > ファイル」に置いてください)")
+        guard let url = musicSourceURL else {
+            log("音楽スポット: 曲が選ばれていません(画面の「曲を選ぶ」から選んでください)")
             return
         }
         pendingMusicURL = url
