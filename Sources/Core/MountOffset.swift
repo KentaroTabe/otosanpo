@@ -171,6 +171,25 @@ public struct MountOffset: Equatable {
 
     public init() {}
 
+    /// **別の推定が出した値へ凍結値を差し替える**(2026-09-18)。
+    ///
+    /// 取り付けが変わったと判断したとき、`HeadMountFusion` がこれを呼ぶ。
+    /// 積んだ統計は捨てる(前の取り付けの証拠を持ち込まない)ので、
+    /// 以後は**門の内外の分類だけ**を返す。
+    ///
+    /// **fix の履歴は保つ。** 捨てると、差し替えの直後だけ「最初の fix」の扱いが
+    /// 更新頻度に依存する(50 Hz では**いま読んでいる fix** が、1 Hz では**次の fix** が
+    /// 区間の始点になり、証拠が 1 fix ぶんずれる)。
+    /// 頻度に依らないことは `MountOffset` 全体の約束(2026-09-10)
+    public mutating func replaceFrozen(deg: Double, concentration: Double) {
+        frozenDeg = Geo.normalizeDeg(deg)
+        frozenConcentration = concentration
+        x = 0
+        y = 0
+        evidenceSec = 0
+        lastDecayFixTime = nil
+    }
+
     /// 1 標本を取り込む。
     /// - Parameters:
     ///   - headingDeg: スマホの**生の**方位 [deg]

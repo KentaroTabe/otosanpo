@@ -30,9 +30,14 @@ android/.gradle/
 android/.kotlin/
 android/local.properties
 android/app/src/main/assets/parameters.json
+# 同梱する経路データ(-PbundledMap で入れる複製)。10〜40 MB あるのでコミットしない
 android/app/src/main/assets/otosanpo-map.json
 android/build/
 android/*/build/
 # Codex との往復の生ログ(scripts/ask_codex.sh の出力)。
 # **決まったことは docs/ へ書き写す。** 生ログは長く、読み返す価値が薄い
 codex-exchange/
+
+# 発表資料(2026-09-18 利用者判断「発表資料は GitHub にあげなくて良い」)。
+# ガイドライン・動画素材(251 MB)・生成したスライド・組み立ての道具をまとめて手元だけに置く
+slide/

@@ -46,9 +46,25 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         # 表示上の版。**外部テストの Beta App Review はこの値が変わるたびに要る**ので、
         # 中身の修正だけなら据え置き、ビルド番号(下)だけを上げる
-        MARKETING_VERSION: "1.0"
+        # 1.1(2026-09-19): 画面の作り直し(左上のメニュー・曲のピッカー)と、
+        # 音楽スポットの追加。**通信の内容が変わっていないかは毎回確かめる**
+        # (App のプライバシー申告は版ごとに見直す → docs/09_distribution_private.md)
+        MARKETING_VERSION: "1.1"
         # scripts/archive.sh が配信のたびに日時で上書きする。ここの値は既定にすぎない
         CURRENT_PROJECT_VERSION: "1"
+    # **個人化 HRTF**(2026-09-18 利用者依頼)。利用者が設定 > AirPods で作った
+    # 「個人用の空間オーディオ」の形(耳と頭の形)を、こちらの音にも適用させる。
+    # **コードの呼び出しは要らない** — この権利情報があると AVAudioEngine の定位に
+    # 自動で反映される(Apple の資料「Personalizing spatial audio in your app」)。
+    #
+    # **AirPods のヘッドトラッキングは入れない。**
+    # それは別の権利情報(com.apple.developer.coremotion.head-pose)と
+    # isListenerHeadTrackingEnabled で、**スマホを頭に固定しているこの装置では
+    # 二重に回ってしまう**(頭の向きは CMMotionManager から取っている)
+    entitlements:
+      path: Support/OtoSanpo.entitlements
+      properties:
+        com.apple.developer.spatial-audio.profile-access: true
     info:
       path: Support/Info.plist
       properties:

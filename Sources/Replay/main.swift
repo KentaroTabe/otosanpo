@@ -1274,6 +1274,10 @@ if headSamples.isEmpty {
     var usableSamples = 0
     var offsetAgreementSum = 0.0
     var offsetAgreementCount = 0
+    // **見直しの乗り換えを時刻つきで残す**(2026-09-18)。
+    // 「装着前に学習した値から、いつ・どの値へ乗り換えたか」は、この表でしか確かめられない
+    var swaps: [(elapsed: Double, deg: Double)] = []
+    var lastRelearnCount = 0
 
     for s in headSamples {
         let fix = courseObservation(at: s.time)
@@ -1281,6 +1285,10 @@ if headSamples.isEmpty {
                                 fixTime: fix.fixTime,
                                 at: s.time.timeIntervalSinceReferenceDate, p: fp)
         let elapsed = s.time.timeIntervalSince(t0)
+        if fusion.relearnCount != lastRelearnCount {
+            lastRelearnCount = fusion.relearnCount
+            swaps.append((elapsed, fusion.learnedOffsetDeg ?? .nan))
+        }
         if firstLearnedAt == nil, fusion.learnedOffsetDeg != nil { firstLearnedAt = elapsed }
         if firstUsableAt == nil, use.isUsable { firstUsableAt = elapsed }
         if use.isUsable { usableSamples += 1 }
@@ -1399,6 +1407,22 @@ if headSamples.isEmpty {
                      offsetAgreementSum / Double(offsetAgreementCount), offsetAgreementCount))
         print("    ※ ログを取った版の学習と比べた値です。版が違えばずれます"
               + "(付け直しがあった散歩では大きくずれるのが正しい)")
+    }
+    // **見直しの滑り窓**(2026-09-18)。装着前に学習した値から乗り換えたかを見る
+    if fp.relearnWindowEvidenceSec > 0 {
+        print(String(format: "  見直しの窓(証拠 %.0fs・差 %.0f° 超で乗り換え): 乗り換え %d 回",
+                     fp.relearnWindowEvidenceSec, fp.relearnMinDisagreeDeg, swaps.count))
+        for (elapsed, deg) in swaps.prefix(8) {
+            print(String(format: "    %6.0f 秒  → %+.1f°", elapsed, deg))
+        }
+        if swaps.count > 8 { print("    …ほか \(swaps.count - 8) 回") }
+        let windowLabel = fusion.windowOffsetDeg(p: fp)
+            .map { String(format: "%+.1f°", $0) } ?? "未成立"
+        print(String(format: "    窓の最終: %@(証拠 %.1fs・R=%.2f)",
+                     windowLabel as NSString, fusion.windowEvidenceSec,
+                     fusion.windowConcentration))
+    } else {
+        print("  見直しの窓: 無効(relearn_window_evidence_sec = 0)")
     }
     print(String(format: "  検疫の証拠(最終): 門内 %.1fs / 門外 %.1fs",
                  fusion.insideEvidenceSec, fusion.outsideEvidenceSec))

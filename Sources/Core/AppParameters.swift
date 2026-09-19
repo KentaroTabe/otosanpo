@@ -158,6 +158,16 @@ public struct AppParameters: Codable, Equatable {
         public var courseHoldSec: Double
         /// course が使えないとき端末コンパスへ退避するか
         public var allowCompassFallback: Bool
+        /// **位置を「案内向けの最高精度」で取るか**(`kCLLocationAccuracyBestForNavigation`)。
+        ///
+        /// 追加のセンサ(加速度・ジャイロ)を使う最高精度の要求で、**電力を多く使う**。
+        /// Apple は給電しながらの利用を勧めている。2026-09-18 の利用者判断で有効にした
+        /// (「電力消費は問題になっておらず、やる価値はある」)。
+        ///
+        /// **効果は未確認。** `horizontalAccuracy` は OS の見積もりであって実測誤差ではないので、
+        /// 数字が下がったことだけでは精度が上がった根拠にならない(2026-09-18 合議)。
+        /// 散歩の前後で比べる材料として、ログに「どちらで取ったか」を残す
+        public var useBestForNavigation: Bool
     }
 
     /// 散歩の記録(WalkSummary)。**開発中の振り返り用**の画面に効く
@@ -304,6 +314,33 @@ public struct AppParameters: Codable, Equatable {
         /// **画面を消して頭に載せる構成の要**: CoreMotion の配信が止まっても、
         /// 最後の頭の向きに音が凍りついたまま残らないようにする(2026-09-08)
         public var staleSec: Double
+        /// **音楽スポットの定位では、検疫の判断を無視するか**(2026-09-18 利用者判断)。
+        ///
+        /// 連続音では、基準が切り替わること自体が壊れた体験になる。
+        /// 実測(2026-09-18)では検疫の退避で 53 秒間、音が進行方位を基準に置かれ、
+        /// 「首を振っても音が動かない・階段状に飛ぶ」状態になった。
+        /// 鮮度と取り付けのずれの学習は守り、検疫の判断だけ捨てる
+        /// (→ HeadMountFusion.facingDegIgnoringQuarantine)
+        public var musicIgnoresQuarantine: Bool
+        /// **いま使っている値を見直す滑り窓に保つ証拠時間** [sec]。0 で見直さない(従来の一度きり)。
+        ///
+        /// 学習は一度きりで凍結する設計だったが、2026-09-18 の散歩で
+        /// **学習した 344.0° が、その後の実測と 106° 食い違ったまま 10 分続いた**。
+        /// **スマホは頭の後ろに固定するので、装着は必ず「開始」の後になる**ため、
+        /// 手に持っている間のずれ(実測 347°)を学習してしまった。
+        /// 凍結値は分類にしか使われず更新されないので、正しい値へ戻る道が無かった。
+        ///
+        /// 直近の証拠だけを見る滑り窓を並行して回し、窓が成立したら突き合わせる
+        /// (減衰つきの平均では、装着前の証拠を数分ぶん引きずってしまう)。
+        /// → HeadMountFusion.updateRelearning / OffsetWindow
+        public var relearnWindowEvidenceSec: Double
+        /// 見直しの窓の値が、いま使っている値から**これを超えて食い違ったら乗り換える** [deg]。
+        ///
+        /// 実測のずれは窓ごとに数十度散らばるので、小さくすると
+        /// **取り付けが変わっていないのに乗り換えが起き、音の基準が跳ぶ**。
+        /// **門(`offset_gate_deg`)とは役割が違う**(門は個々の標本の分類・
+        /// これは成立した 2 つの値の比較)ので、値が同じでも別項目にする
+        public var relearnMinDisagreeDeg: Double
 
         /// HeadingQuarantine に渡す設定値
         public var quarantine: HeadingQuarantine.Params {
@@ -327,7 +364,9 @@ public struct AppParameters: Codable, Equatable {
         public var fusion: HeadMountFusion.Params {
             HeadMountFusion.Params(offset: offsetEstimator,
                                    quarantine: quarantine,
-                                   staleSec: staleSec)
+                                   staleSec: staleSec,
+                                   relearnWindowEvidenceSec: relearnWindowEvidenceSec,
+                                   relearnMinDisagreeDeg: relearnMinDisagreeDeg)
         }
     }
 
@@ -405,6 +444,68 @@ public struct AppParameters: Codable, Equatable {
         public var musicSpotPinpointBeamDeg: Double
         /// 効果が最大の時、正面から外れたら下げる音量 [dB]。**首を振って探せる**ようにする
         public var musicSpotPinpointDepthDb: Double
+        /// **向きによる音量の割り振り** [dB]。正面 0・真後ろ −この値(→ MusicSpot.directivityDb)。
+        /// 左右の合計をほぼ一定に保つ HRTF だけでは前後が分からない、という実測への手当て(2026-09-18)
+        public var musicSpotDirectivityDepthDb: Double
+        /// 後ろの音を暗くし始める角度 [deg](正面から測る・2026-09-18)
+        public var musicSpotRearShelfStartDeg: Double
+        /// 真後ろで高域を落とす量 [dB](正の値)。**前後を音色で補助する**(→ MusicSpot.rearShelfDb)
+        public var musicSpotRearShelfDepthDb: Double
+        /// 高域を落とし始める周波数 [Hz]。耳介の手がかりが載る帯域より上に置く
+        public var musicSpotRearShelfHz: Double
+        /// **スポットの向きの遊び(不感帯)の下限** [deg]。0 で素通し。
+        ///
+        /// スポットの中心は動かないのに「小刻みに移動して聞こえる」のは、
+        /// 自分の位置の推定が揺れるため(実測 0〜5 m で 19°/s・20 m 以上で 1°/s 以下)。
+        /// → BearingHold。**段差を作らない遊び**なので、本当に動いた時は連続して付いていく
+        public var musicSpotBearingDeadbandMinDeg: Double
+        /// スポットの向きの遊びの上限 [deg]。近距離で不確かさが大きくなっても凍結させない蓋。
+        /// **大きくしすぎると、通り過ぎても向きが前のままになる**(2026-09-18 の合議で 10° へ)
+        public var musicSpotBearingDeadbandMaxDeg: Double
+        /// 遊びを抜けた目標へ追従する時定数 [sec]。
+        /// 遊びだけでは**入力が飛んだ時に出力も飛ぶ**(実測 82°)ので、ここで吸収する。
+        /// 2〜3 秒では通り過ぎる場面に間に合わない
+        public var musicSpotBearingFollowSec: Double
+
+        /// **耳の高さ** [m](スポットは地表にある)。0 で仰角を付けない。
+        ///
+        /// 近づくほど音が下から来る(5 m で −17°・2 m で −37°)。
+        /// **この角度は水平距離だけで決まる**ので、方位と違って位置の誤差に強い
+        /// (2026-09-18 利用者依頼)
+        public var musicSpotListenerHeightM: Double
+        /// 音の広がりが最大になる距離 [m]。これより遠いと一番広い
+        public var musicSpotSpreadFarM: Double
+        /// 音の広がりが消える距離 [m]。これより近いと一点に締まる
+        public var musicSpotSpreadNearM: Double
+        /// 広がりの最大値 [0..1]。直接音に対する残響の割合の上限。
+        /// **混ぜすぎると屋外の散歩で不自然になる**
+        public var musicSpotSpreadMax: Double
+        /// **スポットを移す提案の間隔** [sec]。断るたびに 2 倍になる(→ SpotMoveSchedule)
+        public var musicSpotMoveIntervalSec: Double
+        /// 提案が鳴り終わってから、応答を受け付け始めるまでの待ち [sec]。
+        /// 鳴っている最中のうなずきを拾わないため
+        public var musicSpotMoveResponseDelaySec: Double
+        /// 応答を受け付ける長さ [sec]。**散策中に常時ジェスチャを開けない**ための窓
+        public var musicSpotMoveResponseWindowSec: Double
+        /// 移す時、**これまでに置いた所から空ける距離** [m]。
+        /// 「特定の箇所に固まらないように」(2026-09-18 利用者依頼)
+        public var musicSpotMoveMinSeparationM: Double
+        /// 移す時に音を絞る / 戻す長さ [sec]。**向きと音量が飛ぶのを隠す**
+        public var musicSpotMoveFadeSec: Double
+
+        /// SpotMoveSchedule に渡す設定値
+        public var musicSpotMove: SpotMoveSchedule.Params {
+            SpotMoveSchedule.Params(baseIntervalSec: musicSpotMoveIntervalSec,
+                                    responseDelaySec: musicSpotMoveResponseDelaySec,
+                                    responseWindowSec: musicSpotMoveResponseWindowSec)
+        }
+
+        /// BearingHold に渡す設定値
+        public var musicSpotBearingHold: BearingHold.Params {
+            BearingHold.Params(minDeadbandDeg: musicSpotBearingDeadbandMinDeg,
+                               maxDeadbandDeg: musicSpotBearingDeadbandMaxDeg,
+                               timeConstantSec: musicSpotBearingFollowSec)
+        }
 
         /// MusicSpot に渡す設定値。**散歩時間で距離が決まる**ので時間を渡す
         public func musicSpot(durationMin: Double) -> MusicSpot.Params {
@@ -422,7 +523,13 @@ public struct AppParameters: Codable, Equatable {
                 pinpointStartM: musicSpotPinpointStartM,
                 pinpointFullM: musicSpotPinpointFullM,
                 pinpointBeamDeg: musicSpotPinpointBeamDeg,
-                pinpointDepthDb: musicSpotPinpointDepthDb)
+                pinpointDepthDb: musicSpotPinpointDepthDb,
+                directivityDepthDb: musicSpotDirectivityDepthDb,
+                rearShelfStartDeg: musicSpotRearShelfStartDeg,
+                rearShelfDepthDb: musicSpotRearShelfDepthDb,
+                listenerHeightM: musicSpotListenerHeightM,
+                spreadFarM: musicSpotSpreadFarM,
+                spreadNearM: musicSpotSpreadNearM)
         }
 
         /// 実験ビルドで実際に鳴らす音色を決める。
@@ -543,6 +650,22 @@ public struct AppParameters: Codable, Equatable {
         /// 0 で無効
         public var earconLeadSilenceSec: Double
         public var earconGain: Double
+        /// **音楽スポットで読む音源の拡張子**(小文字)。
+        ///
+        /// **Swift と Kotlin で別々に持たない**(2026-09-19)。別々に育つと必ずずれる。
+        /// iOS は `AVAudioFile` が開けるもの、Android は `MediaCodec` が復号できるものが
+        /// 対象で、**両方が読めるのは m4a(AAC)・mp3・wav・flac**。
+        /// `aif` / `aiff` / `caf` は Apple だけなので、Android へ出す時は外す判断が要る
+        /// (→ docs/08「音源の形式」)
+        public var musicSourceExtensions: [String]
+        /// **真横に聞こえる角度を合わせる時、つまみが振れる幅** [deg](片側)。
+        ///
+        /// 180 まで振れると、正面付近を合わせるのにつまみの travel を使い切ってしまう。
+        /// 真後ろは校正に使わない(印を付けられない)ので、そこまで動かす必要が無い。
+        /// **狭くするほど、同じ指の動きで細かく合わせられる**(2026-09-18 利用者依頼)
+        public var earCalibrationSpanDeg: Double
+        /// つまみの刻み [deg]。細かすぎると狙った所で止めにくい
+        public var earCalibrationStepDeg: Double
         public var tones: Tones
 
         public struct Tones: Codable, Equatable {
@@ -551,6 +674,15 @@ public struct AppParameters: Codable, Equatable {
             public var returnAck: ToneSpec
             public var homeBeacon: ToneSpec
             public var arrival: ToneSpec
+            /// スポットを移す提案(2026-09-18)。**時間到来とは別の音**
+            public var spotMove: ToneSpec
+            /// **真横に聞こえる角度を合わせる時の音**(2026-09-18 利用者依頼)。
+            ///
+            /// 「もう少し音の範囲を細く」— 像がぼやけるのは音のせい。
+            /// 440 Hz の純音は波長 78 cm で頭を回折し、**両耳間レベル差がほとんど出ない**
+            /// (ILD が効くのは概ね 1.5 kHz 以上)。なだらかな立ち上がりでは時間差の
+            /// 手がかりも弱い。**倍音を足して高域を作り、立ち上がりを鋭くする**と像が締まる
+            public var earCalibration: ToneSpec
         }
     }
 
@@ -585,5 +717,15 @@ public struct AppParameters: Codable, Equatable {
         /// 周期的で曖昧だが、「どちらの耳に先に届いたか」は一意に決まるため。
         /// 打楽器的になるので音色としても不自然ではない
         public var attackRatio: Double
+
+        /// **この音が鳴り終わるまでの長さ** [sec]。
+        /// 応答の窓を「鳴り終わってから」開くために要る(→ SpotMoveSchedule・2026-09-18)。
+        /// 音は「blip を freqs の数だけ、間に gap を挟んで」並べる(→ ToneRenderer)
+        public var durationSec: Double {
+            let n = Swift.max(0, freqsHz.count)
+            guard n > 0 else { return 0 }
+            return Double(n) * Swift.max(0, blipSec)
+                + Double(n - 1) * Swift.max(0, gapSec)
+        }
     }
 }
