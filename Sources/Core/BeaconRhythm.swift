@@ -50,10 +50,19 @@ public enum BeaconRhythm {
     /// 自宅までの距離に応じた音量 [0..1]。近いほど大きい。
     /// 距離を間隔ではなく音量で表すのは、間隔が歩調に取られるため
     public static func gain(distanceM: Double, p: Params) -> Double {
-        let span = p.farDistanceM - p.nearDistanceM
-        guard span > 0 else { return p.gainNear }
+        gain(distanceM: distanceM, nearDistanceM: p.nearDistanceM, farDistanceM: p.farDistanceM,
+             gainNear: p.gainNear, gainFar: p.gainFar)
+    }
+
+    /// 距離から音量への写像だけを取り出したもの。
+    /// **音楽スポット(MusicSpot)も同じ形を使う** — 間隔の設定を持たない相手に
+    /// ダミーの値を詰めさせないため(2026-09-09)
+    public static func gain(distanceM: Double, nearDistanceM: Double, farDistanceM: Double,
+                            gainNear: Double, gainFar: Double) -> Double {
+        let span = farDistanceM - nearDistanceM
+        guard span > 0 else { return gainNear }
         // t = 0(近い)〜 1(遠い)
-        let t = min(1, max(0, (distanceM - p.nearDistanceM) / span))
-        return p.gainNear + (p.gainFar - p.gainNear) * t
+        let t = min(1, max(0, (distanceM - nearDistanceM) / span))
+        return gainNear + (gainFar - gainNear) * t
     }
 }

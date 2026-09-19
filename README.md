@@ -6,9 +6,10 @@
 
 出発前に時間だけ決めれば、歩行中は短い効果音が普段通らない道への寄り道を提案する。
 時間が来たら音で知らせ、うなずきで帰路開始、首振りで延長。帰路は音が自宅へ導く。
-移動履歴は端末内にのみ保存し、外部へ送信しない。
-外へ出るのは地図を取得する時(散歩開始時の自動取得と画面のボタン)だけで、
-送るのは**その区画(約 5 km 角)の番号**のみ。揃っていれば通信しない
+移動履歴は端末内に保存する。
+周辺店舗候補を取得する時だけ、検索中心として現在地を Hot Pepper グルメサーチ API へ送る。
+地図を取得する時(散歩開始時の自動取得と画面のボタン)に送るのは
+**その区画(約 5 km 角)の番号**のみ。揃っていれば通信しない
 (→ [docs/12](docs/12_map_delivery.md))。
 
 > **試してくれる方へ: [docs/09_tester_guide.md](docs/09_tester_guide.md) を読んでください。**
@@ -80,7 +81,7 @@ scripts/test.sh "iPhone 17 Pro"
 ```
 
 Core(帰宅予算・グリッド・分岐提案・誘導・状態機械・散歩の記録)は純粋ロジックで、
-外部環境なしにユニットテストできる(181 件)。
+外部環境なしにユニットテストできる(291 件)。
 
 ## 検証の 3 段(散歩の回数を増やさないための約束)
 
@@ -108,11 +109,92 @@ scripts/                 setup / build / test / ログ取り込み / 再生
 project.yml              XcodeGen 定義(*.xcodeproj は生成物)
 ```
 
-## 既知の制限(2026-08-21 時点)
+## 店舗通過履歴の基盤(feature/shop-history)
+
+### 変更したファイル
+
+- `Sources/Core/ShopHistory.swift`: 店舗データ、通過履歴、散歩単位の重複除外、通過判定。
+- `Sources/Services/ShopHistoryService.swift`: 店舗候補取得 protocol、空 provider、端末内 JSON 永続化、Core への橋渡し。
+- `Sources/Services/HotPepperShopCandidateProvider.swift`: Hot Pepper グルメサーチ API から店舗候補を取得する provider。
+- `Sources/App/WalkSessionController.swift`: 散歩開始時に店舗通過セッションを初期化し、位置更新中と散歩終了時の経路に店舗判定を接続。
+- `Sources/Core/AppParameters.swift` / `config/parameters.json`: 通過判定距離 `shop_history.passage_radius_m` を追加。初期値は 30 m。
+- `Tests/ShopHistoryTests.swift` / `Tests/ParametersFileTests.swift`: 店舗履歴ロジックと設定値のテストを追加。
+
+### 新しく追加したデータ構造
+
+- `Shop`: 店舗ID、店名、緯度、経度、カテゴリを持つ店舗データ。
+- `ShopPassageHistory`: 店舗ID、初めて通った日時、最後に通った日時、通過回数を持つユーザー履歴。
+- `ShopHistory`: `shopsByID` と `historiesByShopID` を別々に保持する端末内アーカイブ。
+- `ShopPassageSession`: 1 回の散歩中にすでに数えた店舗IDを保持し、同じ散歩中の往復を 1 回にまとめる。
+- `ShopPassageUpdate`: 通過記録の更新結果。`isFirstPassage` で初回通過か判定できる。
+
+### 通過判定の仕組み
+
+散歩中は現在地と店舗座標の距離が `shop_history.passage_radius_m` 以下なら通過として扱う。
+散歩終了後は記録された経路の折れ線に対する最短距離で判定する。
+同じ店舗IDが同じ `ShopPassageSession` にすでに記録済みなら更新しないため、同じ散歩中に店の前を何度往復しても通過回数は 1 回だけ増える。
+別の散歩で再度通った場合は `passCount` を +1 し、`lastPassedAt` を更新する。初回だけ `firstPassedAt` と `lastPassedAt` が同じ日時になる。
+
+店舗候補の取得口は `ShopCandidateProviding` で分離している。
+API キーが設定されていれば `HotPepperShopCandidateProvider` が Hot Pepper グルメサーチ API から候補を取得する。
+候補取得時は、周辺検索のため現在地の緯度・経度を Hot Pepper グルメサーチ API へ送信する。
+API キーが未設定なら `EmptyShopCandidateProvider` に戻り、店舗候補取得は行わない。この場合も散歩、音声、帰宅誘導はそのまま動く。
+
+### Hot Pepper API キーの設定
+
+実キーはリポジトリにコミットしない。`Support/Signing.xcconfig` は `.gitignore` 済みなので、手元のこのファイルにだけ次を追加する。
+
+```xcconfig
+HOTPEPPER_API_KEY = your_api_key_here
+```
+
+`project.yml` から生成される `Info.plist` の `HotPepperAPIKey` にこの値が入り、アプリ起動時にキーが空でなければ Hot Pepper provider を使う。
+`$(HOTPEPPER_API_KEY)` のまま、または空文字の場合は未設定として扱う。
+
+**テスター配布では、使い捨ての口座で作ったキー 1 つを全員が使う**(2026-09-17 利用者判断)。
+ビルドすると実キーはアプリの `Info.plist` に入るので、**配布物から取り出せる**。
+避けられないので、使い捨ての口座で作り、漏れたら作り直す運用で受け止める。
+
+キーがリポジトリに載る経路は `Tests/DistributionHygieneTests.swift` が塞いでいる
+(`Support/Info.plist` と `project.yml` は差し込みの記号のまま・手本の xcconfig は空・
+`.gitignore` に `Support/Signing.xcconfig` の行がある、の 3 点を検査する)。
+
+店名を出す画面には提供元の表示(`ShopCreditLabel`)を添える。利用規約が
+「本サイト内の情報が、リクルートより提供されたものである旨を表示すること」を求めているため。
+
+### 実機で店舗候補取得を確認する
+
+1. `Support/Signing.xcconfig` に `DEVELOPMENT_TEAM` と `HOTPEPPER_API_KEY` を設定する。
+2. `xcodegen generate` を実行して `OtoSanpo.xcodeproj` を更新する。
+3. 実機にインストールし、位置情報を許可して散歩を開始する。
+4. 店舗の近くを通り、終了後に `field-logs` の `shop_pass shop_id=...` 行を確認する。
+
+API 通信が HTTP エラー、JSON デコードエラー、Hot Pepper レスポンス本文内のエラーで失敗しても、候補が空扱いになるだけで散歩は停止しない。
+
+### テスト内容
+
+- 初回通過で `Shop` と `ShopPassageHistory` が分離して保存され、`isFirstPassage` が true になること。
+- 別散歩で同じ店を再訪すると `passCount` が増え、初回日時を残したまま最終通過日時だけ更新されること。
+- 同じ散歩中の同じ店は 2 回目以降カウントされないこと。
+- 30 m の通過判定距離で、29 m の店は通過、31 m の店は対象外になること。
+- 散歩終了後の経路判定で、経路の折れ線から 30 m 以内の店だけ通過になること。
+- `config/parameters.json` の `shop_history.passage_radius_m` が実際にデコードされること。
+
+### 次に shop-map を実装するときに必要なこと
+
+- 店舗履歴の表示 UI、散歩レシート、ランキングなどを追加する。
+- API の店舗ID、店名、緯度、経度、カテゴリを `Shop` に正規化する。
+- API 呼び出し頻度、キャッシュ、失敗時の扱いを `Services` 側に置き、Core の `ShopHistory` には候補配列だけ渡す。
+- MAP UI では `ShopHistory.records` を読めば、店舗データと通過履歴を結合した一覧・ピン表示に使える。
+- 通過判定距離を調整したい場合は `config/parameters.json` の `shop_history.passage_radius_m` を変更する。
+
+## 既知の制限(2026-09-08 時点)
 
 - **音はコード合成のサイン波。** デザインされた音源への差し替えは保留中
-- 頭の向きは定位に反映していない。AirPods の yaw が旋回を追えなかったため
-  (角速度でやり直す実装を入れたが、既定では動作に入れていない)→ [docs/03](docs/03_session_and_audio.md)
+- 配布版では頭の向きを定位に反映していない。AirPods の yaw が旋回を追えなかったため
+  (角速度でやり直す実装を入れたが、既定では動作に入れていない)→ [docs/03](docs/03_session_and_audio.md)。
+  **スマホを頭に固定して絶対方位を取る実験装置**は入っているが、`head_mount.enabled` は
+  既定 false で、**実機で世界固定が成立するかは未確認** → [docs/13](docs/13_head_mount.md)
 - 前後の聴き分けは HRTF では成立しない。音色を暗くして代替している
 - 経路データが無い場所ではグリッドのみで動く(提案の質が落ちる)
 - ジェスチャ閾値・音量・間隔は実測に基づく暫定値。`config/parameters.json` で調整する
@@ -133,6 +215,7 @@ project.yml              XcodeGen 定義(*.xcodeproj は生成物)
 | [12 地図の配り方](docs/12_map_delivery.md) | タイル配信・自動取得・通信の約束 |
 | [13 スマホ頭部固定](docs/13_head_mount.md) | B・C 共通の実験基盤(絶対方位・磁気の検疫) |
 | [14 方針 B: 道の先から音がする](docs/14_direction_b.md) | 先導ビーコンの設計(帰路の一般化) |
+| [16 2 者で作る手順](docs/16_two_agent_workflow.md) | 片方が実装し、もう片方が検証する運用と道具 |
 
 配る側(署名・配信・審査)の手順は `docs/09_distribution_private.md` に分けてあり、
 **gitignore 対象なのでここには無い**。手順書をそのまま共有できる状態に保つため。

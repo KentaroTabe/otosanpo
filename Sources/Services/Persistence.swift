@@ -23,6 +23,87 @@ enum ConfigLoader {
     }
 }
 
+/// 音楽スポットで鳴らす音源(→ Core の MusicSpot・docs/08)。
+///
+/// **リポジトリにもアプリにも同梱しない。** 地図と同じく Documents
+/// (Finder の「iPhone > ファイル」)に置いたものを読む。理由は 2 つ:
+///
+/// - **権利の話をリポジトリに持ち込まない**(→ docs/15)。実験用の BGM は
+///   その場で差し替わるもので、コミットして配るものではない
+/// - 曲を変えるのにビルドが要らない
+///
+/// 名前は問わない(地図の `MapFiles` と同じ考え方)。**並びを名前順に固定する**ので、
+/// 同じ端末なら毎回同じ曲が選ばれる
+enum MusicStore {
+    /// 画面から選んだ曲の置き場。**拡張子は選んだ物に合わせる**(復号は拡張子ではなく
+    /// 中身で決まるが、`AVAudioFile` は拡張子から形式を推測することがある)
+    private static let chosenBase = "music-source"
+
+    static func documentsURL() -> URL? {
+        try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                     appropriateFor: nil, create: false)
+    }
+
+    /// 画面から選んで取り込んだ曲。無ければ nil
+    static func chosenFile(extensions: [String]) -> URL? {
+        guard let dir = documentsURL() else { return nil }
+        for ext in extensions {
+            let url = dir.appendingPathComponent("\(chosenBase).\(ext.lowercased())")
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    /// **選んだ曲を自分の置き場へ写す**(2026-09-19 利用者依頼)。
+    ///
+    /// ピッカーが返す URL は、そのままでは後で読めない
+    /// (iOS は security-scoped・Android は `content://` で失効しうる)。
+    /// **選んだその場で写しておけば、以後は普通のファイルとして扱える。**
+    /// クラウド上の曲を選ばれても、散歩中に通信が要らない
+    ///
+    /// - Returns: 写した先。写せなければ nil
+    @discardableResult
+    static func importFile(from source: URL, extensions: [String]) -> URL? {
+        guard let dir = documentsURL() else { return nil }
+        let ext = source.pathExtension.lowercased()
+        guard extensions.map({ $0.lowercased() }).contains(ext) else { return nil }
+        // 以前の曲は消す(拡張子が変わると残ってしまうため)
+        for old in extensions {
+            try? FileManager.default.removeItem(
+                at: dir.appendingPathComponent("\(chosenBase).\(old.lowercased())"))
+        }
+        let dest = dir.appendingPathComponent("\(chosenBase).\(ext)")
+        // **security-scoped の URL は、開く前に権限を取る**(ピッカー経由の URL)
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        do {
+            try FileManager.default.copyItem(at: source, to: dest)
+            return dest
+        } catch {
+            return nil
+        }
+    }
+
+    /// Documents にある音源のうち、名前順で最初のもの。無ければ nil。
+    ///
+    /// **読める拡張子は設定から渡す**(2026-09-19)。Swift と Kotlin で別々に持つと
+    /// 必ずずれるので、`config/parameters.json` の `audio.music_source_extensions`
+    /// 1 か所だけに置く(→ docs/08「音源の形式」)。
+    /// 再生そのものは `AVAudioFile` 任せで形式に依存しない
+    static func firstFile(extensions: [String]) -> URL? {
+        guard let dir = documentsURL(),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return nil
+        }
+        let allowed = Set(extensions.map { $0.lowercased() })
+        return names
+            .filter { allowed.contains(($0 as NSString).pathExtension.lowercased()) }
+            .sorted()
+            .first
+            .map { dir.appendingPathComponent($0) }
+    }
+}
+
 /// 通過履歴グリッドの永続化。端末内(Application Support)にのみ保存し、送信しない。
 enum GridStore {
     static func fileURL() throws -> URL {
@@ -69,6 +150,36 @@ enum SummaryStore {
 
     static func save(_ s: WalkSummary) {
         guard let url = try? fileURL(), let data = try? JSONEncoder().encode(s) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
+/// 直近の散歩で見つけたものの永続化。`WalkSummary` と同じライフサイクルで 1 件だけ残す。
+enum DiscoverySummaryStore {
+    static func fileURL() throws -> URL {
+        let dir = try FileManager.default.url(for: .applicationSupportDirectory,
+                                              in: .userDomainMask,
+                                              appropriateFor: nil, create: true)
+        return dir.appendingPathComponent("walk_discovery_summary.json")
+    }
+
+    static func load() -> WalkDiscoverySummary? {
+        guard let url = try? fileURL() else { return nil }
+        return load(from: url)
+    }
+
+    static func load(from url: URL) -> WalkDiscoverySummary? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(WalkDiscoverySummary.self, from: data)
+    }
+
+    static func save(_ s: WalkDiscoverySummary) {
+        guard let url = try? fileURL() else { return }
+        save(s, to: url)
+    }
+
+    static func save(_ s: WalkDiscoverySummary, to url: URL) {
+        guard let data = try? JSONEncoder().encode(s) else { return }
         try? data.write(to: url, options: .atomic)
     }
 }
@@ -181,6 +292,89 @@ enum SpeedStore {
         if let data = try? JSONEncoder().encode(e) {
             UserDefaults.standard.set(data, forKey: key)
         }
+    }
+}
+
+/// 画面で選ぶ設定の永続化(端末内・UserDefaults)。
+///
+/// 散歩ごとに選び直させないためのもの。**外へ何かを送る設定は、既定を「送らない」側に置く**
+enum SettingStore {
+    /// 通りかかった店を調べるか。**既定は false**(現在地を外へ送らない側・2026-09-17 利用者判断)
+    private static let shopSearchKey = "shop_search_enabled"
+    /// 案内音に倍音を足すか。**未設定(nil)ならビルドの既定に従う**
+    private static let guidanceToneKey = "guidance_tone_experimental"
+    /// 音の向きの基準(→ Core の OrientationMode)。**既定は進む向き**(配布版の従来どおり)
+    private static let orientationModeKey = "orientation_mode"
+    /// 後ろの音を暗くするか。前後の手がかりの比較用(2026-09-18)
+    private static let rearDarkeningKey = "rear_darkening"
+    /// 真横に聞こえる角度の初期設定(→ Core の EarAngleMap・2026-09-18)
+    private static let earAngleMapKey = "ear_angle_map"
+
+    /// 保存先を差し替えられるようにしてあるのは、テストが**本物の設定を汚さない**ため
+    static func loadShopSearchEnabled(from defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: shopSearchKey)   // 未設定は false
+    }
+
+    static func saveShopSearchEnabled(_ on: Bool, to defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: shopSearchKey)
+    }
+
+    /// nil = まだ選んでいない(実験ビルドなら倍音、配布ビルドなら元の音)
+    static func loadGuidanceToneExperimental(from defaults: UserDefaults = .standard) -> Bool? {
+        guard defaults.object(forKey: guidanceToneKey) != nil else { return nil }
+        return defaults.bool(forKey: guidanceToneKey)
+    }
+
+    static func saveGuidanceToneExperimental(_ on: Bool, to defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: guidanceToneKey)
+    }
+
+    /// **既定は進む向き。** 頭部固定は利用者が選んだ時だけ使う(2026-09-18 利用者依頼)
+    static func loadOrientationMode(from defaults: UserDefaults = .standard) -> OrientationMode {
+        guard let raw = defaults.string(forKey: orientationModeKey),
+              let mode = OrientationMode(rawValue: raw) else { return .travelDirection }
+        return mode
+    }
+
+    static func saveOrientationMode(_ mode: OrientationMode,
+                                    to defaults: UserDefaults = .standard) {
+        defaults.set(mode.rawValue, forKey: orientationModeKey)
+    }
+
+    /// **既定は暗くする。** 前後が分からないという感想への手当て(2026-09-18)。
+    /// 比較のために画面から切れる
+    static func loadRearDarkening(from defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: rearDarkeningKey) != nil else { return true }
+        return defaults.bool(forKey: rearDarkeningKey)
+    }
+
+    static func saveRearDarkening(_ on: Bool, to defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: rearDarkeningKey)
+    }
+
+    /// **真横に聞こえる角度の初期設定**(→ Core の EarAngleMap・2026-09-18 利用者依頼)。
+    ///
+    /// **未校正は nil。** その時は置きたい角度をそのまま置く。
+    /// 範囲外・壊れた値は校正済みとして扱わない
+    static func loadEarAngleMap(from defaults: UserDefaults = .standard) -> EarAngleMap? {
+        guard let data = defaults.data(forKey: earAngleMapKey),
+              let cal = try? JSONDecoder().decode(EarAngleMap.self, from: data),
+              cal.isValid else { return nil }
+        return cal
+    }
+
+    /// 保存する。**範囲外は保存しない**(端に張り付いた値を成功として残さない)
+    @discardableResult
+    static func saveEarAngleMap(_ cal: EarAngleMap,
+                                to defaults: UserDefaults = .standard) -> Bool {
+        guard cal.isValid, let data = try? JSONEncoder().encode(cal) else { return false }
+        defaults.set(data, forKey: earAngleMapKey)
+        return true
+    }
+
+    /// 校正を捨てる(そのままの角度で置く形へ戻す)
+    static func clearEarAngleMap(from defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: earAngleMapKey)
     }
 }
 

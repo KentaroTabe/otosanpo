@@ -16,16 +16,41 @@ public struct MotionFix: Equatable {
     /// CLLocation.horizontalAccuracy(m、負値は無効)。
     /// 方向の判定には使わないが、「そもそも位置がどれだけ確かか」を後から見るために運ぶ
     public var horizontalAccuracyM: Double?
+    /// この fix を**一意に識別する時刻** [sec](CLLocation.timestamp)。
+    ///
+    /// なぜ要るか(2026-09-10): 頭方位は 50 Hz、GPS の fix は約 1 Hz。
+    /// 受信のたびに `motionFix()` を読み直すので、**同じ fix が 50 回、独立した
+    /// 証拠として学習に入っていた**。`ageSec` は「読んだ時点からの経過」なので
+    /// 呼ぶたびに変わり、同一性の判定には使えない
+    public var fixTime: TimeInterval?
 
     public init(courseDeg: Double? = nil, courseAccuracyDeg: Double? = nil,
                 speedMps: Double? = nil, compassHeadingDeg: Double? = nil,
-                ageSec: Double? = nil, horizontalAccuracyM: Double? = nil) {
+                ageSec: Double? = nil, horizontalAccuracyM: Double? = nil,
+                fixTime: TimeInterval? = nil) {
         self.courseDeg = courseDeg
         self.courseAccuracyDeg = courseAccuracyDeg
         self.speedMps = speedMps
         self.compassHeadingDeg = compassHeadingDeg
         self.ageSec = ageSec
         self.horizontalAccuracyM = horizontalAccuracyM
+        self.fixTime = fixTime
+    }
+}
+
+/// 学習・検疫へ渡す 1 つの fix の観測(→ `TravelDirection.courseObservation`)。
+///
+/// **course と fix の時刻を別々の値として持つ。** course が無効な fix でも時刻は要る —
+/// 無効な fix を挟んだ区間を「その間ずっと合っていた」と数えないため(2026-09-10)
+public struct CourseObservation: Equatable {
+    /// いま有効な生の course [deg]。無効なら nil(保持値もコンパスも入らない)
+    public var courseDeg: Double?
+    /// 最新の location fix の時刻 [sec]。fix がまだ無ければ nil
+    public var fixTime: TimeInterval?
+
+    public init(courseDeg: Double?, fixTime: TimeInterval?) {
+        self.courseDeg = courseDeg
+        self.fixTime = fixTime
     }
 }
 
@@ -84,6 +109,34 @@ public enum TravelDirection {
             return TravelDirectionFix(deg: Geo.normalizeDeg(compass), source: .compass)
         }
         return nil
+    }
+
+    /// **学習・検疫へ渡してよい「いま有効な生の course」**(→ docs/13)。
+    ///
+    /// `resolve` と違い、**保持値もコンパス退避も通さない**。立ち止まっている間に
+    /// 「止まる直前の course」と「回っている頭」を突き合わせると R が落ち、検疫が退避に落ちる
+    /// — 首を回して世界固定を確かめる試験が、自分の前提を壊す(2026-09-08)。
+    ///
+    /// 規則を Core の 1 か所に置くのは、**呼び出し側の配線を単体テストで押さえるため**。
+    /// Controller に `resolve(held: nil)` と書いていた頃は、うっかり保持値を渡す変更が入っても
+    /// どのテストも落ちなかった
+    public static func rawCourse(_ fix: MotionFix, params: AppParameters.Location) -> Double? {
+        guard let t = resolve(fix, held: nil, params: params), t.source == .course else {
+            return nil
+        }
+        return t.deg
+    }
+
+    /// 学習・検疫へ渡す **1 つの fix の観測**: 生の course(無効なら nil)と fix の時刻。
+    ///
+    /// **fix の時刻は course が無効でも返す**(2026-09-10 の検証で指摘)。
+    /// 無効な fix の時刻を捨てると、有効 t=0 → 無効 t=1 → 有効 t=2 のとき
+    /// 最後の証拠が 2 秒ぶんになる — course の無かった区間まで証拠に入ってしまう。
+    ///
+    /// 同じ `MotionFix` の写しから両方を取るのは、別々に取りに行って**取り違える**のを防ぐため
+    public static func courseObservation(_ fix: MotionFix,
+                                         params: AppParameters.Location) -> CourseObservation {
+        CourseObservation(courseDeg: rawCourse(fix, params: params), fixTime: fix.fixTime)
     }
 
     /// course が無効になった理由。ログに残して「なぜ左右が付かなかったか」を追えるようにする

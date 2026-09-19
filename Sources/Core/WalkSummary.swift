@@ -83,8 +83,13 @@ public struct WalkSummary: Codable, Equatable {
 
     public private(set) var startedAt: Date
     public private(set) var endedAt: Date?
+    public private(set) var walkID: WalkID
     /// 出発時の自宅。図に印を置き、枠にも含める
     public private(set) var home: GeoPoint?
+    /// 音楽スポットを置いた位置。**散歩のあとで経路図に出す**(2026-09-11 利用者依頼)。
+    /// 音だけで「どこで鳴っていたか」を感じ取る実験なので、答え合わせの材料になる。
+    /// 音楽を選ばなかった散歩では nil。**この項目が無い前の版の記録もそのまま読める**
+    public private(set) var musicSpot: GeoPoint?
     public private(set) var track: [GeoPoint] = []
     public private(set) var events: [Event] = []
     /// 実経路長 [m]。**測るのは GaitMetrics の仕事**なので、閉じるときに受け取るだけ
@@ -94,9 +99,40 @@ public struct WalkSummary: Codable, Equatable {
     private var thinScale: Double = 1
     private var guidanceCount = 0
 
-    public init(startedAt: Date, home: GeoPoint?) {
+    public init(walkID: WalkID = WalkID(), startedAt: Date, home: GeoPoint?) {
+        self.walkID = walkID
         self.startedAt = startedAt
         self.home = home
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case startedAt
+        case endedAt
+        case walkID
+        case home
+        // **鍵を書き並べる時は、項目を足すたびにここも足す。** 書き忘れると
+        // 保存も読み込みも黙って落ちる(2026-09-17 のマージで実際に落とした)
+        case musicSpot
+        case track
+        case events
+        case pathLengthM
+        case thinScale
+        case guidanceCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        walkID = try c.decodeIfPresent(WalkID.self, forKey: .walkID) ?? WalkID()
+        startedAt = try c.decode(Date.self, forKey: .startedAt)
+        endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
+        home = try c.decodeIfPresent(GeoPoint.self, forKey: .home)
+        musicSpot = try c.decodeIfPresent(GeoPoint.self, forKey: .musicSpot)
+        track = try c.decodeIfPresent([GeoPoint].self, forKey: .track) ?? []
+        events = try c.decodeIfPresent([Event].self, forKey: .events) ?? []
+        pathLengthM = try c.decodeIfPresent(Double.self, forKey: .pathLengthM) ?? 0
+        thinScale = try c.decodeIfPresent(Double.self, forKey: .thinScale) ?? 1
+        guidanceCount = try c.decodeIfPresent(Int.self, forKey: .guidanceCount)
+            ?? events.compactMap(\.number).max() ?? 0
     }
 
     /// 位置更新を経路に足す。`minSegmentM` 未満の動きは GPS の揺れとして捨てる
@@ -144,6 +180,11 @@ public struct WalkSummary: Codable, Equatable {
                             ending: nil, onReturn: onReturn))
     }
 
+    /// 音楽スポットを置いた位置を残す(散歩の開始時に 1 回)
+    public mutating func setMusicSpot(_ p: GeoPoint) {
+        musicSpot = p
+    }
+
     /// 記録を閉じる。距離は計測側(GaitMetrics)の値をそのまま受け取る
     public mutating func finish(at date: Date, pathLengthM: Double) {
         endedAt = date
@@ -165,12 +206,14 @@ public struct WalkSummary: Codable, Equatable {
             .sorted { $0.count != $1.count ? $0.count > $1.count : $0.ending < $1.ending }
     }
 
-    /// 経路図の枠。経路・イベント・自宅をすべて含み、周囲に `marginM` の余白を取る。
-    /// ごく短い散歩でも `minSpanM` までは広げる(点が 1 つでも図として成立させる)
+    /// 経路図の枠。経路・イベント・自宅・**音楽スポット**をすべて含み、周囲に `marginM` の
+    /// 余白を取る。ごく短い散歩でも `minSpanM` までは広げる(点が 1 つでも図として成立させる)。
+    /// スポットを含めるのは、**近づかなかった散歩でも印が図からはみ出さない**ようにするため
     public func frame(marginM: Double, minSpanM: Double) -> MapFrame? {
         var points = track
         points.append(contentsOf: events.map(\.at))
         if let h = home { points.append(h) }
+        if let m = musicSpot { points.append(m) }
         guard let first = points.first else { return nil }
 
         var minLat = first.latitude, maxLat = first.latitude

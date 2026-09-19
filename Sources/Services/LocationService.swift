@@ -26,14 +26,33 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
                   speedMps: speedMps,
                   compassHeadingDeg: headingDeg,
                   ageSec: lastFixDate.map { now.timeIntervalSince($0) },
-                  horizontalAccuracyM: horizontalAccuracyM)
+                  horizontalAccuracyM: horizontalAccuracyM,
+                  fixTime: lastFixDate?.timeIntervalSinceReferenceDate)
     }
+
+    /// どの精度で取っているか(ログに残して、散歩どうしを比べられるようにする)
+    private(set) var accuracyLabel = "最高精度"
 
     override init() {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.activityType = .fitness
+    }
+
+    /// 設定を反映する。**設定の読み込みはアプリ側で行う**ので、ここは受け取るだけ
+    /// (Services にロジックを持たせない)。
+    ///
+    /// `.bestForNavigation` は追加のセンサを使う最高精度の要求で、電力を多く使う。
+    /// 2026-09-18 の利用者判断で有効にした(「電力消費は問題になっていない」)
+    func apply(_ p: AppParameters.Location) {
+        if p.useBestForNavigation {
+            manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+            accuracyLabel = "案内向けの最高精度"
+        } else {
+            manager.desiredAccuracy = kCLLocationAccuracyBest
+            accuracyLabel = "最高精度"
+        }
     }
 
     func requestPermission() {

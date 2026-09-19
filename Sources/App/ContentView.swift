@@ -1,9 +1,14 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// この画面はセットアップとデバッグのためのもの。
 /// 散歩が始まったら iPhone はポケットに入れ、以後は音とジェスチャだけで完結するのが本来の体験。
 struct ContentView: View {
     @ObservedObject var controller: WalkSessionController
+    /// 左上のメニュー(2026-09-19 利用者依頼)。毎回は触らない設定とログを入れてある
+    @State private var showMenu = false
+    /// 音楽スポットに使う曲を選ぶピッカー
+    @State private var showMusicPicker = false
 
     var body: some View {
         NavigationStack {
@@ -49,15 +54,54 @@ struct ContentView: View {
                             step: 5) {
                         Text("散歩時間: \(Int(controller.durationMin)) 分")
                     }
-                    Toggle("通勤路の学習モード", isOn: $controller.commuteLearning)
-                    if controller.commuteLearning {
-                        Text("ON の間の移動経路は「日常の道」として記録され、以後の提案から除外されます")
+                    // **出発前にしか選べない**(歩き出したら画面は見えない)。
+                    // 曲が選ばれていない端末には、選ぶ導線だけを出す
+                    if let name = controller.musicSourceName {
+                        Toggle("音楽スポットを 1 つ作る(実験)", isOn: $controller.musicSpotWanted)
+                        LabeledContent("曲", value: name)
+                        Button("曲を選び直す") { showMusicPicker = true }
+                        if controller.musicSpotWanted {
+                            Text("出発したら散歩時間に応じた距離に 1 つだけ音楽の鳴る場所を作り、"
+                                 + "そこから聞こえるように鳴らします。"
+                                 + "連続音で方向が伝わるかを試すための実験です")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            // **向きの基準は進む向きだけ**(2026-09-19 利用者判断)。
+                            // 頭の向きを使う道は画面から外した(実験はビルドの設定から)
+                            if controller.params.headMount.enabled {
+                                Text("頭部固定: 有効(実験ビルド)。"
+                                     + "頭の向きが定まってから鳴り始めます")
+                                    .font(.caption.bold())
+                            }
+                        }
+                    } else {
+                        Button("音楽スポットに使う曲を選ぶ") { showMusicPicker = true }
+                        Text("端末に入っている曲を 1 つ選びます。"
+                             + "選んだ曲はアプリの中へ写すので、あとで元を消しても鳴ります")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    // **通勤路の学習モードは画面から外した**(2026-09-19 利用者判断)。
+                    // 実験できていない機能を出しておくと、試された時に結果を読めない
+                    // **既定は OFF。** ON の間だけ現在地が外へ出るので、それを明記する
+                    // (2026-09-17 利用者判断)
+                    Toggle("通りかかったお店を記録する", isOn: $controller.shopSearchWanted)
+                    if controller.shopSearchWanted {
+                        Text("ON の間は、周りのお店を調べるために現在地(緯度・経度)を"
+                             + "ホットペッパーグルメのサーバへ送ります。"
+                             + "歩いた経路・自宅・ログは送りません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("OFF の間は、お店を調べません。現在地が外へ送られることもありません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    // 案内音・真横に聞こえる角度は**左上のメニュー**へ移した
+                    // (2026-09-19 利用者依頼。毎回は触らないため)
                 }
 
-                Section("セッション") {
+                Section {
                     // 開始し忘れに気づけるよう、状態は他より大きく出す
                     Text(stateLabel)
                         .font(.title3.bold())
@@ -77,60 +121,41 @@ struct ContentView: View {
                     }
                 }
 
-                // 歩いている最中は書き留められないので、帰ってから振り返るための画面。
-                // 見せる範囲は開発中の判断(一般の利用者向けは未決・docs/06)
+                // 歩いている最中は見ない体験なので、帰ってから 1 回分を振り返る。
                 if let s = controller.lastSummary {
-                    Section("前回の散歩(開発用)") {
-                        LabeledContent("距離", value: String(format: "%.0f m", s.pathLengthM))
-                        LabeledContent("時間", value: String(format: "%.0f 分", s.durationSec / 60))
-                        LabeledContent("イベント", value: "\(s.guidanceEvents.count) 件")
-                        NavigationLink("経路図とイベントを見る") {
-                            WalkSummaryView(summary: s,
-                                            marginM: controller.params.summary.mapMarginM,
-                                            minSpanM: controller.params.summary.mapMinSpanM,
-                                            roadsProvider: { controller.roadSegments(in: $0) })
+                    if let receipt = WalkReceiptContent(
+                        summary: s,
+                        discoverySummary: controller.lastDiscoverySummary,
+                        shopHistoryRecords: controller.shopHistoryRecords) {
+                        WalkReceiptView(content: receipt,
+                                        shopSearchOn: controller.shopSearchWanted,
+                                        marginM: controller.params.summary.mapMarginM,
+                                        minSpanM: controller.params.summary.mapMinSpanM,
+                                        roadsProvider: { controller.roadSegments(in: $0) })
+                    } else {
+                        Section("前回の散歩(開発用)") {
+                            LabeledContent("距離", value: String(format: "%.0f m", s.pathLengthM))
+                            LabeledContent("時間", value: String(format: "%.0f 分", s.durationSec / 60))
+                            LabeledContent("イベント", value: "\(s.guidanceEvents.count) 件")
+                            NavigationLink("経路図とイベントを見る") {
+                                WalkSummaryView(summary: s,
+                                                marginM: controller.params.summary.mapMarginM,
+                                                minSpanM: controller.params.summary.mapMinSpanM,
+                                                roadsProvider: { controller.roadSegments(in: $0) })
+                            }
                         }
                     }
                 }
 
-                // 歩かずに符号と手応えを決めるための机上テスト。
-                // 姿勢(yaw)の系統は散歩 1 回を丸ごと潰した前科があるので、
-                // 角速度の系統は先にここで確かめる(docs/08)
-                Section("頭の追従の確認(机上・AirPods 装着)") {
-                    if controller.headCheckActive {
-                        Text(controller.headCheckLine)
-                            .font(.caption.monospaced())
-                        Text("正面を向いた時の方向に音が置かれています。"
-                             + "首を右に向けると音は左へ動くのが正しい動作です")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("確認を終了", role: .destructive) { controller.stopHeadCheck() }
-                    } else {
-                        Button("頭の追従を確認する") { controller.startHeadCheck() }
-                        Text("歩かずに確認できます。動かない・逆に動く場合は "
-                             + "head_rate_sign を反転させてください")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                Section("街の発見MAP") {
+                    LabeledContent("通った店", value: "\(controller.shopHistoryRecords.count) 軒")
+                    NavigationLink("通った店をMAPで見る") {
+                        ShopMapView(records: controller.shopHistoryRecords)
                     }
                 }
 
-                Section("デバッグ(シミュレータ・モーション非対応時の代替)") {
-                    Button("時間到来を発火") { controller.debugTimeUp() }
-                    // 帰る / 延長はデバッグ専用ではなくなったので、上の「時間になりました」に移した
-                }
-
-                Section("earcon の試聴") {
-                    Button("提案音(左 90°)") { controller.debugPlay(.suggestion, relativeBearingDeg: -90) }
-                    Button("提案音(右 90°)") { controller.debugPlay(.suggestion, relativeBearingDeg: 90) }
-                    // 「真後ろ」の試聴ボタンは置かない(2026-08-31 利用者判断)。
-                    // 定位は前半球のみで、後ろから鳴ることは無い(docs/03「前後からの撤退」)。
-                    // 鳴らない音を試聴に並べると「後ろから鳴ることがある」という誤解を教えてしまう。
-                    // かつては前後の聴き比べ実験用の対だったが、その実験は決着済み(2026-08-18)
-                    Button("ビーコン(正面)") { controller.debugPlay(.homeBeacon, relativeBearingDeg: 0) }
-                    Button("時間到来") { controller.debugPlay(.timeUpPrompt) }
-                    Button("帰路の確認音") { controller.debugPlay(.returnAck) }
-                    Button("到着音") { controller.debugPlay(.arrival) }
-                }
+                // 試聴・聴き比べ・ログ・クレジットは**左上のメニュー**へ移した
+                // (2026-09-19 利用者依頼)
 
                 // 経路データを配信先から入れる。**手で入れる道は残す**
                 // (ファイルを置ける人はそのままでよい)。→ docs/12
@@ -153,51 +178,21 @@ struct ContentView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        Text("送るのは取得する区画(約 5 km 角)の番号だけです。"
+                        Text("地図取得で送るのは取得する区画(約 5 km 角)の番号だけです。"
                              + "正確な位置・歩いた経路・自宅は送りません")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
 
-                Section("フィールドログ") {
-                    if let url = controller.fieldLogURL {
-                        ShareLink(item: url) {
-                            Label("ログを書き出す", systemImage: "square.and.arrow.up")
-                        }
-                        Button("ログを消去", role: .destructive) {
-                            controller.clearFieldLog()
-                        }
-                    } else {
-                        Text("まだ記録がありません")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("提案・ビーコン・ジェスチャ検出を端末内のファイルに追記します(送信しません)。"
-                         + "Finder の「iPhone > ファイル」からも取り出せます")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("イベントログ") {
-                    ForEach(Array(controller.eventLog.suffix(12).reversed().enumerated()),
-                            id: \.offset) { _, line in
-                        Text(line).font(.caption.monospaced())
-                    }
-                }
-
-                // 経路データは OpenStreetMap 由来。**ODbL は出典表示を求める**ので、
-                // 地図を読み込んでいるかによらず常に出す(docs/04「OSM データの持ち方」)
-                Section("経路データの出典") {
+                // ログは**左上のメニュー**の「記録」へ移した(2026-09-19 利用者依頼)。
+                // 経路データは OpenStreetMap 由来で、**ODbL は出典表示を求める**ので、
+                // 詳しい文面はメニューの「クレジット」に置きつつ、ここに 1 行だけ残す
+                // (docs/04「OSM データの持ち方」)
+                Section {
                     Text("© OpenStreetMap contributors")
                         .font(.caption)
-                    Text("この経路データは OpenStreetMap から作成しました。"
-                         + "OpenStreetMap のデータは Open Database License (ODbL) の下で提供されています。")
-                        .font(.caption)
                         .foregroundStyle(.secondary)
-                    Link("openstreetmap.org/copyright",
-                         destination: URL(string: "https://www.openstreetmap.org/copyright")!)
-                        .font(.caption)
                 }
             }
             .navigationTitle("音さんぽ")
@@ -212,7 +207,29 @@ struct ContentView: View {
             .alert(controller.greeting ?? "",
                    isPresented: Binding(get: { controller.greeting != nil },
                                         set: { if !$0 { controller.greeting = nil } })) {
-                Button("はい", role: .cancel) {}
+                Button("OK", role: .cancel) {}
+            }
+            // 左上のメニュー(2026-09-19 利用者依頼)。毎回は触らない設定とログを入れてある
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showMenu = true
+                    } label: {
+                        Image(systemName: "line.3.horizontal")
+                    }
+                    .accessibilityLabel("メニュー")
+                }
+            }
+            .sheet(isPresented: $showMenu) {
+                MenuView(controller: controller)
+            }
+            // **選んだ曲はその場でアプリの中へ写す**(→ MusicStore.importFile)
+            .fileImporter(isPresented: $showMusicPicker,
+                          allowedContentTypes: [.audio],
+                          allowsMultipleSelection: false) { result in
+                if case .success(let urls) = result, let url = urls.first {
+                    controller.chooseMusicSource(url)
+                }
             }
         }
     }
@@ -226,4 +243,5 @@ struct ContentView: View {
         case .arrived: "到着"
         }
     }
+
 }

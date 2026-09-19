@@ -46,9 +46,25 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         # 表示上の版。**外部テストの Beta App Review はこの値が変わるたびに要る**ので、
         # 中身の修正だけなら据え置き、ビルド番号(下)だけを上げる
-        MARKETING_VERSION: "1.0"
+        # 1.1(2026-09-19): 画面の作り直し(左上のメニュー・曲のピッカー)と、
+        # 音楽スポットの追加。**通信の内容が変わっていないかは毎回確かめる**
+        # (App のプライバシー申告は版ごとに見直す → docs/09_distribution_private.md)
+        MARKETING_VERSION: "1.1"
         # scripts/archive.sh が配信のたびに日時で上書きする。ここの値は既定にすぎない
         CURRENT_PROJECT_VERSION: "1"
+    # **個人化 HRTF**(2026-09-18 利用者依頼)。利用者が設定 > AirPods で作った
+    # 「個人用の空間オーディオ」の形(耳と頭の形)を、こちらの音にも適用させる。
+    # **コードの呼び出しは要らない** — この権利情報があると AVAudioEngine の定位に
+    # 自動で反映される(Apple の資料「Personalizing spatial audio in your app」)。
+    #
+    # **AirPods のヘッドトラッキングは入れない。**
+    # それは別の権利情報(com.apple.developer.coremotion.head-pose)と
+    # isListenerHeadTrackingEnabled で、**スマホを頭に固定しているこの装置では
+    # 二重に回ってしまう**(頭の向きは CMMotionManager から取っている)
+    entitlements:
+      path: Support/OtoSanpo.entitlements
+      properties:
+        com.apple.developer.spatial-audio.profile-access: true
     info:
       path: Support/Info.plist
       properties:
@@ -57,18 +73,21 @@ targets:
         # App Store Connect は同じ番号を 2 度受け付けないので、2 回目の配信で弾かれる
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        HotPepperAPIKey: $(HOTPEPPER_API_KEY)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIBackgroundModes: [audio, location]
-        # **位置の履歴は送らない。** 地図の取得で外へ出るのは「取得する区画の番号」
-        # (約 5 km 角)だけで、これは利用者がボタンを押した時のみ(docs/12)
+        # 散歩履歴は端末内に保存する。店舗候補の取得は**画面で選んだ時だけ**(既定は OFF)で、
+        # その時だけ周辺検索の中心として現在地を Hot Pepper グルメサーチ API へ送る。
         NSLocationWhenInUseUsageDescription: >-
-          散歩中の現在地から、寄り道の提案と帰路の方向案内を行うために使用します。
-          位置の履歴は端末内にのみ保存され、外部に送信されません。
-          地図を取得する時だけ、その区画(約 5 km 角)の番号を配信元へ送ります。
+          散歩中の寄り道提案、帰路案内、周辺店舗候補の記録に現在地を使用します。
+          散歩履歴は端末内に保存します。
+          アプリ内で「通りかかったお店を記録する」を有効にした場合にかぎり、
+          検索中心として現在地を Hot Pepper グルメサーチ API へ送信します。
         NSLocationAlwaysAndWhenInUseUsageDescription: >-
           ポケットに入れたままでも案内を続けるため、バックグラウンドでも位置情報を使用します。
-          履歴は端末内にのみ保存されます。
+          散歩履歴は端末内に保存し、アプリ内で「通りかかったお店を記録する」を有効にした場合にかぎり、
+          現在地を Hot Pepper グルメサーチ API へ送信します。
         NSMotionUsageDescription: >-
           うなずき・首振りの応答を検出するため、AirPods のモーションデータを使用します。
         ITSAppUsesNonExemptEncryption: false

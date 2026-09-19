@@ -67,6 +67,20 @@ NR == 1 && $1 == "time" { next }
   } else if (index(msg, "頭向き ") == 1) {
     # yaw と course の対。符号の判定は再生ツールが一括で行う。ここでは数えるだけ
     nHead++
+  } else if (index(msg, "頭方位 ") == 1) {
+    # 頭部固定の生記録。学習と検疫の再生は replay_log.sh が行う。
+    # **ここでは「使用=採用」の割合だけ出す** — 実験が成立したかを取り込み時に一目で知りたい
+    # (歩いている間は画面が見えないので、帰ってからが最初の答え合わせになる)
+    nHeadMount++
+    # 旧形式(2026-09-08 より前)には「使用=」列が無い。
+    # **列が無いことを「0%」と表示しない** — 失敗と読めてしまう
+    if (index(msg, "使用=") > 0) {
+      nHeadMountJudged++
+      if (index(msg, "使用=採用") > 0) nHeadMountUsed++
+    }
+  } else if (index(msg, "有効性パルス") == 1) {
+    nPulseLine++
+    pulseLines[++nPulse] = hhmmss($1) "  " msg
   } else if (index(msg, "誘導") == 1) {
     guidanceLine(msg)
   } else if (index(msg, "ビーコン ") == 1) {
@@ -175,8 +189,26 @@ END {
     print "位置の水平精度: 記録なし(この版では出していない)"
   }
 
+  # 頭部固定の実験を回した回だけ出す(既定 false なので普段は出ない)
+  if (nHeadMount > 0) {
+    printf "頭部固定: 頭方位 %d 件", nHeadMount
+    if (nHeadMountJudged > 0) {
+      printf " / 使用=採用 %d 件(%.0f%%)",
+             nHeadMountUsed, 100 * nHeadMountUsed / nHeadMountJudged
+    } else {
+      printf "(この版のログには「使用=」列がありません。再生で判定できます)"
+    }
+    if (nPulseLine > 0) printf " / 有効性パルスの記録 %d 行", nPulseLine
+    printf "\n  詳しくは scripts/replay_log.sh(学習の立ち上がり・遷移・閾値の振り直し)\n"
+  }
+
   section("状態遷移")
   dump(transitions, nTrans, 0)
+
+  if (nPulse > 0) {
+    section("有効性パルス(実験)")
+    dump(pulseLines, nPulse, 20)
+  }
 
   section("イベント")
   dump(events, nEvent, 40)
