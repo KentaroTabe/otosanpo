@@ -12,6 +12,8 @@ import dev.otosanpo.core.Geo
 import dev.otosanpo.core.GeoPoint
 import dev.otosanpo.core.HeldCourse
 import dev.otosanpo.core.MapFiles
+import dev.otosanpo.core.BearingHold
+import dev.otosanpo.core.MusicSpot
 import dev.otosanpo.core.ReturnAck
 import dev.otosanpo.core.ReturnBudget
 import dev.otosanpo.core.RouteField
@@ -70,6 +72,24 @@ class WalkSession(
     private var graph: WalkGraph? = storage.loadGraph(params.route.mapIndexCellSizeM)
     private var zones: ZoneMap? = graph?.let { ZoneMap(it.map, params.route.zoneSizeM) }
     private var routeField: RouteField? = null
+
+    // MARK: - 音楽スポット(2026-09-19 に iOS から移植・頭の向きは使わない)
+
+    /** 出発前に選ぶ。曲が取り込まれていない端末では画面に出さない */
+    var musicSpotWanted: Boolean = false
+    private val music = MusicPlayer(storage.context)
+    private var musicSpot: MusicSpot? = null
+    private var musicSpotReached = false
+    /** 音量の幅の**起点**: 鳴り始めた地点からスポットまでの距離 [m] */
+    private var musicGainFromM: Double? = null
+    private var musicStartedAt: Long? = null
+    private var lastMusicLogAt: Long = 0
+    /** 向きの遊び(→ Core の BearingHold)。位置の揺れだけを落とす */
+    private val musicBearingHold = BearingHold()
+    private var lastMusicUpdateAt: Long? = null
+    /** 最後に見た位置。**音は位置更新より細かく付け直す**ので覚えておく */
+    private var lastMusicPosition: GeoPoint? = null
+    private var musicTick: Runnable? = null
 
     private var extensionsUsed = 0
     private var plannedDurationMin = 0.0
@@ -151,6 +171,8 @@ class WalkSession(
         apply(WalkEvent.START)
         scheduleTimeUp()
         log("散歩を開始(${durationMin.roundToInt()} 分)")
+        // **頭の向きを待たない**(基準は進む向きなので待つ理由が無い)
+        startMusicSpotIfWanted()
         return true
     }
 
@@ -268,6 +290,7 @@ class WalkSession(
             }
 
             WalkEffect.EndSession -> {
+                stopMusicSpot("散歩が終わった")
                 location.stop()
                 steps.stop()
                 storage.saveGrid(grid)
@@ -311,8 +334,162 @@ class WalkSession(
             checkReturnPrompt(p)
             tickSuggestion()
         }
+        // **音楽は散策中も帰路中も鳴らし続ける**(iOS と同じ)
+        if (state == WalkState.WANDERING || state == WalkState.RETURNING) {
+            updateMusicSpot(p)
+        }
         updateStatus()
         onChange?.invoke()
+    }
+
+    // MARK: - 音楽スポット
+
+    /**
+     * 出発時に、鳴り始める地点のまわりへスポットを置いて鳴らし始める。
+     *
+     * **iOS と違い、頭の向きを待たない。** 基準は進む向きなので待つ理由が無い
+     * (iOS は頭部固定を選んだ時だけ、向きが定まるまで待つ)
+     */
+    private fun startMusicSpotIfWanted() {
+        stopMusicSpot("やり直し")
+        if (!musicSpotWanted) return
+        val start = location.position ?: return
+        val ext = params.audio.androidReadableExtensions
+        val file = storage.musicFile(ext) ?: run {
+            log("音楽スポット: 曲が選ばれていません")
+            return
+        }
+        val sp = params.experiment.musicSpot(durationMin)
+        val raw = MusicSpot.candidates(start, sp)
+        val snapped = graph?.let { g ->
+            raw.mapNotNull { g.snap(it, params.route.snapMaxDistanceM)?.point }
+        } ?: emptyList()
+        val spot = MusicSpot.choose(if (snapped.isEmpty()) raw else snapped, start, sp) ?: run {
+            log("音楽スポット: 置ける場所が見つかりませんでした")
+            return
+        }
+        val gainFrom = Geo.distanceM(start, spot.center)
+        val placed = spot.placement(
+            from = start,
+            referenceBearingDeg = currentTravelBearing() ?: Geo.bearingDeg(start, spot.center),
+            gainFromDistanceM = gainFrom, p = sp,
+        )
+        if (!music.start(file, placed, fade = 0.0)) {
+            log("音楽スポット: この曲を鳴らせませんでした(${file.name})")
+            return
+        }
+        music.onFinished = { reason -> handler.post { stopMusicSpot(reason) } }
+        musicSpot = spot
+        musicSpotReached = false
+        musicGainFromM = gainFrom
+        musicStartedAt = System.currentTimeMillis()
+        musicBearingHold.reset()
+        lastMusicUpdateAt = null
+        lastMusicPosition = start
+        // 位置更新(約 1 Hz)より細かく付け直す。立ち上がりが階段にならないように
+        fireMusicTick()
+        log("音楽スポット: %.0fm 先 方位 %.0f°(%s)".format(
+            gainFrom, Geo.bearingDeg(start, spot.center), file.name))
+        log("音楽スポット: 鳴らし始めます(基準は進む向き・仰角と広がりは iOS 版のみ)")
+    }
+
+    /**
+     * **新しい位置を取り込む。** 位置更新のたびに 1 回だけ呼ぶ。
+     *
+     * iOS は頭方位の受信(50 Hz)ごとに音を付け直すので「同じ fix を何度も取り込まない」
+     * 仕掛けが要るが、**Android はここが位置更新そのもの**なので、1 回 = 1 fix でよい
+     */
+    private fun updateMusicSpot(p: GeoPoint) {
+        val spot = musicSpot ?: return
+        val sp = params.experiment.musicSpot(durationMin)
+        if (!musicSpotReached && spot.isReached(p, sp)) {
+            musicSpotReached = true
+            log("音楽スポット: 着いた(鳴らし続ける)")
+        }
+        lastMusicPosition = p
+        val distance = Geo.distanceM(p, spot.center)
+        if (distance > 0) {
+            val uncertainty = BearingHold.uncertaintyDeg(
+                accuracyM = location.motionFix().horizontalAccuracyM ?: 0.0,
+                distanceM = distance)
+            musicBearingHold.ingest(Geo.bearingDeg(p, spot.center), uncertainty,
+                                    params.experiment.musicSpotBearingHold)
+        }
+        renderMusic()
+    }
+
+    /**
+     * **鳴っている音を付け直す。** 位置更新より細かく呼ぶ(→ [fireMusicTick])。
+     *
+     * 位置更新は約 1 Hz しか来ないので、そこでしか付け直さないと
+     * 鳴り始めの立ち上がりが 1 秒刻みの階段になり、向きの追従も効かない
+     */
+    private fun renderMusic() {
+        val spot = musicSpot ?: return
+        val p = lastMusicPosition ?: return
+        val sp = params.experiment.musicSpot(durationMin)
+        val hp = params.experiment.musicSpotBearingHold
+        val now = System.currentTimeMillis()
+        val dt = lastMusicUpdateAt?.let { (now - it) / 1000.0 } ?: 0.0
+        lastMusicUpdateAt = now
+        val distance = Geo.distanceM(p, spot.center)
+        val held = musicBearingHold.output(dt, hp) ?: Geo.bearingDeg(p, spot.center)
+        val placed = spot.placement(
+            from = p,
+            referenceBearingDeg = currentTravelBearing() ?: held,
+            directBearingDeg = held,
+            gainFromDistanceM = musicGainFromM ?: distance,
+            p = sp,
+        )
+        music.setPlacement(placed, musicFadeFactor(now))
+        if (now - lastMusicLogAt < (params.experiment.musicLogIntervalSec * 1000).toLong()) return
+        lastMusicLogAt = now
+        val uncertainty = BearingHold.uncertaintyDeg(
+            accuracyM = location.motionFix().horizontalAccuracyM ?: 0.0, distanceM = distance)
+        logToFile("音楽 距離=%.0fm 向き=%+.0f° 音量=%.2f 基準=進行 音源方位=%.0f° 生方位=%.0f° 遊び=%.0f°"
+            .format(placed.distanceM, placed.relDeg, placed.distanceGain,
+                    placed.worldBearingDeg, Geo.bearingDeg(p, spot.center),
+                    BearingHold.deadbandDeg(uncertainty, hp)))
+    }
+
+    /**
+     * 音を付け直す刻み [ms]。**音量と向きだけを書き換える軽い処理**なので細かくてよい。
+     * 位置の計算はしない(位置は [updateMusicSpot] で入る)
+     */
+    private val MUSIC_RENDER_INTERVAL_MS = 100L
+
+    /** 音を付け直す刻み。**音楽が鳴っている間だけ回す** */
+    private fun fireMusicTick() {
+        cancel(musicTick)
+        if (musicSpot == null) return
+        musicTick = Runnable {
+            renderMusic()
+            fireMusicTick()
+        }
+        handler.postDelayed(musicTick!!, MUSIC_RENDER_INTERVAL_MS)
+    }
+
+    /** 鳴り始めの立ち上がり [0..1] */
+    private fun musicFadeFactor(now: Long): Double {
+        val started = musicStartedAt ?: return 1.0
+        val fade = params.experiment.musicFadeInSec
+        if (fade <= 0) return 1.0
+        return ((now - started) / 1000.0 / fade).coerceIn(0.0, 1.0)
+    }
+
+    private fun stopMusicSpot(reason: String) {
+        if (musicSpot == null && !music.isPlaying) return
+        music.onFinished = null
+        music.stop()
+        musicSpot = null
+        musicGainFromM = null
+        musicStartedAt = null
+        musicBearingHold.reset()
+        lastMusicUpdateAt = null
+        lastMusicPosition = null
+        cancel(musicTick)
+        musicTick = null
+        log("音楽スポット: 終了($reason)")
     }
 
     // MARK: - 提案
@@ -717,6 +894,9 @@ class WalkSession(
      * `TYPE_HEAD_TRACKER` が使える端末が確認できたら、ここへ足す
      */
     private fun placementReference(travelDeg: Double): Double = travelDeg
+
+    /** いまの進む向き [deg]。取れなければ null(音楽の基準に使う) */
+    private fun currentTravelBearing(): Double? = currentTravel(location.motionFix())?.deg
 
     private fun currentTravel(fix: dev.otosanpo.core.MotionFix,
                               now: Long = System.currentTimeMillis()): TravelDirectionFix? {

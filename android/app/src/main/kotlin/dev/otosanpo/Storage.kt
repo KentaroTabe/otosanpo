@@ -23,7 +23,7 @@ import java.util.Locale
  * 自宅の 1 点・速度の 2 値・セルの一覧だけなので、行区切りで足りる。
  * 依存を足さないぶん、他人の環境でビルドが通らない可能性が減る。
  */
-class Storage(private val context: Context) {
+class Storage(val context: Context) {
 
     /** 出し入れするファイルの置き場(利用者から見える) */
     val sharedDir: File? get() = context.getExternalFilesDir(null)
@@ -39,6 +39,51 @@ class Storage(private val context: Context) {
         context.assets.open("parameters.json").use {
             AppParameters.decode(it.readBytes().decodeToString())
         }
+
+    // MARK: - 音楽スポットの曲(2026-09-19 利用者依頼)
+
+    /**
+     * 画面から選んで取り込んだ曲。無ければ null。
+     *
+     * **ピッカー(SAF)が返す `content://` の URI は持ち続けない。**
+     * 元のファイルを消される・SD を外される・提供元アプリを消されるで失効するうえ、
+     * クラウド上の曲だと読むたびに通信が要る(散歩中に止まる)。
+     * **選んだその場でここへ写す**([importMusic])ので、以後は普通のファイルとして扱える
+     */
+    fun musicFile(extensions: List<String>): File? {
+        val dir = context.filesDir
+        for (ext in extensions) {
+            val f = File(dir, "$MUSIC_BASE.${ext.lowercase()}")
+            if (f.exists()) return f
+        }
+        return null
+    }
+
+    /**
+     * 選ばれた曲を写す。
+     *
+     * @param displayName ピッカーが返した表示名(拡張子の判定に使う)
+     * @return 写した先。読めない拡張子・写せなければ null
+     */
+    fun importMusic(uri: android.net.Uri, displayName: String?,
+                    extensions: List<String>): File? {
+        val allowed = extensions.map { it.lowercase() }
+        val ext = (displayName ?: uri.lastPathSegment ?: "")
+            .substringAfterLast('.', "").lowercase()
+        if (ext.isEmpty() || ext !in allowed) return null
+        // 以前の曲は消す(拡張子が変わると残ってしまうため)
+        for (old in allowed) File(context.filesDir, "$MUSIC_BASE.$old").delete()
+        val dest = File(context.filesDir, "$MUSIC_BASE.$ext")
+        return try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                dest.outputStream().use { input.copyTo(it) }
+            } ?: return null
+            dest
+        } catch (e: Exception) {
+            dest.delete()
+            null
+        }
+    }
 
     // MARK: - 経路データ
 
@@ -262,6 +307,8 @@ class Storage(private val context: Context) {
         /** 同梱を読んだときに画面へ出す名前 */
         const val BUNDLED_NAME = "同梱"
         const val LOG_FILE = "otosanpo-field-log.tsv"
+        /** 画面から選んだ曲の置き場(拡張子は選んだ物に合わせる) */
+        const val MUSIC_BASE = "music-source"
         private const val GRID_FILE = "visit_grid.tsv"
     }
 }

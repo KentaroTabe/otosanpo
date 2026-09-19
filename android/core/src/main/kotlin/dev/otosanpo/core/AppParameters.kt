@@ -25,7 +25,77 @@ data class AppParameters(
     val audio: Audio,
     val summary: Summary,
     val greeting: Greeting,
+    val experiment: Experiment,
 ) {
+    /**
+     * **音楽スポット**(→ docs/08)。iOS 版の `experiment` 節のうち、
+     * Android で使うものだけを受ける(残りの鍵は無視される)。
+     *
+     * 節の名前が `experiment` なのは iOS 側の経緯によるもので、
+     * **音楽スポットは配る版にも入っている**(頭の向きを使わない形で)。
+     */
+    @Serializable
+    data class Experiment(
+        val musicSpotMinDistancePerMin: Double,
+        val musicSpotMaxDistancePerMin: Double,
+        val musicSpotDistanceSteps: Int,
+        val musicSpotReachedM: Double,
+        val musicSpotBearingStepDeg: Double,
+        val musicSpotSameDistanceToleranceM: Double,
+        val musicLogIntervalSec: Double,
+        val musicFadeInSec: Double,
+        val musicSpotReferenceDistanceM: Double,
+        val musicSpotGainMinSpanM: Double,
+        val musicSpotMaxGain: Double,
+        val musicSpotMinGain: Double,
+        val musicSpotPinpointStartM: Double,
+        val musicSpotPinpointFullM: Double,
+        val musicSpotPinpointBeamDeg: Double,
+        val musicSpotPinpointDepthDb: Double,
+        val musicSpotDirectivityDepthDb: Double,
+        val musicSpotRearShelfStartDeg: Double,
+        val musicSpotRearShelfDepthDb: Double,
+        val musicSpotRearShelfHz: Double,
+        val musicSpotListenerHeightM: Double,
+        val musicSpotSpreadFarM: Double,
+        val musicSpotSpreadNearM: Double,
+        val musicSpotSpreadMax: Double,
+        val musicSpotBearingDeadbandMinDeg: Double,
+        val musicSpotBearingDeadbandMaxDeg: Double,
+        val musicSpotBearingFollowSec: Double,
+    ) {
+        /** MusicSpot に渡す設定値。**散歩時間で距離が決まる**ので時間を渡す */
+        fun musicSpot(durationMin: Double) = MusicSpot.Params(
+            minDistanceM = musicSpotMinDistancePerMin * durationMin,
+            maxDistanceM = musicSpotMaxDistancePerMin * durationMin,
+            distanceStepCount = musicSpotDistanceSteps,
+            reachedM = musicSpotReachedM,
+            bearingStepDeg = musicSpotBearingStepDeg,
+            sameDistanceToleranceM = musicSpotSameDistanceToleranceM,
+            referenceDistanceM = musicSpotReferenceDistanceM,
+            gainMinSpanM = musicSpotGainMinSpanM,
+            maxGain = musicSpotMaxGain,
+            minGain = musicSpotMinGain,
+            pinpointStartM = musicSpotPinpointStartM,
+            pinpointFullM = musicSpotPinpointFullM,
+            pinpointBeamDeg = musicSpotPinpointBeamDeg,
+            pinpointDepthDb = musicSpotPinpointDepthDb,
+            directivityDepthDb = musicSpotDirectivityDepthDb,
+            rearShelfStartDeg = musicSpotRearShelfStartDeg,
+            rearShelfDepthDb = musicSpotRearShelfDepthDb,
+            listenerHeightM = musicSpotListenerHeightM,
+            spreadFarM = musicSpotSpreadFarM,
+            spreadNearM = musicSpotSpreadNearM,
+        )
+
+        /** BearingHold に渡す設定値 */
+        val musicSpotBearingHold: BearingHold.Params
+            get() = BearingHold.Params(
+                minDeadbandDeg = musicSpotBearingDeadbandMinDeg,
+                maxDeadbandDeg = musicSpotBearingDeadbandMaxDeg,
+                timeConstantSec = musicSpotBearingFollowSec,
+            )
+    }
     @Serializable
     data class Session(
         val defaultDurationMin: Double,
@@ -177,8 +247,19 @@ data class AppParameters(
         val guidanceEndDistanceM: Double,
         val guidanceLeftBehindM: Double,
         val earconGain: Double,
+        /**
+         * **音楽スポットで読む音源の拡張子**(小文字)。iOS と同じ 1 か所を読む。
+         * 両方が読めるのは m4a(AAC)・mp3・wav・flac。
+         * `aif` / `aiff` / `caf` は Apple だけなので、Android では開けない
+         */
+        val musicSourceExtensions: List<String> = emptyList(),
         val tones: Tones,
     ) {
+        /** **Android が復号できる拡張子だけ**に絞る(→ docs/08「音源の形式」) */
+        val androidReadableExtensions: List<String>
+            get() = musicSourceExtensions.map { it.lowercase() }
+                .filter { it in ANDROID_READABLE }
+
         val beaconRhythm: BeaconRhythm.Params
             get() = BeaconRhythm.Params(
                 beaconStepsPerTone, beaconIntervalMinSec, beaconIntervalMaxSec,
@@ -265,6 +346,13 @@ data class AppParameters(
 
     companion object {
         @OptIn(ExperimentalSerializationApi::class)
+        /**
+         * **Android が素で復号できる音源の拡張子。**
+         * `aif` / `aiff` / `caf` は Apple だけ、`ogg` / `opus` は Android だけ
+         * (→ docs/08「音源の形式」)
+         */
+        val ANDROID_READABLE = setOf("m4a", "mp3", "wav", "flac")
+
         private val json = Json {
             namingStrategy = JsonNamingStrategy.SnakeCase
             ignoreUnknownKeys = true

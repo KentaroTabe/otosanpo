@@ -18,11 +18,16 @@ class OtoSanpoApp : Application() {
     var configError: String? = null
         private set
 
+    /** 画面からも使う(曲の取り込みなど)。**セッションとは別に持つ** */
+    lateinit var storage: Storage
+        private set
+
     override fun onCreate() {
         super.onCreate()
         instance = this
 
         val storage = Storage(this)
+        this.storage = storage
         try {
             val params = storage.loadParameters()
             session = WalkSession(
