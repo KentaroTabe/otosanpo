@@ -32,12 +32,30 @@ public struct HeadMountFusion: Equatable {
         public var quarantine: HeadingQuarantine.Params
         /// 最終受信からこれを超えたら「古い」として使わない [sec]
         public var staleSec: Double
+        /// **見直しの滑り窓に保つ証拠時間** [sec](0 で見直さない = 従来の一度きり)。
+        /// 実効の証拠時間で数える(壁時計ではない)。→ `updateRelearning`
+        public var relearnWindowEvidenceSec: Double
+        /// 見直しの窓が出した値が、いま使っている値から**これを超えて食い違ったら乗り換える** [deg]。
+        ///
+        /// **門とは役割が違う**(門は個々の標本の分類・これは成立した 2 つの値の比較)ので、
+        /// 設定は別項目にする。ちょうど同値では乗り換えない
+        public var relearnMinDisagreeDeg: Double
+
+        /// 見直しの窓に渡す設定。**門は無い**(窓は個々の標本を分類しない)。
+        /// R の門は学習と同じ値を使う — 「差が定数である証拠」を要求する基準は同じでよい
+        public var relearnWindow: OffsetWindow.Params {
+            OffsetWindow.Params(evidenceSec: relearnWindowEvidenceSec,
+                                minConcentration: offset.minConcentration)
+        }
 
         public init(offset: MountOffset.Params, quarantine: HeadingQuarantine.Params,
-                    staleSec: Double) {
+                    staleSec: Double, relearnWindowEvidenceSec: Double = 0,
+                    relearnMinDisagreeDeg: Double = 0) {
             self.offset = offset
             self.quarantine = quarantine
             self.staleSec = staleSec
+            self.relearnWindowEvidenceSec = relearnWindowEvidenceSec
+            self.relearnMinDisagreeDeg = relearnMinDisagreeDeg
         }
     }
 
@@ -81,6 +99,18 @@ public struct HeadMountFusion: Equatable {
     private var lastNewFix: MountOffset.Sample?
     /// 直前の標本の種類(ログの「今回」用)
     private var lastSampleKind: MountOffset.Sample.Kind?
+    /// いま使っている値を見直す滑り窓(→ `updateRelearning`)。
+    /// **窓が成立するまでは今の値で鳴らし続ける** — 途中で基準が消えると音が飛ぶため
+    private var window = OffsetWindow()
+    /// 乗り換えた回数(ログ用)。**0 でないなら、途中でずれが変わったと判断した**
+    /// (原因は装着・付け直し・長い横向き・磁気の変化のどれもあり得る。断定はできない)
+    public private(set) var relearnCount = 0
+    /// 見直しの窓がいま出している値 [deg](ログ用。成立していなければ nil)
+    public func windowOffsetDeg(p: Params) -> Double? { window.estimateDeg(p: p.relearnWindow) }
+    /// 見直しの窓に積まれた実効証拠時間 [sec](ログ用)
+    public var windowEvidenceSec: Double { window.evidence }
+    /// 見直しの窓の R(ログ用)
+    public var windowConcentration: Double { window.concentration }
 
     public init() {}
 
@@ -151,7 +181,82 @@ public struct HeadMountFusion: Equatable {
         }
         // 成立させた標本は `.learning` なので検疫は数えない — 窓は白紙のまま始まる(D1)
         quarantine.assess(sample, p: p.quarantine)
+        updateRelearning(headingDeg: headingDeg, rawCourseDeg: rawCourseDeg,
+                         sample: sample, p: p)
         return use(at: t, p: p)
+    }
+
+    /// **凍結した値を、白紙の窓で作り直し続けて見直す**(2026-09-18)。
+    ///
+    /// ## なぜ要るか
+    ///
+    /// 学習は**一度きりで凍結**する設計だった。ところが 2026-09-18 の散歩で、
+    /// 学習した値(344.0°)が、その後の実測と **106° 食い違った**まま 10 分間直らなかった。
+    ///
+    /// 原因は構造的なものだった。**スマホは頭の後ろに固定するので、装着は必ず
+    /// 「散歩を開始」の後になる**(利用者の明言。固定してから開始する運用は取れない)。
+    /// 実測(`scripts/head_offset_window.awk`)では:
+    ///
+    /// - 0:00〜1:35 のずれ ≈ 347°(**手に持っている間**)。ここで 1:02 に学習が成立
+    /// - 1:40 に 93° へ跳ぶ(**装着した瞬間**)。以降 8 分間 ≈ 95° で安定
+    ///
+    /// 凍結値は**分類にしか使われず更新されない**ので、正しい値へ戻る道が無かった
+    /// (門はその上で、食い違う標本を「門外」と分類し続けた)。
+    ///
+    /// ## どう直すか
+    ///
+    /// **直近の証拠だけを見る滑り窓(`OffsetWindow`)を、常に並行して回す。**
+    /// 窓が満ちて R が門を越えたら、いま使っている値と比べ、
+    /// `relearnMinDisagreeDeg` を超えて食い違うなら**乗り換える**。
+    ///
+    /// 窓は `MountOffset` が credited した証拠だけを受け取る(fix の識別・course の
+    /// 有無・間隔の上限はすでにそこで解かれている)。**門は掛からない** —
+    /// いま使っている値が正しい保証が無いので、その周りに門を置くと自作自演になる。
+    ///
+    /// ## なぜ検疫を起点にしないか(2026-09-18・当初の実装を差し替えた)
+    ///
+    /// 最初は「退避が実効 30 秒続いたら学び直す」とした。しかし再生
+    /// (`scripts/replay_log.sh`)で測ると乗り換えは 3:16 で、**起点を早めても
+    /// 律速は「学習に要る 20 秒ぶんの証拠」(このログでは壁時計 53 秒)**だった。
+    /// 検疫を起点にすると、さらに
+    ///
+    /// - 門より小さいずれは退避に至らないので、**永久に直らない**
+    /// - 退避の累計を待つぶん、乗り換えが 80 秒ほど遅れる
+    ///
+    /// という穴が残る。検疫から切り離し、**ずれの大きさに依らず見直す**形にした。
+    ///
+    /// ## なぜ食い違いの閾値を大きく取るか
+    ///
+    /// 実測のずれは窓ごとに数十度散らばる(頭の動きと course の雑音)。
+    /// 閾値を小さくすると、**取り付けが変わっていないのに窓ごとに乗り換えが起き、
+    /// 音の基準が跳ぶ**(利用者が「離散的」と呼んだ現象を作り直すことになる)。
+    /// ただしこれは乗り換えを**抑える**幅であって、誤った乗り換えを防ぐ保証ではない
+    /// (長く横を向いて歩けば、その姿勢のずれが成立して乗り換わりうる)。
+    ///
+    /// **いま使っている値は、新しい値が成立するまで使い続ける。** その場で捨てると
+    /// 基準が消えて音が飛ぶ(同じ理由)
+    private mutating func updateRelearning(headingDeg: Double, rawCourseDeg: Double?,
+                                           sample: MountOffset.Sample, p: Params) {
+        guard p.relearnWindowEvidenceSec > 0 else { return }
+        // **窓は学習の成立を待たずに回す。** 装着前に成立した値を持っている場合、
+        // 窓がすでに回っていれば装着後の証拠で最短で追い越せる
+        if let course = rawCourseDeg, sample.evidenceSec > 0 {
+            window.add(diffDeg: Geo.normalizeDeg(headingDeg - course),
+                       evidenceSec: sample.evidenceSec, p: p.relearnWindow)
+        }
+        guard let frozen = learnedDeg,
+              let fresh = window.estimateDeg(p: p.relearnWindow),
+              abs(Geo.angularDiffDeg(fresh, frozen)) > p.relearnMinDisagreeDeg else { return }
+        // 前の取り付けの証拠を持ち込まずに差し替える(**fix の履歴は保つ** — 捨てると
+        // 差し替え直後の証拠が更新頻度に依存する。→ MountOffset.replaceFrozen)
+        offset.replaceFrozen(deg: fresh, concentration: window.concentration)
+        learnedDeg = fresh
+        relearnCount += 1
+        // 乗り換えた瞬間、方位が差のぶん飛ぶので、それ以前の証拠は捨てる
+        quarantine = HeadingQuarantine()
+        quarantine.markLearned()
+        // **同じ証拠で 2 回乗り換えない**(→ OffsetWindow の「保証しないこと」)
+        window.clear()
     }
 
     /// 使ってよいか。**呼ぶたびに鮮度を評価する**ので、更新が止まれば自動的に `stale` へ落ちる。
@@ -168,5 +273,34 @@ public struct HeadMountFusion: Equatable {
     /// 定位の基準に使う方位 [deg]。使ってよくなければ nil(呼び出し側は進行方位で代用する)
     public func facingDeg(at now: TimeInterval, p: Params) -> Double? {
         use(at: now, p: p).isUsable ? correctedHeadingDeg : nil
+    }
+
+    /// **検疫の判断を無視して**定位に使う方位 [deg](音楽スポット専用・2026-09-18 利用者判断)。
+    ///
+    /// ## なぜ要るか
+    ///
+    /// 連続音では、**基準が切り替わること自体が壊れた体験になる**。
+    /// 2026-09-18 の散歩で、01:13:01 に検疫が退避を出して基準が「頭部 → 進行」へ変わり
+    /// (相対方位が +71° 跳んだ)、そこから **53 秒間**、音は進行方位を基準に置かれた。
+    /// その間は**首を振っても音が動かず**、course が更新される時だけ階段状に動く。
+    /// 途中では基準が「なし」になり、音が中央へ飛んだ。
+    /// 利用者の言葉では「音楽の向きの変化が離散的になった」。
+    ///
+    /// ## 何を守り、何を捨てるか
+    ///
+    /// - **守る**: 鮮度(更新が止まったら使わない)と、取り付けのずれの学習
+    ///   (ずれが分からなければ方位そのものが不明)
+    /// - **捨てる**: 検疫の判断。磁気の乱れで向きがずれる危険は残るが、
+    ///   **基準が飛ぶことの方が体験を壊す**という判断(利用者)
+    ///
+    /// 検疫は「首を回すほど学習が汚れる」性質を持つ(docs/13)。
+    /// **音の方へ首を振って探す**というこの体験では、その前提自体が噛み合わない。
+    public func facingDegIgnoringQuarantine(at now: TimeInterval, p: Params) -> Double? {
+        switch use(at: now, p: p) {
+        case .use, .quarantined:
+            return correctedHeadingDeg
+        case .noSample, .stale, .offsetNotLearned:
+            return nil
+        }
     }
 }
