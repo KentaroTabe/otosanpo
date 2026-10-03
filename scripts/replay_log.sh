@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # 使い方:
-#   scripts/replay_log.sh                     field-logs/ の最新ログを再生する
-#   scripts/replay_log.sh <ファイル>          指定したログを再生する
-#   scripts/replay_log.sh <ファイル> <設定>   閾値を振り直して比べる
+#   scripts/replay_log.sh                            field-logs/ の最新ログを再生する
+#   scripts/replay_log.sh <ファイル>                 指定したログを再生する
+#   scripts/replay_log.sh <ファイル> <設定>          閾値を振り直して比べる
 #     (設定 JSON を書き換えた版を渡す。歩き直さずに値を決めるための道具)
+#   scripts/replay_log.sh <ファイル> <設定> <地図>   地図を指定して再生する
+#
+# **地図を指定できるようにしたのは、テスターの散歩を再生するため**(2026-10-03)。
+# 既定の `maps/otosanpo-map.json` は開発者の自宅周辺なので、
+# 他の土地のログでは経路の場が作れず、「経路データがないので判定できません」で終わる。
+#   例: scripts/replay_log.sh field-logs/<名古屋のログ>.tsv \
+#         config/parameters.json maps/set/名古屋市.json
 #
 # 記録したフィールドログを Core の純粋ロジックに流し直し、経路長・迂回率・
 # フィルタの寄与を計算する。実機で歩き直さずに実装の正しさを確かめるための道具。
@@ -41,4 +48,19 @@ if [ ! -f "$CONFIG" ]; then
   exit 1
 fi
 
-"$BIN" "$SRC" "$CONFIG"
+MAP="${3:-maps/otosanpo-map.json}"
+if [ ! -f "$MAP" ]; then
+  echo "地図がありません: $MAP" >&2
+  exit 1
+fi
+
+# **自宅(任意)。** 渡さないと到着地点で近似するが、ログが自宅の手前で終わっていると
+# 目標がずれ、ビーコンの節が実機を再現しない(2026-10-03)。
+# ログの「自宅を現在地に設定しました」の行から座標を読んで渡す
+HOME_POINT="${4:-}"
+
+if [ -n "$HOME_POINT" ]; then
+  "$BIN" "$SRC" "$CONFIG" "$MAP" "$HOME_POINT"
+else
+  "$BIN" "$SRC" "$CONFIG" "$MAP"
+fi
