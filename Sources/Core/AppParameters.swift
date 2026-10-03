@@ -498,6 +498,33 @@ public struct AppParameters: Codable, Equatable {
         public var beaconDirectionChangeDeg: Double
         /// 繰り上げの下限間隔 [sec]。連打を防ぐ
         public var beaconMinGapSec: Double
+
+        // MARK: ビーコンの向きの関所(→ BearingFlipGate・docs/05・2026-10-03)
+        //
+        // **1.5 秒で 180° 往復する**のを止めるための裏取り。
+        // 道と端点の引き継ぎ(`route.way_switch_margin_m` 等)では止まらなかった
+
+        /// この角度を超える変化は、すぐには受け入れない [deg]
+        public var beaconFlipEnterDeg: Double
+        /// 保留中に、いま出している向きのこの範囲へ戻ってきたら保留を捨てる [deg]
+        public var beaconFlipExitDeg: Double
+        /// 保留中の候補を「同じ群」とみなす幅 [deg]
+        public var beaconFlipClusterDeg: Double
+        /// 群が続いたと認める時間 [sec]。実測の往復は 1.3〜2.1 秒
+        public var beaconFlipConfirmSec: Double
+        /// 確定に要る固有 fix の数
+        public var beaconFlipMinSamples: Int
+        /// 標本の間隔がこれを超えたら保留を捨てる [sec]
+        public var beaconFlipMaxGapSec: Double
+
+        public var beaconFlipGate: BearingFlipGate.Params {
+            BearingFlipGate.Params(enterDeg: beaconFlipEnterDeg,
+                                   exitDeg: beaconFlipExitDeg,
+                                   clusterDeg: beaconFlipClusterDeg,
+                                   confirmSec: beaconFlipConfirmSec,
+                                   minSamples: beaconFlipMinSamples,
+                                   maxGapSec: beaconFlipMaxGapSec)
+        }
         /// 3D 音響(HRTF)で定位するか。false ならステレオパンで代替する
         public var useSpatialAudio: Bool
         /// **定位を前半球に畳むか**(→ SoundPlacement.foldToFrontDeg・docs/03)。
