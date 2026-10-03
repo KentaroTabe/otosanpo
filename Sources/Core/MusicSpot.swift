@@ -73,6 +73,30 @@ public struct MusicSpot: Equatable {
         public var pinpointBeamDeg: Double
         /// 効果が最大の時、正面から `pinpointBeamDeg` 以上外れたら下げる音量 [dB]
         public var pinpointDepthDb: Double
+        /// **向きによる音量の割り振り** [dB](正の値)。正面で 0、真後ろで −この値。
+        ///
+        /// ## なぜ要るか(2026-09-18 利用者判断)
+        ///
+        /// HRTF は左右の差で向きを伝えるが、**左右を足した音量はほぼ一定**になる。
+        /// そのため「左右に偏った時だけはっきり分かる」状態になり、
+        /// 正面と背後の区別がつかない(実測: 前後を答えられず、首を左右に振らないと分からない)。
+        ///
+        /// 現実の聞こえ方では、頭が影になって**後ろの音は小さく**なり、
+        /// 注意も正面へ向く。合計を一定に保たず、**向きで音量を割り振る**。
+        ///
+        /// 代償: 音量は距離も表しているので、**向きと距離が混ざる**。
+        /// 深くするほど前後は分かるが、近い / 遠いが分かりにくくなる
+        public var directivityDepthDb: Double
+        /// **後ろの音を暗くし始める角度** [deg](正面から測る)。ここまでは何も変えない
+        public var rearShelfStartDeg: Double
+        /// 真後ろで高域を落とす量 [dB](正の値で置く)。0 なら何もしない
+        public var rearShelfDepthDb: Double
+        /// **耳の高さ** [m](スポットは地表にある)。0 で仰角を付けない
+        public var listenerHeightM: Double
+        /// 広がりが最大になる距離 [m](これより遠いと一番広い)
+        public var spreadFarM: Double
+        /// 広がりが消える距離 [m](これより近いと一点に締まる)
+        public var spreadNearM: Double
 
         /// 距離 `d` [m] での音量。**鳴り始めた地点の距離 `start` で最小、
         /// スポットの手前 `referenceDistanceM` で最大とし、その間を dB で均等につなぐ**
@@ -142,13 +166,93 @@ public struct MusicSpot: Equatable {
             return -pinpointDepthDb * w * Swift.min(1, off / pinpointBeamDeg)
         }
 
+        /// **後ろから鳴っている時だけ高域を落とす量** [dB](0 以下)。
+        ///
+        /// ## なぜ要るか(2026-09-18 利用者依頼)
+        ///
+        /// 「音楽の前後が弱い。前で鳴っているか後ろで鳴っているか分からない」。
+        /// 汎用 HRTF では前後が伝わらないことは純音で確定していて(docs/03)、
+        /// 広帯域の音楽なら伝わるかもしれない、というのが当初の見込みだった。
+        /// 実測(2026-09-18)では伝わらなかった。
+        ///
+        /// 現実でも、後ろの音は頭と耳介に遮られて高域が減る。それを**弱く**模す。
+        /// **強いローパスにしない** — HRTF が前後の判断に使う高域まで削ってしまう(合議)。
+        ///
+        /// 正面〜`rearShelfStartDeg` は 0。そこから真後ろへ向けて滑らかに増やす
+        /// (両端で傾きが 0 になる形。向きの境目で音色が急に変わらないように)
+        /// **向きで割り振った音量** [dB](0 以下)。正面 0・真横 −半分・真後ろ −`directivityDepthDb`。
+        ///
+        /// 形は余弦(頭の影の効き方に近い)。境目が無いので、首を回すと**滑らかに**変わる。
+        /// スポットの近くで掛ける「正面の強調」(→ `facingDb`)とは別物で、こちらは**距離によらない**
+        public func directivityDb(relativeBearingDeg rel: Double) -> Double {
+            guard directivityDepthDb > 0 else { return 0 }
+            let t = (1 - cos(rel * .pi / 180)) / 2   // 正面 0 → 真後ろ 1
+            return -directivityDepthDb * Swift.min(1, Swift.max(0, t))
+        }
+
+        public func rearShelfDb(relativeBearingDeg rel: Double) -> Double {
+            guard rearShelfDepthDb > 0, rearShelfStartDeg < 180 else { return 0 }
+            let off = abs(Geo.angularDiffDeg(rel, 0))
+            guard off > rearShelfStartDeg else { return 0 }
+            let t = Swift.min(1, (off - rearShelfStartDeg) / (180 - rearShelfStartDeg))
+            return -rearShelfDepthDb * (1 - cos(.pi * t)) / 2
+        }
+
+        /// **見下ろす角度** [deg]。負が下(2026-09-18 利用者依頼)。
+        ///
+        /// > 「スポットが地表にありイヤホンが 150cm 高い位置にあるとすると、
+        /// > スポットに近づくと下側から聞こえてくるようになるはず」
+        ///
+        /// 水平距離 `d` と耳の高さ `h` から `−atan(h / d)`。
+        ///
+        /// **この角度は水平距離だけで決まる。** 方位と違って位置の誤差に強い:
+        ///
+        /// | 水平距離 | 仰角(h = 1.5 m) | 3 m ずれた時の振れ幅 |
+        /// |---|---|---|
+        /// | 50 m | −1.7° | ±0.1° |
+        /// | 20 m | −4.3° | ±0.6° |
+        /// | 10 m | −8.5° | ±2.6° |
+        /// | 5 m | −16.7° | ±10° |
+        /// | 2 m | −36.9° | (方位はもう意味を持たない) |
+        ///
+        /// 方位は同じ 3 m のずれで 5 m 先なら ±31° 振れる。
+        /// **近づくほど方位は当てにならなくなるが、仰角は急に深くなる** —
+        /// 「足元に在る」という手がかりを、GPS の誤差に強い量で作れる
+        public func elevationDeg(horizontalDistanceM d: Double) -> Double {
+            guard listenerHeightM > 0, d.isFinite else { return 0 }
+            return -atan2(listenerHeightM, Swift.max(0, d)) * 180 / .pi
+        }
+
+        /// **音の広がり** [0..1]。1 = 広い(遠い)・0 = 狭い(近い)。
+        ///
+        /// > 「音が広い範囲から聞こえるのは遠いところで、狭い範囲から聞こえるのは近いところ」
+        ///
+        /// 遠いうちは輪郭のぼやけた音、近づくほど一点に締まる。
+        /// これも**距離だけで決まる**ので、方位の誤差に影響されない。
+        /// `spreadFarM` 以遠で 1、`spreadNearM` 以内で 0、間はなめらかに繋ぐ
+        public func spread(atDistanceM d: Double) -> Double {
+            guard spreadFarM > spreadNearM, d.isFinite else { return 0 }
+            if d >= spreadFarM { return 1 }
+            if d <= spreadNearM { return 0 }
+            let t = (d - spreadNearM) / (spreadFarM - spreadNearM)
+            // 端で傾きが 0 になる繋ぎ方(直線だと境目で変化が折れる)
+            return (1 - cos(.pi * t)) / 2
+        }
+
         public init(minDistanceM: Double, maxDistanceM: Double, distanceStepCount: Int,
                     reachedM: Double,
                     bearingStepDeg: Double, sameDistanceToleranceM: Double,
                     referenceDistanceM: Double, gainMinSpanM: Double,
                     maxGain: Double, minGain: Double, routeBlend: Double,
                     pinpointStartM: Double, pinpointFullM: Double,
-                    pinpointBeamDeg: Double, pinpointDepthDb: Double) {
+                    pinpointBeamDeg: Double, pinpointDepthDb: Double,
+                    directivityDepthDb: Double = 0,
+                    rearShelfStartDeg: Double = 90, rearShelfDepthDb: Double = 0,
+                    listenerHeightM: Double = 0,
+                    spreadFarM: Double = 0, spreadNearM: Double = 0) {
+            self.listenerHeightM = listenerHeightM
+            self.spreadFarM = spreadFarM
+            self.spreadNearM = spreadNearM
             self.minDistanceM = minDistanceM
             self.maxDistanceM = maxDistanceM
             self.distanceStepCount = distanceStepCount
@@ -164,6 +268,9 @@ public struct MusicSpot: Equatable {
             self.pinpointFullM = pinpointFullM
             self.pinpointBeamDeg = pinpointBeamDeg
             self.pinpointDepthDb = pinpointDepthDb
+            self.directivityDepthDb = directivityDepthDb
+            self.rearShelfStartDeg = rearShelfStartDeg
+            self.rearShelfDepthDb = rearShelfDepthDb
         }
     }
 
@@ -177,18 +284,35 @@ public struct MusicSpot: Equatable {
         public var distanceGain: Double
         /// 正面の強調で下げた量 [dB](0 以下。頭の向きが基準でない時は 0)
         public var facingDb: Double
+        /// 向きで割り振った音量 [dB](0 以下。→ `Params.directivityDb`)
+        public var directivityDb: Double
+        /// 後ろの時に高域を落とす量 [dB](0 以下。→ `Params.rearShelfDb`)
+        public var rearShelfDb: Double
         /// スポットの近さ [0..1](→ `Params.pinpointWeight`)
         public var pinpointWeight: Double
+        /// **見下ろす角度** [deg](負が下。→ `Params.elevationDeg`)。
+        /// 近づくほど深くなる。方位と違って位置の誤差に強い
+        public var elevationDeg: Double
+        /// **音の広がり** [0..1](1 = 遠くて広い・0 = 近くて一点。→ `Params.spread`)
+        public var spread: Double
         public var distanceM: Double
         /// 鳴らす向き(真北基準)。直線と道の向きを混ぜた結果
         public var worldBearingDeg: Double
 
         public init(relDeg: Double, gain: Double, distanceGain: Double, facingDb: Double,
-                    pinpointWeight: Double, distanceM: Double, worldBearingDeg: Double) {
+                    directivityDb: Double = 0,
+                    rearShelfDb: Double = 0,
+                    pinpointWeight: Double,
+                    elevationDeg: Double = 0, spread: Double = 0,
+                    distanceM: Double, worldBearingDeg: Double) {
+            self.elevationDeg = elevationDeg
+            self.spread = spread
             self.relDeg = relDeg
             self.gain = gain
             self.distanceGain = distanceGain
             self.facingDb = facingDb
+            self.directivityDb = directivityDb
+            self.rearShelfDb = rearShelfDb
             self.pinpointWeight = pinpointWeight
             self.distanceM = distanceM
             self.worldBearingDeg = worldBearingDeg
@@ -235,6 +359,40 @@ public struct MusicSpot: Equatable {
 
     /// 候補から 1 つ選ぶ。**上限の内側で、狙う距離にいちばん近いもの。**
     /// 同点は候補の並び順(= 方位の小さい方)で決める — 再現できるようにするため
+    /// **置き直す時の選び方**(2026-09-18 利用者依頼「特定の箇所に固まらないように」)。
+    ///
+    /// 最初の 1 つは `choose`(目標距離にいちばん近いもの)で選ぶ。
+    /// 置き直しでそれを使うと、**同じ所が何度でも選ばれる**ので、こちらを使う:
+    ///
+    /// 1. 帯の中(`minDistanceM`〜`maxDistanceM`)の候補だけを残す
+    /// 2. **これまでに置いた所から `minSeparationM` 未満のものを外す**
+    ///    (ちょうどの距離は許す)
+    /// 3. 同じ地点に寄った候補をまとめる(道へ寄せると重なるため。票が偏らないように)
+    /// 4. 残りから 1 つ選ぶ
+    ///
+    /// - Parameters:
+    ///   - avoiding: これまでに置いた所(今回の散歩ぶん)
+    ///   - minSeparationM: そこから空ける距離 [m]
+    ///   - pick: 0..<件数 から 1 つ選ぶ。**外から渡す**ので、テストでは決め打ちにできる
+    /// - Returns: 選べなければ nil。**条件を黙って緩めない**(呼ぶ側が見送る)
+    public static func chooseSpread(from candidates: [GeoPoint], start: GeoPoint,
+                                    avoiding: [GeoPoint], minSeparationM: Double,
+                                    p: Params, pick: (Int) -> Int) -> MusicSpot? {
+        var eligible: [GeoPoint] = []
+        for c in candidates {
+            let d = Geo.distanceM(start, c)
+            guard d >= p.minDistanceM, d <= p.maxDistanceM else { continue }
+            // **これまでに置いた所の近くは外す**
+            if avoiding.contains(where: { Geo.distanceM($0, c) < minSeparationM }) { continue }
+            // 道へ寄せると別々の候補が同じ地点に重なる。**票を 1 つにまとめる**
+            if eligible.contains(where: { Geo.distanceM($0, c) < 1 }) { continue }
+            eligible.append(c)
+        }
+        guard !eligible.isEmpty else { return nil }
+        let i = Swift.max(0, Swift.min(eligible.count - 1, pick(eligible.count)))
+        return MusicSpot(center: eligible[i])
+    }
+
     public static func choose(from candidates: [GeoPoint], start: GeoPoint,
                               p: Params) -> MusicSpot? {
         var best: (point: GeoPoint, error: Double)?
@@ -261,12 +419,18 @@ public struct MusicSpot: Equatable {
     ///   取れなければ nil(直線の向きだけを使う)
     /// - Parameter gainFromDistanceM: 音量の幅の**起点**(鳴り始めた地点でのスポットまでの
     ///   距離)[m]。ここで最小、スポットの手前で最大になる(→ `Params.gain`)
+    /// - Parameters:
+    ///   - directBearingDeg: **揺れを落とした「自分 → スポット」の向き**を外から渡す口
+    ///     (→ `BearingHold`・2026-09-18)。nil なら位置から素直に計算する。
+    ///     位置の推定は近いほど角度に効くので、ここを生のまま使うと
+    ///     スポットが小刻みに動いて聞こえる(実測 0〜5 m で 19°/s)
     public func placement(from listener: GeoPoint, referenceBearingDeg: Double,
                           headIsReference: Bool = false,
                           routeBearingDeg: Double? = nil,
+                          directBearingDeg: Double? = nil,
                           gainFromDistanceM: Double,
                           p: Params) -> Placement {
-        let direct = Geo.bearingDeg(from: listener, to: center)
+        let direct = directBearingDeg ?? Geo.bearingDeg(from: listener, to: center)
         let distance = Geo.distanceM(listener, center)
         let weight = p.pinpointWeight(atDistanceM: distance)
         // **スポットの近くでは道の向きを混ぜない**(2026-09-15)。
@@ -279,11 +443,21 @@ public struct MusicSpot: Equatable {
         let rel = Geo.angularDiffDeg(world, referenceBearingDeg)
         let distanceGain = p.gain(atDistanceM: distance, fromDistanceM: gainFromDistanceM)
         let facing = headIsReference ? p.facingDb(relativeBearingDeg: rel, weight: weight) : 0
+        // **向きで音量を割り振る**(2026-09-18 利用者判断)。距離によらず掛かる。
+        // 基準が取れていない時は相対方位が 0 になるので、ここも自然に 0 になる
+        let directivity = p.directivityDb(relativeBearingDeg: rel)
         return Placement(relDeg: rel,
-                         gain: distanceGain * pow(10, facing / 20),
+                         gain: distanceGain * pow(10, (facing + directivity) / 20),
                          distanceGain: distanceGain,
                          facingDb: facing,
+                         directivityDb: directivity,
+                         // 基準が取れていない時は相対方位が 0 になるので、ここも自然に 0 になる
+                         rearShelfDb: p.rearShelfDb(relativeBearingDeg: rel),
                          pinpointWeight: weight,
+                         // **近づくほど下から・一点から鳴る**(2026-09-18 利用者依頼)。
+                         // どちらも水平距離だけで決まるので、方位と違って位置の誤差に強い
+                         elevationDeg: p.elevationDeg(horizontalDistanceM: distance),
+                         spread: p.spread(atDistanceM: distance),
                          distanceM: distance,
                          worldBearingDeg: world)
     }

@@ -5,12 +5,14 @@ final class TravelDirectionTests: XCTestCase {
     /// 退避の優先順位そのものを見たいテストが多いため、既定はホールドなし(0 秒)にする
     private let params = AppParameters.Location(
         minSpeedForCourseMPerS: 0.7, maxCourseAccuracyDeg: 45,
-        maxFixAgeSec: 10, courseHoldSec: 0, allowCompassFallback: true)
+        maxFixAgeSec: 10, courseHoldSec: 0, allowCompassFallback: true,
+                                     useBestForNavigation: false)
 
     /// 実機の既定に合わせた設定(ホールド 30 秒・コンパス退避なし)
     private let holdingParams = AppParameters.Location(
         minSpeedForCourseMPerS: 0.7, maxCourseAccuracyDeg: 45,
-        maxFixAgeSec: 10, courseHoldSec: 30, allowCompassFallback: false)
+        maxFixAgeSec: 10, courseHoldSec: 30, allowCompassFallback: false,
+                                     useBestForNavigation: false)
 
     /// 歩行中は端末コンパスではなく移動方向(course)を採用する
     func testWalkingPrefersCourseOverCompass() {
@@ -64,7 +66,8 @@ final class TravelDirectionTests: XCTestCase {
     func testFallbackDisabledYieldsNil() {
         let p = AppParameters.Location(minSpeedForCourseMPerS: 0.7, maxCourseAccuracyDeg: 45,
                                        maxFixAgeSec: 10, courseHoldSec: 0,
-                                       allowCompassFallback: false)
+                                       allowCompassFallback: false,
+                                                                    useBestForNavigation: false)
         let fix = MotionFix(courseDeg: -1, courseAccuracyDeg: -1, speedMps: -1,
                             compassHeadingDeg: 270, ageSec: 1)
         XCTAssertNil(TravelDirection.resolve(fix, params: p))
@@ -113,7 +116,8 @@ final class TravelDirectionTests: XCTestCase {
                             compassHeadingDeg: 270, ageSec: 1)
         let p = AppParameters.Location(minSpeedForCourseMPerS: 0.7, maxCourseAccuracyDeg: 45,
                                        maxFixAgeSec: 10, courseHoldSec: 30,
-                                       allowCompassFallback: true)
+                                       allowCompassFallback: true,
+                                                                    useBestForNavigation: false)
         XCTAssertEqual(TravelDirection.resolve(fix, held: HeldCourse(deg: 125, ageSec: 5),
                                                params: p)?.source, .heldCourse)
     }
