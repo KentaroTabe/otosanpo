@@ -1071,10 +1071,34 @@ let headSamples = readHeadHeadings(logPath)
 
 print("\n== ビーコンの指す向きの安定性 ==")
 
+/// 自宅。**第 5 引数(`lat,lon`)で渡せる**(2026-10-03)。
+///
+/// 渡さない時は到着地点で近似していたが、**それでは実機を再現できない**ことが分かった。
+/// 2026-09-08 の名古屋の散歩では、ログが自宅の 199m 手前で終わっており、
+/// 近似した目標は**実際の自宅から 241m ずれて**いた。経路の場は目標から解くので、
+/// 目標がずれれば「前へ進む節点」も変わる。
+///
+/// 自宅はログの「自宅を現在地に設定しました」の行から読める(分割された別ファイルに
+/// ある場合は、その行を見て手で渡す)。
+let overrideHome: GeoPoint? = {
+    guard args.count >= 5 else { return nil }
+    let parts = args[4].split(separator: ",")
+    guard parts.count == 2, let lat = Double(parts[0]), let lon = Double(parts[1]) else {
+        return nil
+    }
+    return GeoPoint(latitude: lat, longitude: lon)
+}()
+
 if let beaconMap = loadedMap, let last = all.last {
     let graph = WalkGraph(map: beaconMap, cellSizeM: r.mapIndexCellSizeM)
-    // 自宅は到着地点で近似する(実機の到着判定は arrival_radius_m 以内で成立している)
-    if let field = RouteField(graph: graph, goal: last.point,
+    let goal = overrideHome ?? last.point
+    if let home = overrideHome {
+        print(String(format: "  自宅: 指定 (%.6f, %.6f)・到着地点との差 %.0fm",
+                     home.latitude, home.longitude, Geo.distanceM(home, last.point)))
+    } else {
+        print("  自宅: 到着地点で近似(第 5 引数 lat,lon で渡せます)")
+    }
+    if let field = RouteField(graph: graph, goal: goal,
                               snapMaxDistanceM: r.snapMaxDistanceM,
                               weights: RouteField.Weights(
                                 crossCostWeight: r.crossCostWeight,
@@ -1136,8 +1160,6 @@ if let beaconMap = loadedMap, let last = all.last {
         }
         print(String(format: "  いまの設定: 道 %.0fm / 端点 %.0fm",
                      r.waySwitchMarginM, r.nodeSwitchMarginM))
-        print("  ※ 自宅は到着地点で近似している。ログの実機値と一致はしないが、"
-              + "**同じ入力で前後を比べる**分には足りる")
     } else {
         print("  経路の場を作れませんでした(自宅が道に乗らない)")
     }
