@@ -1089,6 +1089,11 @@ let overrideHome: GeoPoint? = {
     return GeoPoint(latitude: lat, longitude: lon)
 }()
 
+/// 往復とみなす時間 [sec]。実測の反転は 1.3〜2.1 秒で往復していた(docs/05)
+let roundTripSec: TimeInterval = 5
+/// この大きさ未満の pan は「中央」とみなし、符号の反転を数えない
+let panDeadZone = 0.15
+
 if let beaconMap = loadedMap, let last = all.last {
     let graph = WalkGraph(map: beaconMap, cellSizeM: r.mapIndexCellSizeM)
     let goal = overrideHome ?? last.point
@@ -1110,45 +1115,102 @@ if let beaconMap = loadedMap, let last = all.last {
         let returning = all.filter { $0.state == "returning" }
         print("  対象: 帰路の fix \(returning.count) 件(全 \(all.count) 件)")
 
-        /// 引き継ぎ設定を 1 つ与えて、帰路を通したときの跳びを数える
-        func measure(_ tp: RouteField.TraceParams) -> (jumps: Int, reversals: Int,
-                                                       behind: Int, samples: Int) {
+        struct Measured {
+            var jumps = 0            // 生の方位が 90° 超動いた回数
+            var reversals = 0        // 同 150° 超
+            var behind = 0           // 後ろを指した回数(進行方位が取れた標本のみ)
+            var withCourse = 0       // 進行方位が取れた標本の数 = behind の分母
+            var samples = 0          // 向きを出せた標本の数
+            var panFlips = 0         // **左右が入れ替わった回数**(耳で分かる跳び)
+            var roundTrips = 0       // 短時間の往復(A → B → A)
+        }
+
+        /// 引き継ぎ設定を 1 つ与えて、帰路を通したときの跳びを数える。
+        ///
+        /// ## 2026-10-03 に直した 2 点(どちらも数字の意味が変わる)
+        ///
+        /// 1. **「後ろ向き」の分母。** `behind` は進行方位が取れた時だけ数えるのに、
+        ///    率は**全標本**で割っていた。実測では course が通るのは 1531 件中 930 件ほどで、
+        ///    `218/1531 = 14%` と出ていたものは正しくは `218/930 = 23%`。
+        ///    **ログ側の実測(24%)と合わなかったのはこれが理由。**
+        /// 2. **耳で分かる量は生の角度ではなく `pan`。**
+        ///    `pan = sin(相対方位)` なので、方位が 180° 反転すると**パンの符号が反転**し、
+        ///    音が片耳からもう片方へ飛ぶ。一方、前半球への畳み込み
+        ///    (`front_hemisphere_only`)は `sin(180°−x) = sin(x)` で pan を変えない。
+        ///    **生の角度の跳び ≠ 聞こえる跳び**なので、両方を出す
+        func measure(_ tp: RouteField.TraceParams,
+                     gate gp: BearingFlipGate.Params? = nil) -> Measured {
             var trace: RouteField.Trace?
             var previous: Double?
-            var jumps = 0, reversals = 0, behind = 0, samples = 0
+            var previousPan: Double?
+            /// 直近の「大きく動く前の向き」と、その時刻(往復の判定に使う)
+            var beforeJump: (deg: Double, time: Date)?
+            var gate = BearingFlipGate()
+            var m = Measured()
             for f in returning {
-                guard let step = field.nextStep(from: f.point, graph: graph,
-                                                nodeToleranceM: r.nodeArrivalToleranceM,
-                                                trace: trace, tp: tp) else { continue }
-                trace = step.trace
-                samples += 1
+                guard let raw = field.nextStep(from: f.point, graph: graph,
+                                               nodeToleranceM: r.nodeArrivalToleranceM,
+                                               trace: trace, tp: tp) else { continue }
+                trace = raw.trace
+                // **関所を通す**(指定された時だけ)。時刻は fix のもの
+                let step: (deg: Double, trace: RouteField.Trace)
+                if let gp {
+                    let held = gate.ingest(raw.deg, at: f.time.timeIntervalSinceReferenceDate,
+                                           p: gp)
+                    step = (held, raw.trace)
+                } else {
+                    step = (raw.deg, raw.trace)
+                }
+                m.samples += 1
                 if let prev = previous {
                     let jump = abs(Geo.angularDiffDeg(step.deg, prev))
-                    if jump > 90 { jumps += 1 }
-                    if jump > 150 { reversals += 1 }
+                    if jump > 90 { m.jumps += 1 }
+                    if jump > 150 { m.reversals += 1 }
+                    // **往復**: 大きく動いたあと、短い間に元の向きへ戻ってきたか。
+                    // 歩行では起こりえないので、これが残っていれば直っていない
+                    if let b = beforeJump {
+                        if abs(Geo.angularDiffDeg(step.deg, b.deg)) <= 45,
+                           f.time.timeIntervalSince(b.time) <= roundTripSec {
+                            m.roundTrips += 1
+                            beforeJump = nil
+                        } else if f.time.timeIntervalSince(b.time) > roundTripSec {
+                            beforeJump = nil
+                        }
+                    }
+                    if jump > 90, beforeJump == nil { beforeJump = (prev, f.time) }
                 }
                 previous = step.deg
-                // 進行方位が取れている時だけ「後ろを指したか」を数える
+
+                // 進行方位が取れている時だけ「後ろを指したか」と「左右」を数える
                 if let course = TravelDirection.rawCourse(
                     MotionFix(courseDeg: f.courseDeg, courseAccuracyDeg: f.courseAccuracyDeg,
                               speedMps: f.speedMps, compassHeadingDeg: nil,
                               ageSec: f.ageSec, horizontalAccuracyM: f.accuracyM),
-                    params: params.location),
-                   abs(Geo.angularDiffDeg(step.deg, course)) > 90 {
-                    behind += 1
+                    params: params.location) {
+                    m.withCourse += 1
+                    if abs(Geo.angularDiffDeg(step.deg, course)) > 90 { m.behind += 1 }
+                    let pan = SoundPlacement.pan(
+                        relativeBearingDeg: Geo.angularDiffDeg(step.deg, course))
+                    // 符号が変わり、かつどちらも中央寄りでない時だけ「入れ替わった」と数える
+                    if let pp = previousPan, pp * pan < 0,
+                       abs(pp) > panDeadZone, abs(pan) > panDeadZone {
+                        m.panFlips += 1
+                    }
+                    previousPan = pan
                 }
             }
-            return (jumps, reversals, behind, samples)
+            return m
         }
 
-        func row(_ label: String,
-                 _ m: (jumps: Int, reversals: Int, behind: Int, samples: Int)) {
-            let pct = m.samples > 0 ? 100 * Double(m.behind) / Double(m.samples) : 0
-            print(String(format: "  %-16@ %8d %8d %8d(%.0f%%)", label as NSString,
-                         m.jumps, m.reversals, m.behind, pct))
+        func row(_ label: String, _ m: Measured) {
+            // **分母は「進行方位が取れた標本」**。全標本で割ると率が小さく出る
+            let pct = m.withCourse > 0 ? 100 * Double(m.behind) / Double(m.withCourse) : 0
+            print(String(format: "  %-16@ %6d %6d %6d %6d %7d(%.0f%%)", label as NSString,
+                         m.jumps, m.reversals, m.roundTrips, m.panFlips, m.behind, pct))
         }
-        print(String(format: "  %-16@ %8@ %8@ %10@", "道 / 端点" as NSString,
-                     "90°超" as NSString, "150°超" as NSString, "後ろ向き" as NSString))
+        print(String(format: "  %-16@ %6@ %6@ %6@ %6@ %9@", "道 / 端点" as NSString,
+                     "90°超" as NSString, "150°超" as NSString, "往復" as NSString,
+                     "左右入替" as NSString, "後ろ向き" as NSString))
         // **組み合わせを振る。** どちらの引き継ぎが効くのかは、片方ずつ動かさないと分からない
         let sweep: [(Double, Double)] = [(0, 0), (8, 0), (16, 0), (25, 0),
                                          (0, 10), (8, 10), (16, 10)]
@@ -1160,6 +1222,23 @@ if let beaconMap = loadedMap, let last = all.last {
         }
         print(String(format: "  いまの設定: 道 %.0fm / 端点 %.0fm",
                      r.waySwitchMarginM, r.nodeSwitchMarginM))
+
+        // MARK: 関所(案 C)を通した場合
+        //
+        // **大きな変化だけ、数秒の裏取りを要求する**(→ Core の BearingFlipGate)。
+        // 引き継ぎ(A/B)は配る値のまま(0/0)にして、関所だけを振る
+        print("\n  -- 関所(大きな変化に裏取りを要求)を通した場合 --")
+        print(String(format: "  %-16@ %6@ %6@ %6@ %6@ %9@", "確定の条件" as NSString,
+                     "90°超" as NSString, "150°超" as NSString, "往復" as NSString,
+                     "左右入替" as NSString, "後ろ向き" as NSString))
+        let plain = RouteField.TraceParams(waySwitchMarginM: r.waySwitchMarginM,
+                                           nodeSwitchMarginM: r.nodeSwitchMarginM)
+        for (sec, minSamples) in [(2.0, 2), (2.5, 2), (3.0, 3), (4.0, 3), (6.0, 4)] {
+            let gp = BearingFlipGate.Params(enterDeg: 90, exitDeg: 45, clusterDeg: 40,
+                                            confirmSec: sec, minSamples: minSamples,
+                                            maxGapSec: 5)
+            row(String(format: "%.1f秒 / %d件", sec, minSamples), measure(plain, gate: gp))
+        }
     } else {
         print("  経路の場を作れませんでした(自宅が道に乗らない)")
     }

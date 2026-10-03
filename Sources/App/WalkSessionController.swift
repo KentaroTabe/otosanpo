@@ -115,6 +115,10 @@ final class WalkSessionController: ObservableObject {
     /// 経路の追跡の引き継ぎ(→ RouteField.Trace)。**ビーコンと曲がり角の誘導で共有する** —
     /// 別々に決めると、鳴っている向きと「次の角」が食い違う
     private var routeTrace: RouteField.Trace?
+
+    /// **ビーコンの向きの関所**(→ `BearingFlipGate`・2026-10-03)。
+    /// 経路の場を作り直したら捨てる(節点の番号の意味が変わるため)
+    private var beaconFlipGate = BearingFlipGate()
     /// 散歩をまたいで積む歩行速度の推定。帰宅推定の分母になる
     private var speed: SpeedEstimator
     /// 広域の「面白そうな地帯」の地図。局所の分岐選択に向きを与える
@@ -945,7 +949,12 @@ final class WalkSessionController: ObservableObject {
         }
         guard let step else { return (Geo.bearingDeg(from: p, to: h), false) }
         routeTrace = step.trace
-        return (step.deg, true)
+        // **大きな変化には数秒の裏取りを要求する**(→ Core の BearingFlipGate・2026-10-03)。
+        // 引き継ぎ(A/B)では止まらなかった「1.5 秒で 180° 往復」を落とすための関所。
+        // **根治ではない**(誤りが長く続けば素通りする)。経路追跡の側は別途直す
+        guard let fixTime = location.motionFix().fixTime else { return (step.deg, true) }
+        let held = beaconFlipGate.ingest(step.deg, at: fixTime, p: params.audio.beaconFlipGate)
+        return (held, true)
     }
 
     /// 定位の基準を、**方位と出所の対**で返す。
@@ -2016,6 +2025,8 @@ final class WalkSessionController: ObservableObject {
         routeField = nil
         // 場を作り直したら節点の番号の意味も変わる。引き継ぎは捨てる
         routeTrace = nil
+        // 向きの関所も捨てる(古い場で確定した向きを持ち越さない)
+        beaconFlipGate.reset()
         guard let graph, let h = home, graph.map.covers(h) else { return }
         let snapMax = params.route.snapMaxDistanceM
         let weights = RouteField.Weights(crossCostWeight: params.route.crossCostWeight,
