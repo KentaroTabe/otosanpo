@@ -2206,9 +2206,13 @@ final class WalkSessionController: ObservableObject {
     /// 99 回の繰り上げのうち本物の方向変化は 4 回だけだった(残り 96% は空振り)。
     /// ビーコンが設計の倍の頻度で鳴っていたことになる。
     private func advanceBeaconIfDirectionChanged(at p: GeoPoint, now: Date) {
+        // **音を休んでいる間も関所へ fix を入れ続ける**(2026-10-31 に見つけた配線の漏れ)。
+        // 入れないと関所の向きが曲がる前のまま残り、誘導が終わった直後の正しい向きを
+        // 「怪しい変化」として数秒止めてしまう。再生は全 fix を流すので、この差が出なかった
+        let observed = beaconBearing(at: p)
         // 誘導が鳴っている間はビーコンを休んでいるので、繰り上げも行わない(音の裁定)
         guard turnGuidance == nil else { return }
-        guard let last = lastBeacon, let bearing = beaconBearing(at: p) else { return }
+        guard let last = lastBeacon, let bearing = observed else { return }
         guard now.timeIntervalSince(last.at) >= params.audio.beaconMinGapSec else { return }
         let fix = location.motionFix(now: now)
         let travel = currentTravel(fix, now: now)
