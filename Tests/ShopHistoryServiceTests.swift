@@ -4,6 +4,53 @@ import XCTest
 final class ShopHistoryServiceTests: XCTestCase {
     private let origin = GeoPoint(latitude: 35.0, longitude: 137.0)
 
+    /// **取得の成否が残る。** 「店が無かった」と「取れなかった」を区別できること
+    /// (2026-10-25 の 0 軒は、どちらだったのか分からなかった)
+    func testFetchOutcomesDistinguishEmptyFromFailure() async throws {
+        let empty = ShopHistoryService(provider: EmptyShopCandidateProvider(),
+                                       store: InMemoryOutcomeStore())
+        let id = await empty.startSession()
+        _ = await empty.recordPositionAndRefreshIfNeeded(origin, sessionID: id,
+                                                         horizontalAccuracyM: 5)
+        let outcomes = await empty.takeFetchOutcomes()
+        XCTAssertEqual(outcomes, [.fetched(shops: 0)])
+        let taken = await empty.takeFetchOutcomes()
+        XCTAssertTrue(taken.isEmpty, "取り出したら消える")
+
+        let failing = ShopHistoryService(provider: FailingProvider(),
+                                         store: InMemoryOutcomeStore())
+        let failingID = await failing.startSession()
+        _ = await failing.recordPositionAndRefreshIfNeeded(origin, sessionID: failingID,
+                                                           horizontalAccuracyM: 5)
+        let failures = await failing.takeFetchOutcomes()
+        XCTAssertEqual(failures, [.failed(reason: "HTTP 503")])
+        let diagnostics = await failing.diagnostics
+        XCTAssertEqual(diagnostics.failures, 1)
+    }
+
+    /// 精度が足りず捨てた fix も数える(取得が走らなかった理由になる)
+    func testRejectedFixesAreCounted() async {
+        let service = ShopHistoryService(provider: EmptyShopCandidateProvider(),
+                                         store: InMemoryOutcomeStore())
+        let id = await service.startSession()
+        _ = await service.recordPositionAndRefreshIfNeeded(origin, sessionID: id,
+                                                           horizontalAccuracyM: 500)
+        let diagnostics = await service.diagnostics
+        XCTAssertEqual(diagnostics.rejectedFixes, 1)
+    }
+
+    /// **失敗の理由に API キーを含めない。**
+    /// `URLError` は失敗した URL を持ち、その URL にはキーがクエリで載っている
+    func testFailureReasonNeverContainsTheURL() {
+        let url = URL(string: "https://example.test/gourmet?key=SECRET-KEY&lat=35")!
+        let error = URLError(.timedOut, userInfo: [NSURLErrorFailingURLErrorKey: url,
+                                                   NSURLErrorFailingURLStringErrorKey: url.absoluteString])
+        XCTAssertTrue("\(error)".contains("SECRET-KEY"), "前提: 素の文字列にはキーが出る")
+        let reason = ShopHistoryService.reason(for: error)
+        XCTAssertFalse(reason.contains("SECRET-KEY"))
+        XCTAssertFalse(reason.contains("example.test"))
+    }
+
     func testDefaultSearchRadiusIsThreeHundredMeters() {
         XCTAssertEqual(ShopPassageRules.defaultSearchRadiusM, 300, accuracy: 0.001)
         XCTAssertEqual(ShopHistoryService.Settings().searchRadiusM, 300, accuracy: 0.001)
@@ -527,5 +574,21 @@ private final class MemoryShopHistoryStore: ShopHistoryStoring, @unchecked Senda
             historyToLoad = history
             lockedSavedHistories.append(history)
         }
+    }
+}
+
+/// 取得の結果を確かめるための、保存しない履歴置き場
+private struct InMemoryOutcomeStore: ShopHistoryStoring {
+    func load() -> ShopHistory { ShopHistory() }
+    func save(_ history: ShopHistory) {}
+}
+
+/// 必ず失敗する候補取得
+private struct FailingProvider: ShopCandidateProviding {
+    func shops(near position: GeoPoint, searchRadiusM: Double) async throws -> [Shop] {
+        throw HotPepperShopCandidateProvider.ProviderError.httpStatus(503)
+    }
+    func shops(along route: [GeoPoint], searchRadiusM: Double) async throws -> [Shop] {
+        throw HotPepperShopCandidateProvider.ProviderError.httpStatus(503)
     }
 }

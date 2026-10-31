@@ -5,7 +5,8 @@ final class HeadGestureDetectorTests: XCTestCase {
     private let params = AppParameters.Gesture(
         nodPitchThresholdDeg: 10, shakeYawThresholdDeg: 12,
         minReversals: 2, windowSec: 1.6, refractorySec: 1.0,
-        diagnosticsIntervalSec: 0.5, diagnosticsReportRatio: 0.7)
+        diagnosticsIntervalSec: 0.5, diagnosticsReportRatio: 0.7,
+        swayLogIntervalSec: 10)
 
     private func feed(pitches: [Double] = [], yaws: [Double] = [],
                       detector: inout HeadGestureDetector) -> HeadGesture? {

@@ -191,7 +191,8 @@
     "window_sec": 1.6,
     "refractory_sec": 1.0,
     "diagnostics_interval_sec": 0.5,
-    "diagnostics_report_ratio": 0.7
+    "diagnostics_report_ratio": 0.7,
+    "sway_log_interval_sec": 10
   },
   "audio": {
     "sample_rate": 44100,

@@ -567,6 +567,9 @@ public struct AppParameters: Codable, Equatable {
         /// 応答待ち以外の状態で振幅を記録する下限(検出に必要な振幅に対する比)。
         /// 歩行中に「あと少しで誤検出」だった動きだけを拾い、ログを埋め尽くさないための係数
         public var diagnosticsReportRatio: Double
+        /// 歩いている間の頭の揺れを 1 行に要約する間隔 [sec](→ HeadSwayDigest)。
+        /// 誤検出の根治に要る「普段の揺れ」を残すための記録で、判定には使わない
+        public var swayLogIntervalSec: Double
     }
 
     public struct Audio: Codable, Equatable {

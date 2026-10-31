@@ -16,6 +16,8 @@ struct OtoSanpoApp: App {
                     // 実際に読み直すのはファイルが変わっていた時だけ(→ 同名の関数)
                     .onChange(of: scenePhase) { _, phase in
                         if phase == .active { controller.refreshMapIfFilesChanged() }
+                        if phase == .active { controller.noteAppVisibility(foreground: true) }
+                        if phase == .background { controller.noteAppVisibility(foreground: false) }
                     }
             } else {
                 VStack(spacing: 12) {

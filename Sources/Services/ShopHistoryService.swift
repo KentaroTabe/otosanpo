@@ -93,9 +93,28 @@ actor ShopHistoryService {
         var task: Task<[Shop], Error>
     }
 
+    /// **取得の結果(記録用)。** 失敗を黙って捨てていたので、
+    /// 「店が無かった」と「取れなかった」が区別できなかった(2026-10-25 の 0 軒)
+    enum FetchOutcome: Equatable, Sendable {
+        case fetched(shops: Int)
+        case failed(reason: String)
+    }
+
+    /// 記録用の集計
+    struct Diagnostics: Equatable, Sendable {
+        var fetches = 0
+        var shops = 0
+        var failures = 0
+        /// 精度が足りず捨てた fix の数
+        var rejectedFixes = 0
+    }
+
     private let provider: ShopCandidateProviding
     private let store: ShopHistoryStoring
     let settings: Settings
+
+    private var fetchOutcomes: [FetchOutcome] = []
+    private(set) var diagnostics = Diagnostics()
 
     private var history: ShopHistory
     private var cachedRegions: [CachedRegion] = []
@@ -153,7 +172,10 @@ actor ShopHistoryService {
                                           at date: Date = Date()) async -> [ShopPassageUpdate] {
         guard ShopHistory.isUsable(horizontalAccuracyM: horizontalAccuracyM,
                                    maxHorizontalAccuracyM: settings.maxHorizontalAccuracyM)
-        else { return [] }
+        else {
+            diagnostics.rejectedFixes += 1
+            return []
+        }
         var updates = recordPosition(position, sessionID: sessionID,
                                      horizontalAccuracyM: horizontalAccuracyM, at: date)
         updates.append(contentsOf: await refreshCacheIfNeeded(around: position,
@@ -206,6 +228,39 @@ actor ShopHistoryService {
         return updates
     }
 
+    /// 集計を取り出す(取り出したら数え直す)。**散歩ごとの値にする**ため
+    func takeDiagnostics() -> Diagnostics {
+        defer { diagnostics = Diagnostics() }
+        return diagnostics
+    }
+
+    /// 溜まった取得結果を取り出す(取り出したものは消える)
+    func takeFetchOutcomes() -> [FetchOutcome] {
+        defer { fetchOutcomes.removeAll() }
+        return fetchOutcomes
+    }
+
+    /// 失敗の理由を記録用の文字列にする。
+    ///
+    /// **`error` をそのまま文字列にしてはいけない。** `URLError` の説明には失敗した URL が
+    /// 含まれ、その URL には **API キーがクエリとして載っている**。
+    /// 記録に残すのは、種類と番号だけにする
+    nonisolated static func reason(for error: Error) -> String {
+        switch error {
+        case let e as HotPepperShopCandidateProvider.ProviderError:
+            switch e {
+            case .invalidResponse: return "応答が不正"
+            case .httpStatus(let code): return "HTTP \(code)"
+            case .decoding: return "応答を読めない"
+            case .apiErrors(let messages): return "API のエラー \(messages.count) 件"
+            }
+        case let e as URLError:
+            return "通信エラー \(e.code.rawValue)"
+        default:
+            return "その他(\(type(of: error)))"
+        }
+    }
+
     private func finishPending(_ pending: PendingRegion,
                                sessionID: ShopHistorySessionID) async -> [ShopPassageUpdate] {
         do {
@@ -218,8 +273,13 @@ actor ShopHistoryService {
             cachedRegions.append(CachedRegion(region: pending.region, shops: shops))
             let updates = recordRoute(&session, fallbackDate: Date())
             sessions[sessionID] = session
+            diagnostics.fetches += 1
+            diagnostics.shops += shops.count
+            fetchOutcomes.append(.fetched(shops: shops.count))
             return updates
         } catch {
+            diagnostics.failures += 1
+            fetchOutcomes.append(.failed(reason: Self.reason(for: error)))
             guard var session = sessions[sessionID] else { return [] }
             session.pendingRegions.removeAll { $0.region == pending.region }
             pendingRegions.removeAll { $0.region == pending.region }

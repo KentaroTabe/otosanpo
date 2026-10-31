@@ -141,6 +141,10 @@ final class WalkSessionController: ObservableObject {
     /// **ビーコンの向きの関所**(→ `BearingFlipGate`・2026-10-03)。
     /// 経路の場を作り直したら捨てる(節点の番号の意味が変わるため)
     private var beaconFlipGate = BearingFlipGate()
+
+    /// 歩いている間の頭の揺れの要約(→ `HeadSwayDigest`)。記録専用
+    private var headSway = HeadSwayDigest()
+    private var headSwayStartedAt: TimeInterval?
     /// 散歩をまたいで積む歩行速度の推定。帰宅推定の分母になる
     private var speed: SpeedEstimator
     /// 広域の「面白そうな地帯」の地図。局所の分岐選択に向きを与える
@@ -392,6 +396,9 @@ final class WalkSessionController: ObservableObject {
         headphonesConnected = motion.isAvailable
         headphonesEverConnected = headphonesConnected
         lastBeacon = nil
+        beaconFlipGate = BearingFlipGate()   // 集計も含めて散歩ごとに白紙へ
+        headSway.reset()
+        headSwayStartedAt = nil
         headingFusion.reset()
         latestCourseBearing = nil
         latestFacingBearing = nil
@@ -417,6 +424,7 @@ final class WalkSessionController: ObservableObject {
         if !TileStore.storedIDs().isEmpty {
             reloadMap()
         }
+        logWalkPremise()
         buildRouteField()
         // 足りない分があれば裏で取得する。届くまではいまの地図(無ければグリッド)で歩く
         if let p = location.position ?? home {
@@ -484,6 +492,39 @@ final class WalkSessionController: ObservableObject {
         greeting = StartGreeting.message(at: Date(), windows: params.greeting.windows,
                                          musicNote: pendingMusicURL != nil
                                              ? params.greeting.musicNote : nil)
+    }
+
+    /// **この散歩の前提を 1 行で残す**(2026-10-31)。
+    ///
+    /// 2026-10-25 のログは、自宅がどこで、地図があったのかが読み取れなかった。
+    /// 再生も自宅を探して手で渡す必要があった(ログの末尾は自宅と限らないので、
+    /// 近似すると実機を再現しない → docs/05)。座標は `fix` の行にも残っているものと
+    /// 同じ扱いで、**ファイルにだけ書く**(画面のイベントログには出さない)
+    private func logWalkPremise() {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        let here = location.position
+        let homeText = home.map { String(format: "%.6f,%.6f", $0.latitude, $0.longitude) } ?? "-"
+        let distanceText: String
+        if let h = home, let here {
+            distanceText = String(format: "%.0fm", Geo.distanceM(h, here))
+        } else {
+            distanceText = "-"
+        }
+        let mapText: String = switch mapSource {
+        case .manual: "手動(\(manualMapName ?? "?"))"
+        case .tiles: "タイル(端末に \(TileStore.storedIDs().count) 枚)"
+        case .none: "なし"
+        }
+        func covers(_ p: GeoPoint?) -> String {
+            guard let graph, let p else { return "-" }
+            return graph.map.covers(p) ? "はい" : "いいえ"
+        }
+        let gate = params.audio.beaconFlipGate
+        logToFile("散歩の前提 ビルド=\(version)(\(build)) 自宅=\(homeText) 自宅まで=\(distanceText)"
+                  + " 地図=\(mapText) 自宅を覆う=\(covers(home)) 現在地を覆う=\(covers(here))"
+                  + String(format: " 関所=%.1f秒/%d件", gate.confirmSec, gate.minSamples))
     }
 
     func stopManually() {
@@ -682,6 +723,15 @@ final class WalkSessionController: ObservableObject {
         reloadMap()
     }
 
+    /// **前面 / 背面の切り替わりを残す**(2026-10-31)。
+    ///
+    /// 画面を消してポケットに入れている間も位置・音・モーションが続くかは未検証で、
+    /// ログに画面の状態が無いので、歩いたログからも確かめられなかった(CLAUDE.md の未確認事項)
+    func noteAppVisibility(foreground: Bool) {
+        guard state != .idle else { return }
+        logToFile("画面: \(foreground ? "前面" : "背面")")
+    }
+
     /// 現在地の周り(散歩の 5 km 圏)のタイルを落とす(画面のボタンから)。
     ///
     /// **通信に載るのは取得する区画の番号だけ**(粒度は約 5 km 角)。
@@ -704,7 +754,10 @@ final class WalkSessionController: ObservableObject {
     ///   毎回 404 を取りに行かないため
     /// - 失敗しても散歩は止めない(地図が無ければグリッドのみで動く既存の経路)
     private func autoFetchTiles(around p: GeoPoint) {
-        guard params.mapDownload.isConfigured else { return }
+        guard params.mapDownload.isConfigured else {
+            logToFile("地図のタイル: 取得しない(配信先が未設定)")
+            return
+        }
         Task { await downloadTiles(around: p, retryEmpty: false, quiet: true) }
     }
 
@@ -727,7 +780,10 @@ final class WalkSessionController: ObservableObject {
                                                  sizeDeg: meta.tileSizeDeg)
                 if MapTiles.toFetch(covering: covering, stored: TileStore.storedIDs(),
                                     empty: TileStore.emptyIDs(), retryEmpty: false).isEmpty {
-                    return  // 揃っている。通信しない
+                    // 揃っている。通信しない。**揃っていたことも残す**(無音だと、
+                    // 取得が走らなかったのか不要だったのかが後から分からない)
+                    logToFile("地図のタイル: 揃っている(通信なし・この辺り \(covering.count) 枚)")
+                    return
                 }
             }
             if !quiet { mapDownloadLine = "配信の情報を取得中…" }
@@ -1084,7 +1140,7 @@ final class WalkSessionController: ObservableObject {
     /// 方向が変わっていないのに「変わった」と判定され続ける(下記 `advanceBeaconIfDirectionChanged`)
     /// **追跡を引き継ぐ**(2026-09-09)。引き継がないと、交差点の近くで GPS が揺れるたびに
     /// スナップ先の道が替わり、指す向きが 1.5 秒で 180° 往復する(2026-09-08 の実測)
-    private func beaconBearing(at p: GeoPoint) -> (deg: Double, fromRoute: Bool)? {
+    private func beaconBearing(at p: GeoPoint) -> (deg: Double, fromRoute: Bool, rawDeg: Double)? {
         guard let h = home else { return nil }
         let step = routeField.flatMap { f in
             graph.flatMap {
@@ -1093,14 +1149,33 @@ final class WalkSessionController: ObservableObject {
                            trace: routeTrace, tp: params.route.routeTrace)
             }
         }
-        guard let step else { return (Geo.bearingDeg(from: p, to: h), false) }
+        guard let step else {
+            let straight = Geo.bearingDeg(from: p, to: h)
+            return (straight, false, straight)
+        }
         routeTrace = step.trace
         // **大きな変化には数秒の裏取りを要求する**(→ Core の BearingFlipGate・2026-10-03)。
         // 引き継ぎ(A/B)では止まらなかった「1.5 秒で 180° 往復」を落とすための関所。
         // **根治ではない**(誤りが長く続けば素通りする)。経路追跡の側は別途直す
-        guard let fixTime = location.motionFix().fixTime else { return (step.deg, true) }
+        guard let fixTime = location.motionFix().fixTime else { return (step.deg, true, step.deg) }
         let held = beaconFlipGate.ingest(step.deg, at: fixTime, p: params.audio.beaconFlipGate)
-        return (held, true)
+        logBeaconGateEvent(rawDeg: step.deg, heldDeg: held)
+        return (held, true, step.deg)
+    }
+
+    /// 関所で何かが起きた時だけ 1 行残す。通過と保留の継続は書かない(数が多いので)。
+    /// **関所の効きは実機でしか確かめられない**ので、再生と突き合わせられる形で残す
+    private func logBeaconGateEvent(rawDeg: Double, heldDeg: Double) {
+        let event = beaconFlipGate.lastEvent
+        switch event {
+        case .held, .restarted, .cancelled, .confirmed:
+            logToFile(String(format: "関所 %@ 経路=%.0f° 出す=%.0f° 差=%.0f°",
+                             event.label, rawDeg, heldDeg,
+                             abs(Geo.angularDiffDeg(rawDeg, heldDeg)))
+                      + (turnGuidance == nil ? "" : " 誘導中"))
+        case .passed, .waiting, .duplicate:
+            break
+        }
     }
 
     /// 定位の基準を、**方位と出所の対**で返す。
@@ -1238,11 +1313,11 @@ final class WalkSessionController: ObservableObject {
         // 歩調も残す。間隔が歩みに乗っているかを後から確かめられるようにする
         let cadenceLabel = currentCadence.map { String(format: "%.2f歩/s", $0) } ?? "-"
         logToFile(String(format: "ビーコン 距離=%.0fm 指す方位=%.0f°(%@) 基準=%@ 進行=%@ 顔=%@ 基準線=%@"
-                         + " pan=%.2f(進行基準なら %.2f) 間隔=%.1fs 歩調=%@ 音量=%.2f [%@]",
+                         + " pan=%.2f(進行基準なら %.2f) 間隔=%.1fs 歩調=%@ 音量=%.2f 生方位=%.0f° [%@]",
                          Geo.distanceM(p, h), bearingHome,
                          bearing.fromRoute ? "経路" : "自宅を直線", reference.source,
                          travelLabel, facingLabel, baselineLabel, pan, travelPan,
-                         beaconInterval(), cadenceLabel, gain, summary(of: fix)))
+                         beaconInterval(), cadenceLabel, gain, bearing.rawDeg, summary(of: fix)))
     }
 
     /// いま使える歩調 [歩/秒]。立ち止まると更新が来なくなるので鮮度で切る
@@ -2056,7 +2131,9 @@ final class WalkSessionController: ObservableObject {
         // 散歩中ずっと影で回しておけば、閾値の誤検出率をテスト手順を変えずに数えられる
         guard state == .wandering || state == .returning else { return }
         if let g = shadowDetector.ingest(s) {
-            logToFile("影検出: \(g == .nod ? "うなずき" : "首振り")(動作には影響しない)")
+            // 振幅も添える。検出器の窓とは長さが違うが、普段の揺れとの差を見る手がかりになる
+            logToFile("影検出: \(g == .nod ? "うなずき" : "首振り")(動作には影響しない)"
+                      + " \(motionStatusLine)")
         }
     }
 
@@ -2120,6 +2197,7 @@ final class WalkSessionController: ObservableObject {
                 logToFile("誤検出候補 \(motionStatusLine)")
             }
         }
+        noteHeadSway(pitchRangeDeg: pitchRange, yawRangeDeg: yawRange, time: s.time)
 
         diagCount = 0
         diagPitchMin = .infinity
@@ -2127,6 +2205,22 @@ final class WalkSessionController: ObservableObject {
         diagYawMin = .infinity
         diagYawMax = -.infinity
         diagWindowStart = s.time
+    }
+
+    /// 普段の揺れを区間ごとに要約して残す(→ `HeadSwayDigest`)。判定には使わない
+    private func noteHeadSway(pitchRangeDeg: Double, yawRangeDeg: Double, time: TimeInterval) {
+        guard state == .wandering || state == .returning else { return }
+        headSway.add(pitchRangeDeg: pitchRangeDeg, yawRangeDeg: yawRangeDeg)
+        let began = headSwayStartedAt ?? time
+        headSwayStartedAt = began
+        guard time - began >= params.gesture.swayLogIntervalSec,
+              let d = headSway.summary() else { return }
+        logToFile(String(format: "頭の揺れ 窓=%d pitch 中央=%.1f p90=%.1f 最大=%.1f"
+                         + " yaw 中央=%.1f p90=%.1f 最大=%.1f",
+                         d.windows, d.pitchMedianDeg, d.pitchP90Deg, d.pitchMaxDeg,
+                         d.yawMedianDeg, d.yawP90Deg, d.yawMaxDeg))
+        headSway.reset()
+        headSwayStartedAt = time
     }
 
     // MARK: - 表示・ログ
@@ -2426,7 +2520,21 @@ final class WalkSessionController: ObservableObject {
         routeTrace = nil
         // 向きの関所も捨てる(古い場で確定した向きを持ち越さない)
         beaconFlipGate.reset()
-        guard let graph, let h = home, graph.map.covers(h) else { return }
+        // **作らない時は理由を残す**(2026-10-31)。黙って返すとビーコンが直線に落ちた理由が
+        // 分からない(2026-10-25 のログは、地図が無いのか自宅が外なのかも読めなかった)
+        guard let graph else {
+            log("経路の場: 作らない(地図が無い)")
+            return
+        }
+        guard let h = home else {
+            log("経路の場: 作らない(自宅が未設定)")
+            return
+        }
+        guard graph.map.covers(h) else {
+            log(String(format: "経路の場: 作らない(自宅が地図の外・中心から %.0fm / 半径 %.0fm)",
+                       Geo.distanceM(graph.map.center, h), graph.map.radiusM))
+            return
+        }
         let snapMax = params.route.snapMaxDistanceM
         let weights = RouteField.Weights(crossCostWeight: params.route.crossCostWeight,
                                          wayClassWeight: params.route.wayClassWeight)
@@ -2512,6 +2620,8 @@ final class WalkSessionController: ObservableObject {
     /// 散歩全体の実測。途中で終了した場合も残す(帰路が完了しなくても速度は取れる)。
     /// ここで速度の推定に取り込む。次回以降の帰宅推定の分母になる
     private func logWalkTotals() {
+        logToFile("関所の集計 保留=\(beaconFlipGate.holds) 取消=\(beaconFlipGate.cancels)"
+                  + " 確定=\(beaconFlipGate.confirms) 数え直し=\(beaconFlipGate.drops)")
         let avg = walkMetrics.averageMovingSpeedMPerMin
         logToFile("散歩全体 経路長=\(String(format: "%.0f", walkMetrics.pathLengthM))m"
                   + " 平均速度=\(avg.map { String(format: "%.0f", $0) } ?? "-")m/min"
@@ -2557,7 +2667,21 @@ final class WalkSessionController: ObservableObject {
                 sessionID: sessionID,
                 horizontalAccuracyM: fix.horizontalAccuracyM,
                 at: now)
+            logShopFetchOutcomes(await service.takeFetchOutcomes())
             logShopPassages(updates)
+        }
+    }
+
+    /// **取得の成否を残す**(2026-10-31)。失敗を捨てていたので、2026-10-25 の 0 軒が
+    /// 「店が無かった」のか「取れなかった」のか分からなかった
+    private func logShopFetchOutcomes(_ outcomes: [ShopHistoryService.FetchOutcome]) {
+        for outcome in outcomes {
+            switch outcome {
+            case .fetched(let shops):
+                logToFile("店の取得: \(shops) 軒")
+            case .failed(let reason):
+                logToFile("店の取得: 失敗(\(reason))")
+            }
         }
     }
 
@@ -2567,7 +2691,11 @@ final class WalkSessionController: ObservableObject {
         Task {
             guard let sessionID = await sessionTask?.value else { return }
             let updates = await service.finishSession(sessionID, fallbackDate: now)
+            logShopFetchOutcomes(await service.takeFetchOutcomes())
             logShopPassages(updates)
+            let d = await service.takeDiagnostics()
+            logToFile("店の取得の集計 取得=\(d.fetches) 回 計=\(d.shops) 軒 失敗=\(d.failures) 回"
+                      + " 精度で捨てた fix=\(d.rejectedFixes) 件")
             await refreshShopHistoryRecords()
             finishDiscoverySummary(at: now)
         }
