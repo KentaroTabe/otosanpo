@@ -12,6 +12,11 @@ import Foundation
 /// **歩行では 1.5 秒で 180° 向きが変わることはない。** なので
 /// 「大きな変化は、数秒続いた時だけ受け入れる」で往復は落とせる。
 ///
+/// ## 聞こえる跳びは減らない(2026-10-31 に発音単位で測り直した → docs/05)
+///
+/// 振れの多くは確定時間より長く続くので、止まらず遅れるだけになる。短い振れは
+/// もともと鳴る間に収まっている。**切るには `beacon_flip_enter_deg` を 180 にする。**
+///
 /// ## これは対症療法である(2026-10-03 の合議)
 ///
 /// **根治ではない。** 誤った向きが確定時間より長く続けば、この関所は素通りさせる。
@@ -33,6 +38,8 @@ import Foundation
 /// - **標本が途切れたら保留を捨てる**(測位が止まった前後を「続いた」と見ない)
 /// - 入口と出口で閾値を分ける(Schmitt)。境目でのばたつきを避ける
 /// - 帰路の開始・自宅の変更・経路の場の作り直しでは [reset] する
+/// - **音を休んでいる間も取り込み続ける**(曲がり角の誘導の間など)。
+///   止めると向きが古いまま残り、再開した直後の正しい向きを止めてしまう
 public struct BearingFlipGate {
 
     public struct Params: Equatable {
@@ -92,6 +99,31 @@ public struct BearingFlipGate {
     /// 最後に取り込んだ fix の時刻。**同じ fix を 2 度数えない**ため
     private var lastFixTime: TimeInterval?
 
+    /// 最後の `ingest` で起きたこと。**記録専用**で、判定には使わない
+    public enum Event: Equatable {
+        case passed       // そのまま通した
+        case held         // 大きな変化を保留し始めた
+        case waiting      // 保留中の群に積んだ(まだ確定しない)
+        case restarted    // 群から外れた・間が空いたので数え直した
+        case cancelled    // 元の向きへ戻ってきたので保留を捨てた
+        case confirmed    // 裏が取れて切り替えた
+        case duplicate    // 同じ fix の読み直し
+
+        public var label: String {
+            switch self {
+            case .passed: "通過"
+            case .held: "保留"
+            case .waiting: "保留中"
+            case .restarted: "数え直し"
+            case .cancelled: "取消"
+            case .confirmed: "確定"
+            case .duplicate: "同じfix"
+            }
+        }
+    }
+
+    public private(set) var lastEvent: Event = .passed
+
     // 記録用(ログと再生で挙動を見るため)
     public private(set) var holds = 0      // 保留を始めた回数
     public private(set) var cancels = 0    // 元へ戻ってきて保留を捨てた回数
@@ -105,6 +137,7 @@ public struct BearingFlipGate {
         current = nil
         pending = nil
         lastFixTime = nil
+        lastEvent = .passed
     }
 
     /// 新しい候補を取り込み、**いま出すべき向き**を返す。
@@ -115,11 +148,15 @@ public struct BearingFlipGate {
     @discardableResult
     public mutating func ingest(_ deg: Double, at t: TimeInterval, p: Params) -> Double {
         // **同じ fix を 2 度読まない。** ビーコンは定期発火と位置更新の両方から引かれる
-        if let lastFix = lastFixTime, t <= lastFix { return current ?? deg }
+        if let lastFix = lastFixTime, t <= lastFix {
+            lastEvent = .duplicate
+            return current ?? deg
+        }
         lastFixTime = t
 
         guard let now = current else {
             current = deg
+            lastEvent = .passed
             return deg
         }
 
@@ -130,12 +167,14 @@ public struct BearingFlipGate {
             pending = nil
             cancels += 1
             current = deg
+            lastEvent = .cancelled
             return deg
         }
 
         // 小さい変化は遅らせない(普通に曲がる時の追従を鈍らせない)
         if pending == nil, moved <= p.enterDeg {
             current = deg
+            lastEvent = .passed
             return deg
         }
 
@@ -151,13 +190,21 @@ public struct BearingFlipGate {
                 pending = nil
                 confirms += 1
                 current = deg
+                lastEvent = .confirmed
                 return deg
             }
+            lastEvent = .waiting
             return now
         }
 
         // 群から外れた / 間が空いた → 新しい群として数え直す
-        if pending != nil { drops += 1 } else { holds += 1 }
+        if pending != nil {
+            drops += 1
+            lastEvent = .restarted
+        } else {
+            holds += 1
+            lastEvent = .held
+        }
         pending = Pending(sumSin: sin(deg * .pi / 180), sumCos: cos(deg * .pi / 180),
                           since: t, last: t, count: 1)
         return now

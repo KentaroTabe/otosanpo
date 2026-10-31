@@ -141,6 +141,64 @@ final class BearingFlipGateTests: XCTestCase {
                        "作り直した後の 1 件目はそのまま通る")
     }
 
+    /// 起きたことが記録用に残る(保留 → 積む → 確定)
+    func testLastEventFollowsTheSequence() {
+        var g = BearingFlipGate()
+        let p = params(confirm: 3, minSamples: 3)
+        g.ingest(0, at: 0, p: p)
+        XCTAssertEqual(g.lastEvent, .passed)
+        g.ingest(180, at: 1, p: p)
+        XCTAssertEqual(g.lastEvent, .held)
+        g.ingest(180, at: 1, p: p)
+        XCTAssertEqual(g.lastEvent, .duplicate, "同じ fix は数えない")
+        g.ingest(178, at: 2, p: p)
+        XCTAssertEqual(g.lastEvent, .waiting)
+        g.ingest(181, at: 4, p: p)
+        XCTAssertEqual(g.lastEvent, .confirmed)
+    }
+
+    /// 元の向きへ戻ったら取消、群から外れたら数え直しと記録される
+    func testLastEventRecordsCancelAndRestart() {
+        var g = BearingFlipGate()
+        let p = params()
+        g.ingest(0, at: 0, p: p)
+        g.ingest(180, at: 1, p: p)
+        g.ingest(260, at: 2, p: p)
+        XCTAssertEqual(g.lastEvent, .restarted)
+        g.ingest(5, at: 3, p: p)
+        XCTAssertEqual(g.lastEvent, .cancelled)
+    }
+
+    /// **本当に曲がった時、音を休んでいても関所へ入れ続ければ、再開までに確定している。**
+    ///
+    /// 誘導の間はビーコンを鳴らさないが、fix は毎秒来る。入れ続けないと
+    /// `current` が曲がる前の向きのまま残り、再開した直後の正しい向きを
+    /// 「怪しい変化」として止めてしまう(2026-10-31 に見つけた配線の漏れ)
+    func testTurnDuringSilenceIsConfirmedBeforeTheBeaconResumes() {
+        var g = BearingFlipGate()
+        let p = params(confirm: 3, minSamples: 3)
+        g.ingest(0, at: 0, p: p)
+        // 角を曲がった。誘導の間(音は鳴らない)も 1 秒ごとに新しい向きが入る
+        for t in 1...5 { g.ingest(150, at: Double(t), p: p) }
+        XCTAssertEqual(g.ingest(150, at: 6, p: p), 150, accuracy: 1e-9,
+                       "再開の時点で新しい向きになっていること")
+    }
+
+    /// **関所を切るには入口の角度を 180° にする。**
+    /// 確定時間を 0 にしても最小標本数が残るので切れない(文書の誤りを直した時に固定した)
+    func testEnterDegOf180DisablesTheGate() {
+        var open = BearingFlipGate()
+        let off = params(enter: 180)
+        open.ingest(0, at: 0, p: off)
+        XCTAssertEqual(open.ingest(179.9, at: 1, p: off), 179.9, accuracy: 1e-9)
+
+        var stillOn = BearingFlipGate()
+        let zeroConfirm = params(confirm: 0, minSamples: 3)
+        stillOn.ingest(0, at: 0, p: zeroConfirm)
+        XCTAssertEqual(stillOn.ingest(179, at: 1, p: zeroConfirm), 0, accuracy: 1e-9,
+                       "確定時間を 0 にしても、1 件目は通らない")
+    }
+
     /// **時間を巻き戻されても壊れない**(同じ fix の二度読みと同じ扱い)
     func testOlderSampleIsIgnored() {
         var g = BearingFlipGate()
