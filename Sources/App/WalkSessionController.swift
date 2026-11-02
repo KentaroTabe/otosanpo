@@ -138,10 +138,6 @@ final class WalkSessionController: ObservableObject {
     /// 別々に決めると、鳴っている向きと「次の角」が食い違う
     private var routeTrace: RouteField.Trace?
 
-    /// **ビーコンの向きの関所**(→ `BearingFlipGate`・2026-10-03)。
-    /// 経路の場を作り直したら捨てる(節点の番号の意味が変わるため)
-    private var beaconFlipGate = BearingFlipGate()
-
     /// 歩いている間の頭の揺れの要約(→ `HeadSwayDigest`)。記録専用
     private var headSway = HeadSwayDigest()
     private var headSwayStartedAt: TimeInterval?
@@ -396,7 +392,6 @@ final class WalkSessionController: ObservableObject {
         headphonesConnected = motion.isAvailable
         headphonesEverConnected = headphonesConnected
         lastBeacon = nil
-        beaconFlipGate = BearingFlipGate()   // 集計も含めて散歩ごとに白紙へ
         headSway.reset()
         headSwayStartedAt = nil
         headingFusion.reset()
@@ -521,10 +516,8 @@ final class WalkSessionController: ObservableObject {
             guard let graph, let p else { return "-" }
             return graph.map.covers(p) ? "はい" : "いいえ"
         }
-        let gate = params.audio.beaconFlipGate
         logToFile("散歩の前提 ビルド=\(version)(\(build)) 自宅=\(homeText) 自宅まで=\(distanceText)"
-                  + " 地図=\(mapText) 自宅を覆う=\(covers(home)) 現在地を覆う=\(covers(here))"
-                  + String(format: " 関所=%.1f秒/%d件", gate.confirmSec, gate.minSamples))
+                  + " 地図=\(mapText) 自宅を覆う=\(covers(home)) 現在地を覆う=\(covers(here))")
     }
 
     func stopManually() {
@@ -1140,7 +1133,7 @@ final class WalkSessionController: ObservableObject {
     /// 方向が変わっていないのに「変わった」と判定され続ける(下記 `advanceBeaconIfDirectionChanged`)
     /// **追跡を引き継ぐ**(2026-09-09)。引き継がないと、交差点の近くで GPS が揺れるたびに
     /// スナップ先の道が替わり、指す向きが 1.5 秒で 180° 往復する(2026-09-08 の実測)
-    private func beaconBearing(at p: GeoPoint) -> (deg: Double, fromRoute: Bool, rawDeg: Double)? {
+    private func beaconBearing(at p: GeoPoint) -> (deg: Double, fromRoute: Bool)? {
         guard let h = home else { return nil }
         let step = routeField.flatMap { f in
             graph.flatMap {
@@ -1149,33 +1142,9 @@ final class WalkSessionController: ObservableObject {
                            trace: routeTrace, tp: params.route.routeTrace)
             }
         }
-        guard let step else {
-            let straight = Geo.bearingDeg(from: p, to: h)
-            return (straight, false, straight)
-        }
+        guard let step else { return (Geo.bearingDeg(from: p, to: h), false) }
         routeTrace = step.trace
-        // **大きな変化には数秒の裏取りを要求する**(→ Core の BearingFlipGate・2026-10-03)。
-        // 引き継ぎ(A/B)では止まらなかった「1.5 秒で 180° 往復」を落とすための関所。
-        // **根治ではない**(誤りが長く続けば素通りする)。経路追跡の側は別途直す
-        guard let fixTime = location.motionFix().fixTime else { return (step.deg, true, step.deg) }
-        let held = beaconFlipGate.ingest(step.deg, at: fixTime, p: params.audio.beaconFlipGate)
-        logBeaconGateEvent(rawDeg: step.deg, heldDeg: held)
-        return (held, true, step.deg)
-    }
-
-    /// 関所で何かが起きた時だけ 1 行残す。通過と保留の継続は書かない(数が多いので)。
-    /// **関所の効きは実機でしか確かめられない**ので、再生と突き合わせられる形で残す
-    private func logBeaconGateEvent(rawDeg: Double, heldDeg: Double) {
-        let event = beaconFlipGate.lastEvent
-        switch event {
-        case .held, .restarted, .cancelled, .confirmed:
-            logToFile(String(format: "関所 %@ 経路=%.0f° 出す=%.0f° 差=%.0f°",
-                             event.label, rawDeg, heldDeg,
-                             abs(Geo.angularDiffDeg(rawDeg, heldDeg)))
-                      + (turnGuidance == nil ? "" : " 誘導中"))
-        case .passed, .waiting, .duplicate:
-            break
-        }
+        return (step.deg, true)
     }
 
     /// 定位の基準を、**方位と出所の対**で返す。
@@ -1313,11 +1282,11 @@ final class WalkSessionController: ObservableObject {
         // 歩調も残す。間隔が歩みに乗っているかを後から確かめられるようにする
         let cadenceLabel = currentCadence.map { String(format: "%.2f歩/s", $0) } ?? "-"
         logToFile(String(format: "ビーコン 距離=%.0fm 指す方位=%.0f°(%@) 基準=%@ 進行=%@ 顔=%@ 基準線=%@"
-                         + " pan=%.2f(進行基準なら %.2f) 間隔=%.1fs 歩調=%@ 音量=%.2f 生方位=%.0f° [%@]",
+                         + " pan=%.2f(進行基準なら %.2f) 間隔=%.1fs 歩調=%@ 音量=%.2f [%@]",
                          Geo.distanceM(p, h), bearingHome,
                          bearing.fromRoute ? "経路" : "自宅を直線", reference.source,
                          travelLabel, facingLabel, baselineLabel, pan, travelPan,
-                         beaconInterval(), cadenceLabel, gain, bearing.rawDeg, summary(of: fix)))
+                         beaconInterval(), cadenceLabel, gain, summary(of: fix)))
     }
 
     /// いま使える歩調 [歩/秒]。立ち止まると更新が来なくなるので鮮度で切る
@@ -2300,13 +2269,9 @@ final class WalkSessionController: ObservableObject {
     /// 99 回の繰り上げのうち本物の方向変化は 4 回だけだった(残り 96% は空振り)。
     /// ビーコンが設計の倍の頻度で鳴っていたことになる。
     private func advanceBeaconIfDirectionChanged(at p: GeoPoint, now: Date) {
-        // **音を休んでいる間も関所へ fix を入れ続ける**(2026-10-31 に見つけた配線の漏れ)。
-        // 入れないと関所の向きが曲がる前のまま残り、誘導が終わった直後の正しい向きを
-        // 「怪しい変化」として数秒止めてしまう。再生は全 fix を流すので、この差が出なかった
-        let observed = beaconBearing(at: p)
         // 誘導が鳴っている間はビーコンを休んでいるので、繰り上げも行わない(音の裁定)
         guard turnGuidance == nil else { return }
-        guard let last = lastBeacon, let bearing = observed else { return }
+        guard let last = lastBeacon, let bearing = beaconBearing(at: p) else { return }
         guard now.timeIntervalSince(last.at) >= params.audio.beaconMinGapSec else { return }
         let fix = location.motionFix(now: now)
         let travel = currentTravel(fix, now: now)
@@ -2518,8 +2483,6 @@ final class WalkSessionController: ObservableObject {
         routeField = nil
         // 場を作り直したら節点の番号の意味も変わる。引き継ぎは捨てる
         routeTrace = nil
-        // 向きの関所も捨てる(古い場で確定した向きを持ち越さない)
-        beaconFlipGate.reset()
         // **作らない時は理由を残す**(2026-10-31)。黙って返すとビーコンが直線に落ちた理由が
         // 分からない(2026-10-25 のログは、地図が無いのか自宅が外なのかも読めなかった)
         guard let graph else {
@@ -2620,8 +2583,6 @@ final class WalkSessionController: ObservableObject {
     /// 散歩全体の実測。途中で終了した場合も残す(帰路が完了しなくても速度は取れる)。
     /// ここで速度の推定に取り込む。次回以降の帰宅推定の分母になる
     private func logWalkTotals() {
-        logToFile("関所の集計 保留=\(beaconFlipGate.holds) 取消=\(beaconFlipGate.cancels)"
-                  + " 確定=\(beaconFlipGate.confirms) 数え直し=\(beaconFlipGate.drops)")
         let avg = walkMetrics.averageMovingSpeedMPerMin
         logToFile("散歩全体 経路長=\(String(format: "%.0f", walkMetrics.pathLengthM))m"
                   + " 平均速度=\(avg.map { String(format: "%.0f", $0) } ?? "-")m/min"

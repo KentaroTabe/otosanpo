@@ -1160,29 +1160,18 @@ if let beaconMap = loadedMap, let last = all.last {
         ///    音が片耳からもう片方へ飛ぶ。一方、前半球への畳み込み
         ///    (`front_hemisphere_only`)は `sin(180°−x) = sin(x)` で pan を変えない。
         ///    **生の角度の跳び ≠ 聞こえる跳び**なので、両方を出す
-        func measure(_ tp: RouteField.TraceParams,
-                     gate gp: BearingFlipGate.Params? = nil) -> Measured {
+        func measure(_ tp: RouteField.TraceParams) -> Measured {
             var trace: RouteField.Trace?
             var previous: Double?
             var previousPan: Double?
             /// 直近の「大きく動く前の向き」と、その時刻(往復の判定に使う)
             var beforeJump: (deg: Double, time: Date)?
-            var gate = BearingFlipGate()
             var m = Measured()
             for f in returning {
-                guard let raw = field.nextStep(from: f.point, graph: graph,
-                                               nodeToleranceM: r.nodeArrivalToleranceM,
-                                               trace: trace, tp: tp) else { continue }
-                trace = raw.trace
-                // **関所を通す**(指定された時だけ)。時刻は fix のもの
-                let step: (deg: Double, trace: RouteField.Trace)
-                if let gp {
-                    let held = gate.ingest(raw.deg, at: f.time.timeIntervalSinceReferenceDate,
-                                           p: gp)
-                    step = (held, raw.trace)
-                } else {
-                    step = (raw.deg, raw.trace)
-                }
+                guard let step = field.nextStep(from: f.point, graph: graph,
+                                                nodeToleranceM: r.nodeArrivalToleranceM,
+                                                trace: trace, tp: tp) else { continue }
+                trace = step.trace
                 m.samples += 1
                 if let prev = previous {
                     let jump = abs(Geo.angularDiffDeg(step.deg, prev))
@@ -1245,33 +1234,18 @@ if let beaconMap = loadedMap, let last = all.last {
         print(String(format: "  いまの設定: 道 %.0fm / 端点 %.0fm",
                      r.waySwitchMarginM, r.nodeSwitchMarginM))
 
-        // MARK: 関所(案 C)を通した場合
-        //
-        // **大きな変化だけ、数秒の裏取りを要求する**(→ Core の BearingFlipGate)。
-        // 引き継ぎ(A/B)は配る値のまま(0/0)にして、関所だけを振る
-        print("\n  -- 関所(大きな変化に裏取りを要求)を通した場合 --")
-        print(String(format: "  %-16@ %6@ %6@ %6@ %6@ %9@", "確定の条件" as NSString,
-                     "90°超" as NSString, "150°超" as NSString, "往復" as NSString,
-                     "左右入替" as NSString, "後ろ向き" as NSString))
-        let plain = RouteField.TraceParams(waySwitchMarginM: r.waySwitchMarginM,
-                                           nodeSwitchMarginM: r.nodeSwitchMarginM)
-        for (sec, minSamples) in [(2.0, 2), (2.5, 2), (3.0, 3), (4.0, 3), (6.0, 4)] {
-            let gp = BearingFlipGate.Params(enterDeg: 90, exitDeg: 45, clusterDeg: 40,
-                                            confirmSec: sec, minSamples: minSamples,
-                                            maxGapSec: 5)
-            row(String(format: "%.1f秒 / %d件", sec, minSamples), measure(plain, gate: gp))
-        }
-
-        // MARK: 鳴った瞬間で比べる(2026-10-31)
+        // MARK: 鳴った瞬間で数える(2026-10-31)
         //
         // **耳に届くのはビーコンが鳴った瞬間の向きだけ。** 上の表は全 fix(1 Hz)で数えるので、
-        // 鳴らない間に起きて戻った跳びまで「直った」に数えてしまう。
-        // ログに残る実際の発音時刻で、関所の有無を比べる
+        // 鳴らない間に起きて戻った跳びまで「直った」に数えてしまう
+        // (全 fix で往復 16 → 1 に見えた関所は、発音単位では効いていなかった・docs/05)。
+        // **T1 の根治の候補は、ここの値で比べる**
+        let plain = RouteField.TraceParams(waySwitchMarginM: r.waySwitchMarginM,
+                                           nodeSwitchMarginM: r.nodeSwitchMarginM)
         let beaconTimes = readBeaconTimes(logPath)
         if !beaconTimes.isEmpty {
             /// 発音時刻ごとに、その時点の向きを取り出す
-            func headings(gate gp: BearingFlipGate.Params?) -> [Double] {
-                var gate = BearingFlipGate()
+            func headings() -> [Double] {
                 var trace: RouteField.Trace?
                 var latest: Double?
                 var next = 0
@@ -1285,9 +1259,7 @@ if let beaconMap = loadedMap, let last = all.last {
                                                     nodeToleranceM: r.nodeArrivalToleranceM,
                                                     trace: trace, tp: plain) else { continue }
                     trace = step.trace
-                    latest = gp.map {
-                        gate.ingest(step.deg, at: f.time.timeIntervalSinceReferenceDate, p: $0)
-                    } ?? step.deg
+                    latest = step.deg
                 }
                 return out
             }
@@ -1304,18 +1276,12 @@ if let beaconMap = loadedMap, let last = all.last {
                 print(String(format: "  %-16@ %6d %6d %8d", label as NSString,
                              over90, over150, oneBeat))
             }
-            print("\n  -- 鳴った瞬間の向きで比べる(実際の発音 \(beaconTimes.count) 回)--")
+            print("\n  -- 鳴った瞬間の向きで数える(実際の発音 \(beaconTimes.count) 回)--")
             print(String(format: "  %-16@ %6@ %6@ %8@", "" as NSString, "90°超" as NSString,
                          "150°超" as NSString, "1発だけ飛ぶ" as NSString))
-            report("関所なし", headings(gate: nil))
-            for (sec, minSamples) in [(2.5, 2), (3.0, 3), (4.0, 3), (6.0, 4)] {
-                let gp = BearingFlipGate.Params(enterDeg: 90, exitDeg: 45, clusterDeg: 40,
-                                                confirmSec: sec, minSamples: minSamples,
-                                                maxGapSec: 5)
-                report(String(format: "%.1f秒 / %d件", sec, minSamples), headings(gate: gp))
-            }
+            report("いまの経路追跡", headings())
 
-            // **反転がどれだけ続いたか。** 短ければ関所で止まり、長ければ遅らせるだけになる
+            // **反転がどれだけ続いたか。** 長いほど、音を止めて待つ形では解けない
             var runs: [TimeInterval] = []
             var base: Double?
             var flippedAt: Date?
