@@ -13,6 +13,10 @@ public enum Earcon: String, CaseIterable, Equatable {
     /// — 試験対象が「方向が聴き取れるか」なので、混ぜない(2026-09-08 合議)。
     /// `head_mount.enabled == false` の配布版では一度も鳴らない
     case validityPulse
+    /// **音楽スポットを移す提案**(2026-09-18 利用者依頼)。
+    /// 「うなずけば別の場所へ移る / 首を振る・放っておけばそのまま」。
+    /// **時間到来のプロンプトとは別の音**にする — どちらへの返事かが分からなくなるため
+    case spotMove
 }
 
 public enum WalkState: Equatable {
