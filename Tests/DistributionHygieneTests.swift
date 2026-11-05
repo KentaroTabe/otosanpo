@@ -65,4 +65,32 @@ final class DistributionHygieneTests: XCTestCase {
         XCTAssertTrue(ShopCreditLabel.text.contains("ホットペッパー"),
                       "提供元の表示が変わっている: \(ShopCreditLabel.text)")
     }
+
+    /// **個人化 HRTF の権利情報があること**(2026-09-18 利用者依頼)。
+    ///
+    /// これがあると、利用者が設定で作った「個人用の空間オーディオ」の形が
+    /// `AVAudioEngine` の定位に自動で反映される(Apple の資料)。コードの呼び出しは無いので、
+    /// **消えても音が鳴らなくなるわけではなく、黙って汎用 HRTF に戻る。** だから検査で押さえる。
+    ///
+    /// **AirPods のヘッドトラッキングの権利情報は入れない。**
+    /// この装置は頭の向きをスマホ(CMMotionManager)から取っているので、
+    /// AirPods 側でも回すと**二重に回る**
+    func testTheSpatialAudioProfileEntitlementIsPresentAndHeadTrackingIsNot() throws {
+        let plist = try repositoryFile("Support/OtoSanpo.entitlements")
+        XCTAssertTrue(plist.contains("<key>com.apple.developer.spatial-audio.profile-access</key>"),
+                      "個人化 HRTF の権利情報が消えている")
+        XCTAssertFalse(plist.contains("head-pose"),
+                       "AirPods のヘッドトラッキングが入っている(頭の向きが二重に回る)")
+
+        // project.yml は生成元。**鍵の行として**書かれているかだけを見る
+        // (コメントで名前に触れているのは構わない。採らない理由をそこに書いてある)
+        let project = try repositoryFile("project.yml")
+        let keyLines = project.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.hasPrefix("#") }
+        XCTAssertTrue(keyLines.contains { $0.hasPrefix("com.apple.developer.spatial-audio.profile-access:") },
+                      "project.yml から個人化 HRTF の権利情報が消えている")
+        XCTAssertFalse(keyLines.contains { $0.hasPrefix("com.apple.developer.coremotion.head-pose:") },
+                       "project.yml で AirPods のヘッドトラッキングを有効にしている")
+    }
 }
