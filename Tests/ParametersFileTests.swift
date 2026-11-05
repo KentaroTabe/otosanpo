@@ -105,6 +105,142 @@ final class ParametersFileTests: XCTestCase {
         XCTAssertLessThanOrEqual(e.musicSpotReferenceDistanceM, e.musicSpotPinpointFullM)
     }
 
+    /// 位置の取り方が届いていること(2026-09-18 利用者判断で「案内向けの最高精度」にした)
+    func testLocationAccuracyChoiceArrives() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        XCTAssertTrue(p.location.useBestForNavigation,
+                      "利用者判断で有効にした(電力より精度を採る)。戻す時はここも直す")
+    }
+
+    /// 後ろの音を暗くする値が届いていること(→ MusicSpot.Params.rearShelfDb・2026-09-18)
+    func testMusicSpotRearShelfValuesArrive() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        let e = p.experiment
+        XCTAssertGreaterThan(e.musicSpotRearShelfDepthDb, 0, "0 だと何も変わらない")
+        XCTAssertLessThan(e.musicSpotRearShelfDepthDb, 12,
+                          "深く削ると HRTF が前後に使う高域まで失われる(合議)")
+        XCTAssertGreaterThanOrEqual(e.musicSpotRearShelfStartDeg, 0)
+        XCTAssertLessThan(e.musicSpotRearShelfStartDeg, 180)
+        XCTAssertGreaterThan(e.musicSpotRearShelfHz, 1_000,
+                             "耳介の手がかりが載る帯域より上から落とす")
+    }
+
+    /// 向きによる音量の割り振りが届いていること(2026-09-18 利用者判断)。
+    /// **深すぎると距離が分からなくなる** — 音量は距離も表しているため
+    func testMusicSpotDirectivityArrives() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        let e = p.experiment
+        XCTAssertGreaterThan(e.musicSpotDirectivityDepthDb, 0, "0 だと前後で音量が変わらない")
+        let range = 20 * log10(e.musicSpotMaxGain / e.musicSpotMinGain)
+        XCTAssertLessThan(e.musicSpotDirectivityDepthDb, range / 2,
+                          "距離の幅(\(String(format: "%.0f", range)) dB)の半分を超えると、"
+                          + "向きが距離を食いつぶす")
+    }
+
+    /// **スポットの向きの遊び**(2026-09-18)。揺れを落とすが、凍結はさせない
+    func testMusicSpotBearingHoldValuesArrive() throws {
+        let e = try ConfigLoader.load(from: repositoryParametersURL()).experiment
+        let hold = e.musicSpotBearingHold
+        XCTAssertGreaterThan(hold.minDeadbandDeg, 0, "0 だと揺れが素通りする")
+        XCTAssertGreaterThan(hold.maxDeadbandDeg, hold.minDeadbandDeg)
+        XCTAssertLessThanOrEqual(hold.maxDeadbandDeg, 20,
+                                 "上限が大きいと、通り過ぎても向きが前のままになる")
+        XCTAssertGreaterThan(hold.timeConstantSec, 0, "0 だと追従が止まる")
+        XCTAssertLessThan(hold.timeConstantSec, 1,
+                          "1 秒を超えると、通り過ぎる場面に間に合わない")
+    }
+
+    /// **音源の形式は、両 OS が読めるものに保つ**(2026-09-19)。
+    ///
+    /// iOS は `AVAudioFile`(Core Audio)、Android は `MediaCodec` が復号できるものが対象。
+    /// **交差するのは m4a(AAC)・mp3・wav・flac**。
+    /// `aif` / `aiff` / `caf` は Apple だけ、`ogg` / `opus` は Android だけなので、
+    /// 片方しか読めないものを黙って足すと、もう片方で「音源が無い」になる
+    func testMusicSourceExtensionsStayReadableOnBothPlatforms() throws {
+        let list = try ConfigLoader.load(from: repositoryParametersURL())
+            .audio.musicSourceExtensions
+        XCTAssertFalse(list.isEmpty)
+        XCTAssertEqual(list.map { $0.lowercased() }, list, "小文字で持つこと(比較を揃えるため)")
+        let crossPlatform: Set<String> = ["m4a", "mp3", "wav", "flac"]
+        let appleOnly: Set<String> = ["aif", "aiff", "caf"]
+        XCTAssertTrue(crossPlatform.isSubset(of: Set(list).union(["flac"])),
+                      "両 OS で読める基本形式(m4a・mp3・wav)が欠けている")
+        let unknown = Set(list).subtracting(crossPlatform).subtracting(appleOnly)
+        XCTAssertTrue(unknown.isEmpty,
+                      "iOS か Android のどちらかが読めない形式が入っている: \(unknown)")
+    }
+
+    /// **真横に聞こえる角度を合わせるつまみ**(2026-09-18 利用者依頼)。
+    /// 「もう少し音の範囲を細く」— 振れ幅を狭め、刻みを細かくした
+    func testEarCalibrationSliderValuesArrive() throws {
+        let a = try ConfigLoader.load(from: repositoryParametersURL()).audio
+        XCTAssertGreaterThan(a.earCalibrationSpanDeg, 90,
+                             "真横より外(左後ろ・右後ろ)まで動かせること")
+        XCTAssertLessThanOrEqual(a.earCalibrationSpanDeg, 180)
+        XCTAssertGreaterThan(a.earCalibrationStepDeg, 0)
+        XCTAssertLessThanOrEqual(a.earCalibrationStepDeg, 5,
+                                 "刻みが粗いと合わせられない")
+        // つまみで届く範囲が、印として保存できる範囲に収まっていること
+        XCTAssertLessThanOrEqual(a.earCalibrationSpanDeg, EarAngleMap.maxAnchorDeg,
+                                 "つまみの端まで動かした所を印にできること")
+    }
+
+    /// **校正の音は像が締まる作りになっていること**(2026-09-18 利用者依頼)。
+    ///
+    /// 440 Hz の純音は波長 78 cm で頭を回折し、両耳間レベル差がほとんど出ない。
+    /// 倍音で高域(概ね 1.5 kHz 以上)を作り、立ち上がりを鋭くして時間差の手がかりを持たせる
+    func testEarCalibrationToneIsMadeToBeLocalisable() throws {
+        let t = try ConfigLoader.load(from: repositoryParametersURL()).audio.tones.earCalibration
+        XCTAssertGreaterThan(t.harmonics, 1, "純音では左右の手がかりが出ない")
+        let top = (t.freqsHz.max() ?? 0) * Double(t.harmonics)
+        XCTAssertGreaterThan(top, 1500, "両耳間レベル差が効く帯域(1.5 kHz 以上)まで届くこと")
+        XCTAssertLessThan(t.attackRatio, 0.2, "立ち上がりが鋭いこと(時間差の手がかり)")
+        XCTAssertNotEqual(t, try ConfigLoader.load(from: repositoryParametersURL())
+                             .audio.tones.homeBeacon,
+                          "案内音とは別の音であること")
+    }
+
+    /// **近づくと下から・一点から鳴る**(2026-09-18 利用者依頼)
+    func testMusicSpotElevationAndSpreadValuesArrive() throws {
+        let e = try ConfigLoader.load(from: repositoryParametersURL()).experiment
+        XCTAssertGreaterThan(e.musicSpotListenerHeightM, 0, "0 だと仰角が付かない")
+        XCTAssertLessThan(e.musicSpotListenerHeightM, 3, "耳の高さとして現実的な範囲")
+        XCTAssertGreaterThan(e.musicSpotSpreadFarM, e.musicSpotSpreadNearM,
+                             "遠近が逆だと広がりが効かない")
+        XCTAssertGreaterThan(e.musicSpotSpreadMax, 0)
+        XCTAssertLessThanOrEqual(e.musicSpotSpreadMax, 1)
+        // 一点に締まる距離は、ピンポイントで首を振って探す範囲と噛み合っていること
+        let spot = e.musicSpot(durationMin: 30)
+        XCTAssertLessThanOrEqual(spot.spreadNearM, spot.pinpointStartM,
+                                 "首を振って探し始める距離までには、音が締まっていること")
+    }
+
+    /// **スポットを移す提案**(2026-09-18 利用者依頼)
+    func testMusicSpotMoveValuesArrive() throws {
+        let e = try ConfigLoader.load(from: repositoryParametersURL()).experiment
+        let m = e.musicSpotMove
+        XCTAssertGreaterThan(m.baseIntervalSec, 0)
+        XCTAssertGreaterThan(m.responseWindowSec, 0, "0 だと返事を受け取れない")
+        XCTAssertGreaterThanOrEqual(m.responseDelaySec, 0)
+        XCTAssertGreaterThan(e.musicSpotMoveMinSeparationM, 0,
+                             "0 だと同じ所が選ばれうる(固まらないための距離)")
+        XCTAssertGreaterThan(e.musicSpotMoveFadeSec, 0, "0 だと移る時に音が飛ぶ")
+    }
+
+    /// **移す提案の音は、時間到来と別の音**(どちらへの返事か分からなくなるため)
+    func testSpotMoveToneDiffersFromTheReturnPrompt() throws {
+        let a = try ConfigLoader.load(from: repositoryParametersURL()).audio
+        XCTAssertNotEqual(a.tones.spotMove, a.tones.timeUpPrompt)
+        XCTAssertGreaterThan(a.tones.spotMove.durationSec, 0)
+    }
+
+    /// 音楽スポットでは検疫の判断を無視する(2026-09-18 利用者判断)。
+    /// **基準が切り替わること自体が、連続音では壊れた体験になる**
+    func testMusicIgnoresQuarantineIsOn() throws {
+        let p = try ConfigLoader.load(from: repositoryParametersURL())
+        XCTAssertTrue(p.headMount.musicIgnoresQuarantine)
+    }
+
     /// **設定から Core への受け渡し**で、音楽スポットの値が取り違えられていないこと
     /// (2026-09-15 の検証で挙がった系列)。
     ///
@@ -131,6 +267,9 @@ final class ParametersFileTests: XCTestCase {
         e.musicSpotPinpointFullM = 4.3
         e.musicSpotPinpointBeamDeg = 53.9
         e.musicSpotPinpointDepthDb = 11.3
+        e.musicSpotDirectivityDepthDb = 8.3
+        e.musicSpotRearShelfStartDeg = 71.7
+        e.musicSpotRearShelfDepthDb = 4.9
         let sp = e.musicSpot(durationMin: 20)
         XCTAssertEqual(sp.minDistanceM, 1.1 * 20, accuracy: 1e-9)
         XCTAssertEqual(sp.maxDistanceM, 2.3 * 20, accuracy: 1e-9)
@@ -147,6 +286,9 @@ final class ParametersFileTests: XCTestCase {
         XCTAssertEqual(sp.pinpointFullM, 4.3)
         XCTAssertEqual(sp.pinpointBeamDeg, 53.9)
         XCTAssertEqual(sp.pinpointDepthDb, 11.3)
+        XCTAssertEqual(sp.directivityDepthDb, 8.3)
+        XCTAssertEqual(sp.rearShelfStartDeg, 71.7)
+        XCTAssertEqual(sp.rearShelfDepthDb, 4.9)
     }
 
     func testShopHistoryValuesArrive() throws {
