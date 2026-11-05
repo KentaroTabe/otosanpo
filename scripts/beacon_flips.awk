@@ -25,7 +25,16 @@ function diff(a, b,   d) {
     return d < 0 ? -d : d
 }
 
-BEGIN { prev = ""; prevTime = "" }
+BEGIN { prev = ""; prevRaw = "" }
+
+FROM != "" && $1 < FROM { next }
+
+# 関所で起きたこと(関所を入れていた 2026-10-31 のログだけに出る)。2 語目が種類
+$5 ~ /^関所 / {
+    split($5, word, " ")
+    gate[word[2]]++
+    gateSeen = 1
+}
 
 $5 ~ /^ビーコン 距離=/ {
     bearing = value($5, "指す方位=")
@@ -48,6 +57,18 @@ $5 ~ /^ビーコン 距離=/ {
         if (jump > 150) reversals++
     }
     prev = bearing
+
+    # **関所を通す前の向き**(同じく 2026-10-31 のログだけ)。同じ発で比べる
+    raw = value($5, "生方位=")
+    if (raw != "") {
+        if (prevRaw != "") {
+            rawJump = diff(raw, prevRaw)
+            if (rawJump > 90) rawJumps++
+            if (rawJump > 150) rawReversals++
+        }
+        prevRaw = raw
+        rawSeen = 1
+    }
 }
 
 END {
@@ -59,4 +80,13 @@ END {
         printf "  後ろを指した    %d 発 / %d(%.0f%%)\n",
                behind + 0, withCourse, 100 * behind / withCourse
     for (s in state) printf "  状態 %-12s %d 発\n", s, state[s]
+    if (rawSeen) {
+        printf "\n== 関所を通す前の向き(同じ発で比べる)==\n"
+        printf "  90°超の跳び     %d 回(聞こえた向きは %d 回)\n", rawJumps + 0, jumps + 0
+        printf "  150°超の跳び    %d 回(聞こえた向きは %d 回)\n", rawReversals + 0, reversals + 0
+    }
+    if (gateSeen) {
+        printf "\n== 関所で起きたこと ==\n"
+        for (k in gate) printf "  %-10s %d 回\n", k, gate[k]
+    }
 }

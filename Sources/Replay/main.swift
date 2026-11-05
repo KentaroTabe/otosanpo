@@ -42,6 +42,18 @@ func numberAfter(_ key: String, in s: String) -> Double? {
     return Double(digits)
 }
 
+/// ビーコンが実際に鳴った時刻(ログの「ビーコン 距離=」の行)
+func readBeaconTimes(_ path: String) -> [Date] {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return text.split(separator: "\n").compactMap { line in
+        let parts = line.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false)
+        guard parts.count == 5, parts[4].hasPrefix("ビーコン 距離=") else { return nil }
+        return formatter.date(from: String(parts[0]))
+    }
+}
+
 func readFixes(_ path: String) -> [LoggedFix] {
     guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
         FileHandle.standardError.write(Data("ログを読めません: \(path)\n".utf8))
@@ -1080,13 +1092,23 @@ print("\n== ビーコンの指す向きの安定性 ==")
 ///
 /// 自宅はログの「自宅を現在地に設定しました」の行から読める(分割された別ファイルに
 /// ある場合は、その行を見て手で渡す)。
+///
+/// **2026-10-31 以降のログは「散歩の前提」の行に自宅が入っている**ので、渡さなくても読める。
+/// 指定があれば指定を優先する
 let overrideHome: GeoPoint? = {
-    guard args.count >= 5 else { return nil }
-    let parts = args[4].split(separator: ",")
-    guard parts.count == 2, let lat = Double(parts[0]), let lon = Double(parts[1]) else {
-        return nil
+    func parse(_ text: Substring) -> GeoPoint? {
+        let parts = text.split(separator: ",")
+        guard parts.count == 2, let lat = Double(parts[0]), let lon = Double(parts[1]) else {
+            return nil
+        }
+        return GeoPoint(latitude: lat, longitude: lon)
     }
-    return GeoPoint(latitude: lat, longitude: lon)
+    if args.count >= 5 { return parse(Substring(args[4])) }
+    guard let text = try? String(contentsOfFile: logPath, encoding: .utf8) else { return nil }
+    let premise = text.split(separator: "\n").last { $0.contains("散歩の前提 ") }
+    guard let field = premise?.split(separator: " ").first(where: { $0.hasPrefix("自宅=") })
+    else { return nil }
+    return parse(field.dropFirst("自宅=".count))
 }()
 
 /// 往復とみなす時間 [sec]。実測の反転は 1.3〜2.1 秒で往復していた(docs/05)
@@ -1138,29 +1160,18 @@ if let beaconMap = loadedMap, let last = all.last {
         ///    音が片耳からもう片方へ飛ぶ。一方、前半球への畳み込み
         ///    (`front_hemisphere_only`)は `sin(180°−x) = sin(x)` で pan を変えない。
         ///    **生の角度の跳び ≠ 聞こえる跳び**なので、両方を出す
-        func measure(_ tp: RouteField.TraceParams,
-                     gate gp: BearingFlipGate.Params? = nil) -> Measured {
+        func measure(_ tp: RouteField.TraceParams) -> Measured {
             var trace: RouteField.Trace?
             var previous: Double?
             var previousPan: Double?
             /// 直近の「大きく動く前の向き」と、その時刻(往復の判定に使う)
             var beforeJump: (deg: Double, time: Date)?
-            var gate = BearingFlipGate()
             var m = Measured()
             for f in returning {
-                guard let raw = field.nextStep(from: f.point, graph: graph,
-                                               nodeToleranceM: r.nodeArrivalToleranceM,
-                                               trace: trace, tp: tp) else { continue }
-                trace = raw.trace
-                // **関所を通す**(指定された時だけ)。時刻は fix のもの
-                let step: (deg: Double, trace: RouteField.Trace)
-                if let gp {
-                    let held = gate.ingest(raw.deg, at: f.time.timeIntervalSinceReferenceDate,
-                                           p: gp)
-                    step = (held, raw.trace)
-                } else {
-                    step = (raw.deg, raw.trace)
-                }
+                guard let step = field.nextStep(from: f.point, graph: graph,
+                                                nodeToleranceM: r.nodeArrivalToleranceM,
+                                                trace: trace, tp: tp) else { continue }
+                trace = step.trace
                 m.samples += 1
                 if let prev = previous {
                     let jump = abs(Geo.angularDiffDeg(step.deg, prev))
@@ -1223,21 +1234,78 @@ if let beaconMap = loadedMap, let last = all.last {
         print(String(format: "  いまの設定: 道 %.0fm / 端点 %.0fm",
                      r.waySwitchMarginM, r.nodeSwitchMarginM))
 
-        // MARK: 関所(案 C)を通した場合
+        // MARK: 鳴った瞬間で数える(2026-10-31)
         //
-        // **大きな変化だけ、数秒の裏取りを要求する**(→ Core の BearingFlipGate)。
-        // 引き継ぎ(A/B)は配る値のまま(0/0)にして、関所だけを振る
-        print("\n  -- 関所(大きな変化に裏取りを要求)を通した場合 --")
-        print(String(format: "  %-16@ %6@ %6@ %6@ %6@ %9@", "確定の条件" as NSString,
-                     "90°超" as NSString, "150°超" as NSString, "往復" as NSString,
-                     "左右入替" as NSString, "後ろ向き" as NSString))
+        // **耳に届くのはビーコンが鳴った瞬間の向きだけ。** 上の表は全 fix(1 Hz)で数えるので、
+        // 鳴らない間に起きて戻った跳びまで「直った」に数えてしまう
+        // (全 fix で往復 16 → 1 に見えた関所は、発音単位では効いていなかった・docs/05)。
+        // **T1 の根治の候補は、ここの値で比べる**
         let plain = RouteField.TraceParams(waySwitchMarginM: r.waySwitchMarginM,
                                            nodeSwitchMarginM: r.nodeSwitchMarginM)
-        for (sec, minSamples) in [(2.0, 2), (2.5, 2), (3.0, 3), (4.0, 3), (6.0, 4)] {
-            let gp = BearingFlipGate.Params(enterDeg: 90, exitDeg: 45, clusterDeg: 40,
-                                            confirmSec: sec, minSamples: minSamples,
-                                            maxGapSec: 5)
-            row(String(format: "%.1f秒 / %d件", sec, minSamples), measure(plain, gate: gp))
+        let beaconTimes = readBeaconTimes(logPath)
+        if !beaconTimes.isEmpty {
+            /// 発音時刻ごとに、その時点の向きを取り出す
+            func headings() -> [Double] {
+                var trace: RouteField.Trace?
+                var latest: Double?
+                var next = 0
+                var out: [Double] = []
+                for f in returning {
+                    while next < beaconTimes.count, beaconTimes[next] < f.time {
+                        if let latest { out.append(latest) }
+                        next += 1
+                    }
+                    guard let step = field.nextStep(from: f.point, graph: graph,
+                                                    nodeToleranceM: r.nodeArrivalToleranceM,
+                                                    trace: trace, tp: plain) else { continue }
+                    trace = step.trace
+                    latest = step.deg
+                }
+                return out
+            }
+            func report(_ label: String, _ h: [Double]) {
+                var over90 = 0, over150 = 0, oneBeat = 0
+                for i in h.indices.dropFirst() {
+                    let jump = abs(Geo.angularDiffDeg(h[i], h[i - 1]))
+                    if jump > 90 { over90 += 1 }
+                    if jump > 150 { over150 += 1 }
+                    // **1 発だけ別の向きへ飛んで戻る**(いちばん耳につく形)
+                    if i + 1 < h.count, jump > 90,
+                       abs(Geo.angularDiffDeg(h[i + 1], h[i - 1])) <= 45 { oneBeat += 1 }
+                }
+                print(String(format: "  %-16@ %6d %6d %8d", label as NSString,
+                             over90, over150, oneBeat))
+            }
+            print("\n  -- 鳴った瞬間の向きで数える(実際の発音 \(beaconTimes.count) 回)--")
+            print(String(format: "  %-16@ %6@ %6@ %8@", "" as NSString, "90°超" as NSString,
+                         "150°超" as NSString, "1発だけ飛ぶ" as NSString))
+            report("いまの経路追跡", headings())
+
+            // **反転がどれだけ続いたか。** 長いほど、音を止めて待つ形では解けない
+            var runs: [TimeInterval] = []
+            var base: Double?
+            var flippedAt: Date?
+            var traceForRuns: RouteField.Trace?
+            for f in returning {
+                guard let step = field.nextStep(from: f.point, graph: graph,
+                                                nodeToleranceM: r.nodeArrivalToleranceM,
+                                                trace: traceForRuns, tp: plain) else { continue }
+                traceForRuns = step.trace
+                guard let b = base else { base = step.deg; continue }
+                let far = abs(Geo.angularDiffDeg(step.deg, b)) > 90
+                if far {
+                    if flippedAt == nil { flippedAt = f.time }
+                } else {
+                    if let at = flippedAt { runs.append(f.time.timeIntervalSince(at)) }
+                    flippedAt = nil
+                    base = step.deg
+                }
+            }
+            let short = runs.filter { $0 < 3 }.count
+            let middle = runs.filter { $0 >= 3 && $0 < 10 }.count
+            let long = runs.filter { $0 >= 10 }.count
+            print("  大きく振れてから元へ戻るまで: 3 秒未満 \(short) 回 / 3〜10 秒 \(middle) 回"
+                  + " / 10 秒以上 \(long) 回")
         }
     } else {
         print("  経路の場を作れませんでした(自宅が道に乗らない)")
@@ -1375,6 +1443,10 @@ if headSamples.isEmpty {
     var usableSamples = 0
     var offsetAgreementSum = 0.0
     var offsetAgreementCount = 0
+    // **見直しの乗り換えを時刻つきで残す**(2026-09-18)。
+    // 「装着前に学習した値から、いつ・どの値へ乗り換えたか」は、この表でしか確かめられない
+    var swaps: [(elapsed: Double, deg: Double)] = []
+    var lastRelearnCount = 0
 
     for s in headSamples {
         let fix = courseObservation(at: s.time)
@@ -1382,6 +1454,10 @@ if headSamples.isEmpty {
                                 fixTime: fix.fixTime,
                                 at: s.time.timeIntervalSinceReferenceDate, p: fp)
         let elapsed = s.time.timeIntervalSince(t0)
+        if fusion.relearnCount != lastRelearnCount {
+            lastRelearnCount = fusion.relearnCount
+            swaps.append((elapsed, fusion.learnedOffsetDeg ?? .nan))
+        }
         if firstLearnedAt == nil, fusion.learnedOffsetDeg != nil { firstLearnedAt = elapsed }
         if firstUsableAt == nil, use.isUsable { firstUsableAt = elapsed }
         if use.isUsable { usableSamples += 1 }
@@ -1500,6 +1576,22 @@ if headSamples.isEmpty {
                      offsetAgreementSum / Double(offsetAgreementCount), offsetAgreementCount))
         print("    ※ ログを取った版の学習と比べた値です。版が違えばずれます"
               + "(付け直しがあった散歩では大きくずれるのが正しい)")
+    }
+    // **見直しの滑り窓**(2026-09-18)。装着前に学習した値から乗り換えたかを見る
+    if fp.relearnWindowEvidenceSec > 0 {
+        print(String(format: "  見直しの窓(証拠 %.0fs・差 %.0f° 超で乗り換え): 乗り換え %d 回",
+                     fp.relearnWindowEvidenceSec, fp.relearnMinDisagreeDeg, swaps.count))
+        for (elapsed, deg) in swaps.prefix(8) {
+            print(String(format: "    %6.0f 秒  → %+.1f°", elapsed, deg))
+        }
+        if swaps.count > 8 { print("    …ほか \(swaps.count - 8) 回") }
+        let windowLabel = fusion.windowOffsetDeg(p: fp)
+            .map { String(format: "%+.1f°", $0) } ?? "未成立"
+        print(String(format: "    窓の最終: %@(証拠 %.1fs・R=%.2f)",
+                     windowLabel as NSString, fusion.windowEvidenceSec,
+                     fusion.windowConcentration))
+    } else {
+        print("  見直しの窓: 無効(relearn_window_evidence_sec = 0)")
     }
     print(String(format: "  検疫の証拠(最終): 門内 %.1fs / 門外 %.1fs",
                  fusion.insideEvidenceSec, fusion.outsideEvidenceSec))
